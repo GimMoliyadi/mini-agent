@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-20　**状态**：Phase 9 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading 均已收尾）
+**写于**：2026-09-20　**状态**：Phase 10 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -19,23 +19,23 @@
 没有数据库、没有多 Agent、没有 Docker。唯一第三方依赖是 `openai`。
 
 **不要给这个项目堆功能。** 每加一层都要能说清楚"它教会了我什么"，
-否则就是偏离目标。Phase 7 的价值在于理解上下文成本从哪来，Phase 8 的价值在于理解同一段 canonical 对话如何稳定保存与恢复，Phase 9 的价值在于理解长文件读取的分页边界与上下文可见范围。
+否则就是偏离目标。Phase 7 的价值在于理解上下文成本从哪来，Phase 8 的价值在于理解同一段 canonical 对话如何稳定保存与恢复，Phase 9 的价值在于理解长文件读取的分页边界与上下文可见范围，Phase 10 的价值在于理解模型意图与 Runtime 执行权限必须分离。
 
 核心学习路线（这是项目的脊柱，改动前先对照）：
 
 ```
 LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
     → Multi-Tool → Completion Control → Eval → Context Management → Session Persistence
-    → Long File Reading
+    → Long File Reading → Tool Permission / Side-effect Approval
 ```
 
-当前已完成 Phase 9。本项目暂不自动进入 Memory、RAG、MCP 或其它后续能力。
+当前已完成 Phase 10。本项目暂不自动进入 Memory、RAG、MCP 或其它后续能力。
 
 ---
 
 ## 2. 当前项目状态
 
-Phase 0 到 Phase 9 全部完成并按阶段验证。每个阶段的三段式说明：
+Phase 0 到 Phase 10 全部完成并按阶段验证。每个阶段的三段式说明：
 **新增了什么 / 为什么新增 / 最重要的结论。**
 
 ### Phase 0 — 项目骨架
@@ -129,6 +129,16 @@ Phase 0 到 Phase 9 全部完成并按阶段验证。每个阶段的三段式说
 
 真实验证明细见 `REAL_RUN_LOG.md` 的 Phase 9 小节。
 
+### Phase 10 — Tool Permission / Side-effect Approval
+
+新增：`TOOL_PERMISSIONS` 风险分类、`ASK` / `ALLOW` / `DENY` 三种审批策略、可注入的
+`ApprovalCallback`，以及 Runtime 中的 `check_tool_permission()`。
+为什么：模型产生 `write_file` Tool Call 只代表它提出了动作，不应同时拥有直接修改工作区的执行权限。
+结论：`list_files` / `read_file` 自动执行；`write_file` 先做 Sandbox 预检，再向 callback 请求
+`CREATE` / `OVERWRITE` 审批。批准才调用 handler，拒绝返回合法 `role="tool"` 结果，且不计入成功
+重复调用集合。拒绝结果也保留在 canonical Session 历史里；`WRITE_ONLY` 不会把它误压缩成成功写入。
+非交互测试与 Eval 显式使用 `ALLOW` / `DENY`，交互式 CLI 默认 `ASK`。
+
 ---
 
 ## 3. 当前架构
@@ -136,22 +146,23 @@ Phase 0 到 Phase 9 全部完成并按阶段验证。每个阶段的三段式说
 ### 文件职责
 
 ```
-main.py           入口 + Agent Loop + 工具执行层 + 回喂模型。全部 Runtime 逻辑在这里
+main.py           入口 + Agent Loop + 权限检查 + 工具执行层 + 回喂模型。全部 Runtime 逻辑在这里
 config.py         配置：读 .env，产出 LLMConfig、WORKSPACE_DIR、MAX_AGENT_STEPS、
-                  MAX_TOOL_RESULT_CHARS、MAX_READ_RESULT_CHARS、LOCAL_NO_PROXY。
+                  MAX_TOOL_RESULT_CHARS、MAX_READ_RESULT_CHARS、审批模式、LOCAL_NO_PROXY。
                   WORKSPACE_DIR 在这里唯一定义一次
-tools.py          三个工具说明书（*_TOOL）+ AVAILABLE_TOOLS + TOOL_HANDLERS
+tools.py          三个工具说明书（*_TOOL）+ AVAILABLE_TOOLS + TOOL_PERMISSIONS + TOOL_HANDLERS
                   + 沙盒校验 resolve_inside_workspace + 三个 handler 函数（含分页 read_file）
 tests/            mock_server.py（本地假服务器，不需要 Key）
                   test_sandbox.py（沙盒边界 + 注册表一致性，27 项）
                   test_loop.py（重复调用检测 + 协议合法性，4 组）
+                  test_permissions.py（Phase 10 审批/拒绝、Sandbox、Session、Mock Agent）
                   test_long_file.py（Phase 9 分段读取、完整行和 mock 分页）
                   inputs/*.txt（喂给 main.py 的 stdin，用来复现某次实测）
 eval/             轻量 Eval（Phase 6.5）
   tasks.json        8 个任务 + 每个任务的成功规则
   run_task.py       单任务执行器：驱动 main.py + 收集指标 + 判定 success
   run_eval.py       总控：工作目录快照隔离 + 跑全部任务 + 失败分类
-  test_metrics.py   19 个单测：只测「尺子准不准」，不发任何网络请求
+  test_metrics.py   20 个单测：只测「尺子准不准」，不发任何网络请求
   results.json      最近一轮 Eval 的完整原始数据
   REPORT.md         人类可读报告
   .run_log.txt      过程日志（已 gitignore）
@@ -174,7 +185,9 @@ messages  ──►  ask()  ──►  LLM
                             │
                 ┌───────────┘
                 ▼
-        Tool Registry（AVAILABLE_TOOLS / TOOL_HANDLERS）
+        Tool Registry（AVAILABLE_TOOLS / TOOL_PERMISSIONS / TOOL_HANDLERS）
+                ▼
+        Permission Check（READ_ONLY 直通；SIDE_EFFECT 先审批）
                 ▼
           Tool Handler（tools.py 里的函数）
                 ▼
@@ -201,7 +214,10 @@ messages  ──►  ask()  ──►  LLM
    它没有 `if name == "read_file"` 这种分支，里面连一个工具名都没写。
    **Phase 7 如果要在循环里加特殊逻辑，你就是在破坏这个结论。**
 
-4. **Tool Result 一旦进 messages，之后每一次 `ask` 都把完整 messages 原样重发。**
+4. **权限检查属于 Runtime，不属于 `write_file`。** `write_file` 仍只负责执行写入；
+   `run_tool_round` 在调用 handler 前先做 Sandbox 预检和审批。模型提出 Tool Call 不等于 Runtime 已授权。
+
+5. **Tool Result 一旦进 messages，之后每一次 `ask` 都把完整 messages 原样重发。**
    LLM 本身没有记忆，上下文全靠每次重述。**这一条是 Phase 7 的出发点，也是当前最大的技术问题。**
 
 ---
@@ -755,5 +771,5 @@ README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复
 
 ---
 
-**交接完毕。** 项目已完成 Phase 9：Context Management、Session Persistence 与 Long File Reading 均已收尾；
-Session 文件默认不进入版本库，后续阶段不自动开始。
+**交接完毕。** 项目已完成 Phase 10：Context Management、Session Persistence、Long File Reading
+与 Tool Permission / Side-effect Approval 均已收尾；Session 文件默认不进入版本库，后续阶段不自动开始。

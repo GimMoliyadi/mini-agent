@@ -321,7 +321,7 @@ def run_once(
 ) -> None:
     """用一条假的工具调用消息跑一轮，等价于模型提了一次工具调用。"""
     message = _fake_message(call_id, tool_name, arguments)
-    main.run_tool_round(messages, message, executed)
+    main.run_tool_round(messages, message, executed, main.always_allow)
 
 
 def _fake_message(call_id: str, tool_name: str, arguments: str):

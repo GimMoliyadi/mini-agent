@@ -1,4 +1,4 @@
-"""mini-agent-lab 的程序入口（Phase 6：收口与可观测性）。
+"""mini-agent-lab 的程序入口（Phase 10：工具权限与副作用审批）。
 
 这一阶段做的事不是加能力，而是解决 Phase 5.5 真模型实测暴露的问题：
 任务其实已经做完了，Agent 却不知道自己该停。
@@ -20,6 +20,7 @@ Phase 5 里 ask() 只返回 message，这两项被直接丢掉，
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from openai import APIError, OpenAI
@@ -33,10 +34,11 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     WORKSPACE_DIR,
     LLMConfig,
+    get_approval_mode,
     get_context_mode,
     load_config,
 )
-from tools import AVAILABLE_TOOLS, TOOL_HANDLERS
+from tools import AVAILABLE_TOOLS, TOOL_HANDLERS, TOOL_PERMISSIONS, resolve_inside_workspace
 from session import SessionError, create_session, load_session, save_session
 
 BANNER = "Mini Agent Lab"
@@ -75,6 +77,11 @@ SYSTEM_PROMPT = (
 # 工具失败时的统一前缀。既是失败话术的唯一出处，
 # 也用来判断「这次调用算不算成功」——只有成功执行过的调用才会进重复检测表。
 TOOL_FAILURE_PREFIX = "[工具失败]"
+
+# 用户拒绝是一个合法的工具结果，但不是工具成功执行。
+APPROVAL_DENIED_PREFIX = "[用户拒绝执行]"
+
+ApprovalCallback = Callable[[str, dict, str], bool]
 
 # 重复调用被拦截时回喂给模型的结果。
 # 它必须是一条看起来正常的工具结果：模型靠它自己判断该收口了，
@@ -180,9 +187,12 @@ def parse_tool_arguments(call) -> dict:
     和「文件读不出来」是两类完全不同的错，回喂给模型的话术也该不一样。
     """
     try:
-        return json.loads(call.function.arguments or "{}")
+        arguments = json.loads(call.function.arguments or "{}")
     except json.JSONDecodeError as exc:
         raise ValueError(f"工具参数不是合法 JSON：{exc}") from exc
+    if not isinstance(arguments, dict):
+        raise ValueError("工具参数必须是 JSON 对象")
+    return arguments
 
 
 def limit_result_length(result: str) -> str:
@@ -230,6 +240,79 @@ def execute_tool_call(call) -> str:
         # OSError 涵盖了 FileNotFoundError / PermissionError / IsADirectoryError，
         # 也就是沙盒拦截、文件不存在、路径指向目录这几类情况。
         return f"{TOOL_FAILURE_PREFIX} {type(exc).__name__}：{exc}"
+
+
+def always_allow(tool_name: str, arguments: dict, operation: str) -> bool:
+    """Non-interactive approval policy for tests and evals."""
+    return True
+
+
+def always_deny(tool_name: str, arguments: dict, operation: str) -> bool:
+    """Non-interactive denial policy for tests and evals."""
+    return False
+
+
+def ask_for_approval(tool_name: str, arguments: dict, operation: str) -> bool:
+    """CLI approval callback; input stays at the CLI boundary, not in execution."""
+    print("\nAgent 请求写入：")
+    print(f"文件：{arguments.get('path', '?')}")
+    print(f"操作：{operation}")
+    try:
+        answer = input("是否允许？[y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\n审批未确认，按拒绝处理。")
+        return False
+    return answer in {"y", "yes"}
+
+
+def approval_callback_for_mode(mode: str, input_func=None) -> ApprovalCallback:
+    """Build the small approval policy selected by the caller/environment."""
+    selected_mode = mode.strip().upper()
+    if selected_mode == "ALLOW":
+        return always_allow
+    if selected_mode == "DENY":
+        return always_deny
+    if selected_mode == "ASK":
+        if input_func is None:
+            return ask_for_approval
+
+        def ask_with_injected_input(tool_name: str, arguments: dict, operation: str) -> bool:
+            print("\nAgent 请求写入：")
+            print(f"文件：{arguments.get('path', '?')}")
+            print(f"操作：{operation}")
+            answer = input_func("是否允许？[y/N] ").strip().lower()
+            return answer in {"y", "yes"}
+
+        return ask_with_injected_input
+    raise ValueError(f"审批模式必须是 ASK, ALLOW, DENY 之一，当前是：{mode!r}")
+
+
+def check_tool_permission(call, approval_callback: ApprovalCallback) -> tuple[bool, str | None]:
+    """Check permission before execution; return (may_execute, immediate_result)."""
+    tool_name = call.function.name
+    if TOOL_PERMISSIONS.get(tool_name) != "SIDE_EFFECT":
+        return True, None
+
+    try:
+        arguments = parse_tool_arguments(call)
+        path = arguments.get("path")
+        if not isinstance(path, str):
+            # Let the handler produce the normal missing/invalid-argument error.
+            return True, None
+
+        # Sandbox validation is deliberately before asking the user. Approval cannot
+        # turn an invalid path into an allowed one.
+        target = resolve_inside_workspace(path)
+        operation = "OVERWRITE" if target.is_file() else "CREATE"
+        if approval_callback(tool_name, arguments, operation):
+            return True, None
+        return False, (
+            f"{APPROVAL_DENIED_PREFIX}\n"
+            f"{tool_name} 未执行。\n"
+            "文件没有被修改。"
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        return False, f"{TOOL_FAILURE_PREFIX} {type(exc).__name__}：{exc}"
 
 
 def assistant_tool_call_message(message: ChatCompletionMessage) -> dict:
@@ -301,6 +384,7 @@ def _compact_write_round(message: dict, results: list[dict]) -> dict | None:
             or result.get("tool_call_id") != call.get("id")
             or not isinstance(result.get("content"), str)
             or result["content"].startswith(TOOL_FAILURE_PREFIX)
+            or result["content"].startswith(APPROVAL_DENIED_PREFIX)
             or result["content"] == DUPLICATE_NOTICE
         ):
             return None
@@ -481,6 +565,7 @@ def run_tool_round(
     messages: list[dict],
     message: ChatCompletionMessage,
     executed: set[tuple[str, str]],
+    approval_callback: ApprovalCallback,
 ) -> None:
     """执行这一批工具调用，把「模型提了调用」和「调用结果」都写进历史。
 
@@ -509,8 +594,13 @@ def run_tool_round(
             messages.append(tool_result_message(call, DUPLICATE_NOTICE))
             continue
 
-        result = execute_tool_call(call)
-        if not result.startswith(TOOL_FAILURE_PREFIX):
+        may_execute, permission_result = check_tool_permission(call, approval_callback)
+        result = permission_result if not may_execute else execute_tool_call(call)
+        if (
+            may_execute
+            and not result.startswith(TOOL_FAILURE_PREFIX)
+            and not result.startswith(APPROVAL_DENIED_PREFIX)
+        ):
             # 只有成功执行过的调用才记下来。失败的那次不该被锁定——
             # 模型换个参数重试是合理行为，拦它才是帮倒忙。
             executed.add(fingerprint)
@@ -531,6 +621,7 @@ def run_agent_loop(
     messages: list[dict],
     first_reply: ModelReply,
     executed: set[tuple[str, str]],
+    approval_callback: ApprovalCallback,
 ) -> None:
     """把「问模型 → 执行工具 → 回喂 → 再问」装进循环。
 
@@ -568,7 +659,7 @@ def run_agent_loop(
             return
 
         # 还有预算，就执行并回喂；下一轮循环再问模型，由它决定继续还是收口
-        run_tool_round(messages, reply.message, executed)
+        run_tool_round(messages, reply.message, executed, approval_callback)
         # Keep canonical history intact; only shrink the outbound model view.
         reply = ask(client, model, build_model_context(messages))
         log_reply(step + 1, reply)
@@ -586,6 +677,7 @@ def print_environment(config: LLMConfig) -> None:
     print(f"单个任务最多 {MAX_AGENT_STEPS} 步（模型问了几轮就停，防止无限循环）")
     print(f"工具结果上限 {MAX_TOOL_RESULT_CHARS} 字符（超过会截断并告知模型）")
     print(f"Context 模式：{get_context_mode()}")
+    print(f"审批模式：{get_approval_mode()}")
     print("重复调用保护：同一工具 + 完全相同参数已成功执行过，就不会重复执行")
     print("每次请求会打印 finish_reason 和 token 用量（服务商没返回就显示 unavailable）")
 
@@ -615,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Session: {session_id}")
 
     client = build_client(config)
+    approval_callback = approval_callback_for_mode(get_approval_mode())
     print("输入一句话开始对话；输入 exit 退出。")
 
     try:
@@ -645,7 +738,14 @@ def main(argv: list[str] | None = None) -> int:
                 # canonical history remains the source; only the outbound view is compressed.
                 first_reply = ask(client, config.model, build_model_context(messages))
                 log_reply(1, first_reply)
-                run_agent_loop(client, config.model, messages, first_reply, executed)
+                run_agent_loop(
+                    client,
+                    config.model,
+                    messages,
+                    first_reply,
+                    executed,
+                    approval_callback,
+                )
             except (APIError, ConnectionError, TimeoutError) as exc:
                 # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通。
                 # 代码自身的 bug 不在此列，应当让它正常抛出来，方便你发现真问题。

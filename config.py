@@ -66,6 +66,11 @@ MAX_RECENT_TOOL_ROUNDS = 2
 CONTEXT_MODES = ("OFF", "WRITE_ONLY", "FULL")
 DEFAULT_CONTEXT_MODE = "WRITE_ONLY"
 
+# 有副作用工具的最小审批模式。交互式 main.py 默认询问用户；自动入口必须显式选择
+# ALLOW 或 DENY，避免测试因为 input() 卡住。
+APPROVAL_MODES = ("ASK", "ALLOW", "DENY")
+DEFAULT_APPROVAL_MODE = "ASK"
+
 
 def get_context_mode() -> str:
     """读取并校验当前 Context Management 实验模式。"""
@@ -73,6 +78,15 @@ def get_context_mode() -> str:
     if mode not in CONTEXT_MODES:
         allowed = ", ".join(CONTEXT_MODES)
         raise ValueError(f"CONTEXT_MODE 必须是 {allowed} 之一，当前是：{mode!r}")
+    return mode
+
+
+def get_approval_mode() -> str:
+    """读取并校验副作用工具审批模式。"""
+    mode = os.environ.get("TOOL_APPROVAL_MODE", DEFAULT_APPROVAL_MODE).strip().upper()
+    if mode not in APPROVAL_MODES:
+        allowed = ", ".join(APPROVAL_MODES)
+        raise ValueError(f"TOOL_APPROVAL_MODE 必须是 {allowed} 之一，当前是：{mode!r}")
     return mode
 
 # 本地地址不走代理的绕过清单。
@@ -145,6 +159,7 @@ def load_config() -> LLMConfig:
     """
     load_env_file()
     get_context_mode()
+    get_approval_mode()
 
     # 只补默认值，不覆盖：若你已经在终端里 export 过 NO_PROXY，以你的为准。
     # 放在 load_env_file 之后，是因为解析 .env 用 setdefault 写进 environ，

@@ -72,7 +72,12 @@ def run_one(task_id: str, tasks_path: Path, workspace_dir: Path | None = None) -
         str(tasks_path),
         task_id,
     ]
-    environment = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    environment = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "TOOL_APPROVAL_MODE": "ALLOW",
+    }
     if workspace_dir is not None:
         environment["AGENT_WORKSPACE"] = str(workspace_dir)
     try:

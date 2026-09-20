@@ -21,7 +21,7 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 9
+## 当前状态：Phase 10
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -44,6 +44,11 @@ Python 不自动循环翻页，模型根据 `has_more` 和 `next_start_line` 自
 
 Phase 9 真实验证已通过：模型实际读取 `1-100 → 101-200 → 201-300 → 301-400 → 401-450`，
 在第 377 行找到 `TARGET_FACT = "phase9-secret-value"`，随后正常给出 Final Answer，未撞步数上限。
+
+Phase 10 已完成 Tool Permission / Side-effect Approval：`list_files` / `read_file` 属于
+`READ_ONLY`，自动执行；`write_file` 属于 `SIDE_EFFECT`，必须先通过 Runtime 审批。
+交互式 CLI 默认 `ASK`，自动入口和测试显式使用 `ALLOW` 或 `DENY`。拒绝也会生成合法的
+`role="tool"` 结果，但不会写文件、不会进入成功重复调用集合，也不会被当作成功写入压缩。
 
 Phase 5 加的三样东西：
 
@@ -114,6 +119,7 @@ Mini Agent Lab
 可用工具：list_files, read_file, write_file
 单个任务最多 8 步（模型问了几轮就停，防止无限循环）
 工具结果上限 4000 字符（超过会截断并告知模型）
+审批模式：ASK
 输入一句话开始对话；输入 exit 退出。
 
 你 > 看看工作目录里有什么学习资料。找到和 Agent 有关的资料，读取需要的内容，整理成一份简短学习摘要，保存为 notes/agent_summary.md。完成后告诉我你做了什么。
@@ -174,17 +180,27 @@ mock 服务器还支持几个触发词，用来手动触发各种分支（不用
 .venv\Scripts\python.exe -c "open('demo_workspace/big_notes.txt','w',encoding='utf-8').write('# 大文件\n' + ('这是一行占位内容，用来把文件撑大到超过工具结果上限。\n' * 150))"
 ```
 
+Phase 10 的非交互测试/评测需要显式设置：
+
+```powershell
+$env:TOOL_APPROVAL_MODE = "ALLOW"
+```
+
+真实 CLI 保持默认 `ASK`。审批提示会显示目标文件和 `CREATE` / `OVERWRITE`；输入
+`Y` 才执行 `write_file`，其他输入均视为拒绝。
+
 mock 服务器还内置了一个协议校验器：它检查 `tool_calls` 和 `tool` 结果是否
 成对出现、顺序是否正确，不满足就返回 400。真实服务商不满足这个条件也会直接
 400。它能证明「请求中途失败后把半截历史清掉」这件事真的做对了——如果清不干净，
 下一轮请求就会被它拦下来。
 
-唯一第三方依赖是 `openai`，装在 `.venv` 里。两组测试都用 venv 的 Python 跑
-（`test_loop.py` 要 `import main`，间接要 `openai`）：
+唯一第三方依赖是 `openai`，装在 `.venv` 里。涉及 `main.py` 的本地测试都用 venv 的
+Python 跑（`test_loop.py` / `test_permissions.py` 要 `import main`，间接要 `openai`）：
 
 ```bash
 .venv\Scripts\python.exe tests\test_sandbox.py   # 沙盒边界 + 注册表一致性
 .venv\Scripts\python.exe tests\test_loop.py      # 重复调用检测 + 协议合法性
+.venv\Scripts\python.exe tests\test_permissions.py # Phase 10 审批与拒绝链路
 ```
 
 `tests/inputs/` 里放的是喂给 `main.py` 的 stdin 输入文件，用来复现某次实测：
@@ -199,6 +215,11 @@ cmd /c '.venv\Scripts\python.exe main.py < tests\inputs\real_retest_v2.txt'
 `../` 跳级、`..\\` 反斜杠、绝对路径（`C:/evil.txt`、`/etc/passwd`）、符号链接。
 校验发生在 `mkdir(parents=True)` **之前**，所以自动创建的父目录也保证在沙盒内。
 没有删除文件的能力，也没有执行程序的入口。
+
+权限检查在 Runtime 的 `run_tool_round` 中、真正调用 `write_file` 之前发生。它先复用
+`resolve_inside_workspace` 做 Sandbox 预检，再根据目标文件是否存在显示 `CREATE` 或
+`OVERWRITE` 并调用审批 callback；因此用户批准也不能越过沙盒。`write_file` 本身不包含
+审批或 `input()`，只负责在 Runtime 放行后写入。
 
 **允许覆盖已有文本文件**，这是刻意的：沙盒已经把破坏范围锁死在一个专用目录里；
 而拒绝覆盖会让「重跑同一个任务」直接失败，还得再引入一个 `force` 参数让模型学习怎么绕过——
@@ -227,14 +248,14 @@ mini-agent-lab/
 ├── tools.py              # 工具层：三个工具说明书 + 沙盒校验 + list/read/write + 名字→函数表
 ├── requirements.txt      # 唯一第三方依赖：openai
 ├── README.md             # 本文件
-├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9）
+├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9、Phase 10）
 ├── .env.example          # 环境变量模板，复制成 .env 再填 Key
 ├── .gitignore            # 保证 .env 和 __pycache__ 不进版本库
 ├── eval/                 # Phase 6.5：轻量 Eval（不新增 Agent 能力，只测稳定性）
 │   ├── tasks.json        # 任务集：6 个基准任务 + Task 1 重复 2 次（共 8 个）
 │   ├── run_task.py       # 单任务执行器：驱动 main.py + 收集指标 + 判定 success
 │   ├── run_eval.py       # 总控：工作目录快照隔离 + 跑完全部任务 + 失败分类
-│   ├── test_metrics.py   # 19 个单测：只测「尺子准不准」，不发任何网络请求
+│   ├── test_metrics.py   # 20 个单测：只测「尺子准不准」，不发任何网络请求
 │   ├── results.json      # 最近一轮 Eval 的完整原始数据
 │   ├── REPORT.md         # 人类可读报告：为什么稳、哪里不稳、下一步该修什么
 │   └── .run_log.txt      # 过程日志（已 gitignore，每次跑会重新生成）
@@ -244,6 +265,7 @@ mini-agent-lab/
 │   ├── test_loop.py      # 重复调用检测 + 工具调用协议合法性
 │   ├── test_session.py   # Session 保存/恢复、密钥排除和上下文视图测试
 │   ├── test_long_file.py # Phase 9 分段读取、完整行和 mock 分页测试
+│   ├── test_permissions.py # Phase 10 审批、拒绝、协议和 Mock Agent 测试
 │   └── inputs/           # 喂给 main.py 的 stdin 输入，用来复现某次实测
 ├── sessions/             # 本地 Session JSON（已加入 .gitignore，不提交实际会话）
 └── demo_workspace/       # Agent 唯一允许读写的工作目录（沙盒）
@@ -282,7 +304,7 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 ### 怎么跑的
 
 ```bash
-.venv\Scripts\python.exe eval\test_metrics.py   # 19 个单测，不发网络请求，先证明「尺子」是准的
+.venv\Scripts\python.exe eval\test_metrics.py   # 20 个单测，不发网络请求，先证明「尺子」是准的
 .venv\Scripts\python.exe eval\run_eval.py eval\tasks.json   # 真跑一轮 Eval（8 个任务）
 ```
 
@@ -364,6 +386,9 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 - **Phase 9 · Long File Reading** ✅ —— 扩展现有 `read_file` 的 `start_line` / `max_lines`，
   只返回安全预算内的完整行，并由实际返回范围生成 `has_more` / `next_start_line`；
   Python 不自动翻页，保留全局结果长度兜底。mock、多段本地测试和一次真实模型验证均通过。
+- **Phase 10 · Tool Permission / Side-effect Approval** ✅ —— 增加 `READ_ONLY` / `SIDE_EFFECT`
+  风险分类和 Runtime 审批层；`ASK` / `ALLOW` / `DENY` 通过可注入 callback 选择策略。
+  审批前仍先做 Sandbox 校验，批准才执行 `write_file`，拒绝仍回传合法 Tool Result。
 
 当前阶段已收尾，后续能力等待明确确认后再开始。
 
@@ -388,6 +413,9 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 
 可通过进程环境变量 `AGENT_WORKSPACE` 指定工作目录，默认仍为 `demo_workspace`。
 该变量在模块加载时读取，应在启动 Python 前设置。不要将密钥目录用作工作目录。
+
+可通过 `TOOL_APPROVAL_MODE=ASK|ALLOW|DENY` 选择副作用审批策略；未设置时交互式 CLI 默认为
+`ASK`。自动化评测应显式设置 `ALLOW`，拒绝路径测试显式设置 `DENY`，避免等待键盘输入。
 
 评测现已改为独立临时工作区，每题保存结果与输出内容；运行及验收说明见
 [eval/RUNNING.md](eval/RUNNING.md)。历史 8/8 只代表旧规则，不代表新规则全部通过。

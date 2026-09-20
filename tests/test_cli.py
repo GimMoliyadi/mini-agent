@@ -20,7 +20,7 @@ class CliTests(unittest.TestCase):
         return result
 
     def test_completed(self):
-        def loop(client, model, messages, reply, executed):
+        def loop(client, model, messages, reply, executed, approval_callback):
             messages.append({"role": "assistant", "content": "done"})
         self.assertEqual(self.invoke(loop)["answer"], "done")
 

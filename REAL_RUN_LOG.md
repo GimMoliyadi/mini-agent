@@ -257,3 +257,51 @@ Context 回归。
 模型实际看到了完整的 1-100、101-200、201-300、301-400、401-450 连续行段；正常
 `read_file` 结果没有触发 `MAX_TOOL_RESULT_CHARS` 的最终截断。真实验证使用修复后的
 metadata，`has_more` 与实际返回范围一致。
+
+---
+
+# Phase 10 真实 Tool Permission / Side-effect Approval 验证
+
+日期：2026-09-20
+模型：`sensenova-6.8-flash-lite` @ `https://token.sensenova.cn/v1`
+任务：把 `notes/approval_test.md` 改成 `NEW`；审批时选择拒绝。
+测试文件初始内容：`ORIGINAL`
+代理：`127.0.0.1:9674`（本机 `7897` 无监听；未打印 API Key、Authorization 或敏感 Header）
+Session：`20260920-202930-fabf1d`
+
+## 结论
+
+**通过。** 模型先读取文件，再提出 `write_file`；Runtime 显示 `OVERWRITE` 并询问审批。
+输入 `N` 后没有调用真正的 `write_file`，拒绝结果回传模型，模型正常给出 Final Answer，
+没有撞 `MAX_AGENT_STEPS`。文件最终内容仍为 `ORIGINAL`。
+
+## 真实 Tool 链与审批记录
+
+| Turn | Tool Call | 权限 / 操作 | 审批 | Tool actually executed? | Tool Result |
+|---|---|---|---|---|---|
+| 1 | `read_file({"path": "notes/approval_test.md"})` | `READ_ONLY` | 自动 | 是 | 返回 1 行，内容 `ORIGINAL` |
+| 2 | `write_file({"path": "notes/approval_test.md", "content": "NEW"})` | `SIDE_EFFECT` / `OVERWRITE` | DENY | 否 | `[用户拒绝执行]`；`write_file 未执行。文件没有被修改。` |
+
+拒绝后的下一次模型请求收到合法的 `role="tool"` 结果，并在 Turn 3 收口：
+
+```text
+已停止操作：write_file 被拒绝，notes/approval_test.md 未被修改，内容仍为 ORIGINAL。
+```
+
+## 可观测性
+
+| 指标 | 数值 |
+|---|---:|
+| model calls | 3 |
+| tool calls | 2 |
+| tool calls actually executed | 1 (`read_file`) |
+| denied side effects | 1 (`write_file`) |
+| prompt tokens | 3430 |
+| completion tokens | 182 |
+| total tokens | 3612 |
+
+`finish_reason` 链：`tool_calls → tool_calls → stop`。Session 已正常保存；最终磁盘校验为：
+
+```text
+demo_workspace/notes/approval_test.md = ORIGINAL
+```

@@ -92,6 +92,7 @@ WRITE_FILE_TOOL = {
             "把文本内容写入工作目录内的一个文件（UTF-8）。"
             "父目录不存在会自动创建，只能创建在工作目录内。"
             "已经存在的同名文件会被覆盖。"
+            "这是有副作用的操作，执行前可能需要用户批准。"
             "不能用 .. 或绝对路径写到工作目录之外。"
         ),
         "parameters": {
@@ -115,6 +116,14 @@ WRITE_FILE_TOOL = {
 # 所以这里就是「模型知道自己会什么」的唯一来源。
 # 三份必须名字对得上：这里的 name、TOOL_HANDLERS 的 key、函数形参名。
 AVAILABLE_TOOLS = [LIST_FILES_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL]
+
+# Tool 权限分类只描述风险，不执行审批。真正的检查和回调在 Runtime，
+# 这样 write_file 仍然只负责「获得允许后如何写入」。
+TOOL_PERMISSIONS = {
+    "list_files": "READ_ONLY",
+    "read_file": "READ_ONLY",
+    "write_file": "SIDE_EFFECT",
+}
 
 
 def resolve_inside_workspace(path: str) -> Path:

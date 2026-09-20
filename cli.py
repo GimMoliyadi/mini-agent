@@ -7,7 +7,7 @@ import sys
 from openai import APIError
 
 import main
-from config import load_config
+from config import get_approval_mode, load_config
 
 
 def run_task(task: str) -> dict:
@@ -20,7 +20,14 @@ def run_task(task: str) -> dict:
         with redirect_stdout(sys.stderr):
             reply = main.ask(client, config.model, main.build_model_context(messages))
             main.log_reply(1, reply)
-            main.run_agent_loop(client, config.model, messages, reply, set())
+            main.run_agent_loop(
+                client,
+                config.model,
+                messages,
+                reply,
+                set(),
+                main.approval_callback_for_mode(get_approval_mode()),
+            )
         last = messages[-1]
         answer = last.get("content") if last.get("role") == "assistant" and not last.get("tool_calls") else None
         return {"status": "completed" if answer else "incomplete", "answer": answer,

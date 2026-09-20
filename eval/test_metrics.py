@@ -136,6 +136,17 @@ def test_failed_call_then_identical_retry_is_allowed():
     print("OK  失败后同一调用重试：failed -> executed，未被当成重复拦下")
 
 
+def test_denied_call_is_not_counted_as_executed():
+    """A denied side effect is a tool result, but not a successful execution."""
+    denied = _read_call("a.md", result=main.APPROVAL_DENIED_PREFIX + "\n未执行")
+    metrics = run_task.evaluate_task_metrics([_reply(100, [denied])], _history([[denied]]))
+    assert metrics["tool_calls_executed"] == 0, metrics
+    assert metrics["tool_calls_denied"] == 1, metrics
+    assert metrics["tool_call_dropped"] == 0, metrics
+    assert metrics["tool_chain"][0]["status"] == "denied", metrics
+    print("OK  用户拒绝的调用不计为 executed，并在链路中标为 denied")
+
+
 def test_step_ceiling_not_hit_by_default():
     """没问满模型、或历史里有最终回答，都不算撞上限。"""
     calls = [[_read_call("a.md")]]
@@ -368,6 +379,7 @@ def run_checks() -> None:
         test_identical_call_is_blocked,
         test_failed_call_is_not_locked,
         test_failed_call_then_identical_retry_is_allowed,
+        test_denied_call_is_not_counted_as_executed,
         test_step_ceiling_not_hit_by_default,
         test_max_steps_hit_detected,
         test_tools_used_ordering_and_uniqueness,

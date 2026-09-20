@@ -48,7 +48,7 @@ def evaluate_task_metrics(model_replies: list[main.ModelReply], messages: list[d
     """
     final_answer = get_final_answer(messages)
     executed: set[tuple[str, str]] = set()
-    executed_count = blocked_count = failed_count = 0
+    executed_count = blocked_count = failed_count = denied_count = 0
     tool_chain: list[dict] = []
     tools_used: set[str] = set()
     tool_results = [m for m in messages if m.get("role") == "tool"]
@@ -67,10 +67,14 @@ def evaluate_task_metrics(model_replies: list[main.ModelReply], messages: list[d
             result_index += 1
             result = tool_results[result_index - 1].get("content", "") if result_index <= len(tool_results) else ""
             was_failed = result.startswith(main.TOOL_FAILURE_PREFIX)
+            was_denied = result.startswith(main.APPROVAL_DENIED_PREFIX)
 
             if was_blocked:
                 blocked_count += 1
                 status = "blocked"
+            elif was_denied:
+                denied_count += 1
+                status = "denied"
             else:
                 executed_count += 1
                 if was_failed:
@@ -104,9 +108,10 @@ def evaluate_task_metrics(model_replies: list[main.ModelReply], messages: list[d
         "tool_calls_requested": requested_total,
         "tool_calls_executed": executed_count,
         "tool_calls_failed": failed_count,
+        "tool_calls_denied": denied_count,
         "duplicate_calls_blocked": blocked_count,
         # 模型提了但没进历史的调用数：只有撞上限时最后一次会大于 0
-        "tool_call_dropped": requested_total - executed_count - blocked_count,
+        "tool_call_dropped": requested_total - executed_count - blocked_count - denied_count,
         "max_steps_hit": max_steps_hit,
         "final_answer_present": final_answer is not None,
         # 每轮单独记 prompt_tokens：这是看上下文如何逐轮变长的证据
@@ -221,7 +226,11 @@ def run_task(task: dict, workspace_dir: Path) -> dict:
         client = main.build_client(config)
         first_reply = main.ask(client, config.model, messages)
         main.log_reply(1, first_reply)
-        main.run_agent_loop(client, config.model, messages, first_reply, executed)
+        # Eval is non-interactive: choosing ALLOW here is explicit and prevents
+        # an approval prompt from blocking a child process.
+        main.run_agent_loop(
+            client, config.model, messages, first_reply, executed, main.always_allow
+        )
     except (APIError, ConnectionError, TimeoutError) as exc:
         # 跟外界通信的失败（限流、超时、网络）不算程序 bug：记下来，任务判失败，整轮 Eval 继续
         runtime_errors.append(f"Provider: {type(exc).__name__}: {exc}")
