@@ -1,0 +1,141 @@
+[
+  {
+    "task_id": "task_1",
+    "name": "摘要写入",
+    "task": "看看工作目录里有什么学习资料。找到和 Agent 有关的资料，读取需要的内容，整理成一份简短学习摘要，保存为 notes/agent_summary_eval.md。完成后告诉我你做了什么。",
+    "expected_output_file": "notes/agent_summary_eval.md",
+    "needs_manual_review": true,
+    "review_focus": "摘要是否真的基于 agent_notes.md，是否简短，是否覆盖 Agent 的核心概念",
+    "success": {
+      "require_final_answer": true,
+      "require_output_file": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "output_content_checks": [
+        { "contains": "Agent", "scope": "output_file" }
+      ]
+    }
+  },
+  {
+    "task_id": "task_2",
+    "name": "双文件比较",
+    "task": "读取 agent_notes.md 和 python_notes.md，比较它们的共同点和差异。不需要写文件，直接把比较结果回答给我。",
+    "expected_output_file": null,
+    "needs_manual_review": true,
+    "review_focus": "比较是否真实来自两份文件的内容，还是模型凭印象编的",
+    "success": {
+      "require_final_answer": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "require_tool_chain": true,
+      "tool_chain_must_include": ["read_file[agent_notes.md]", "read_file[python_notes.md]"],
+      "output_content_checks": [
+        { "contains": "共同", "scope": "final_answer" },
+        { "contains": "差异", "scope": "final_answer" }
+      ]
+    }
+  },
+  {
+    "task_id": "task_3",
+    "name": "列目录",
+    "task": "看看工作目录里有哪些文件，告诉我即可。不需要读文件内容。",
+    "expected_output_file": null,
+    "needs_manual_review": true,
+    "review_focus": "报出来的文件名是否都真实存在（是否编造文件）",
+    "success": {
+      "require_final_answer": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "require_tool_chain": true,
+      "tool_chain_must_include": ["list_files"],
+      "require_no_hallucinated_files": true,
+      "require_complete_file_list": true
+    }
+  },
+  {
+    "task_id": "task_4",
+    "name": "文件不存在",
+    "task": "帮我读一下 notes/agent_guide_v3.md 的内容。",
+    "expected_output_file": null,
+    "needs_manual_review": true,
+    "review_focus": "是否先查过目录再下结论；是否编造了这个文件的内容",
+    "success": {
+      "require_final_answer": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "output_content_checks": [
+        { "contains_any": ["没有", "不存在", "找不到"], "scope": "final_answer" }
+      ]
+    }
+  },
+  {
+    "task_id": "task_5",
+    "name": "写指定内容",
+    "task": "把这句话原样写进 notes/eval_check.txt：你好，这是一个测试文件。写好后告诉我完成情况。",
+    "expected_output_file": "notes/eval_check.txt",
+    "needs_manual_review": false,
+    "review_focus": "内容完全可验证，不需要人工看",
+    "success": {
+      "require_final_answer": true,
+      "require_output_file": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "output_content_checks": [
+        { "equals": "你好，这是一个测试文件。", "scope": "output_file" }
+      ]
+    }
+  },
+  {
+    "task_id": "task_6",
+    "name": "模糊任务",
+    "task": "看看这里有哪些学习资料，告诉我最值得先看的是什么。",
+    "expected_output_file": null,
+    "needs_manual_review": true,
+    "review_focus": "是否先 list_files 再推荐；推荐的文件名是否真实存在；有没有给理由",
+    "success": {
+      "require_final_answer": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "require_tool_chain": true,
+      "tool_chain_must_include": ["list_files"],
+      "require_no_hallucinated_files": true,
+      "output_content_checks": [
+        { "contains_any": ["agent_notes.md", "python_notes.md", "todo.txt"], "scope": "final_answer" }
+      ]
+    }
+  },
+  {
+    "task_id": "task_1_b",
+    "name": "摘要写入（重复 2）",
+    "task": "看看工作目录里有什么学习资料。找到和 Agent 有关的资料，读取需要的内容，整理成一份简短学习摘要，保存为 notes/agent_summary_eval.md。完成后告诉我你做了什么。",
+    "expected_output_file": "notes/agent_summary_eval.md",
+    "needs_manual_review": true,
+    "review_focus": "与 task_1 对比：工具顺序、文件选择、token 消耗是否一致",
+    "success": {
+      "require_final_answer": true,
+      "require_output_file": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "output_content_checks": [
+        { "contains": "Agent", "scope": "output_file" }
+      ]
+    }
+  },
+  {
+    "task_id": "task_1_c",
+    "name": "摘要写入（重复 3）",
+    "task": "看看工作目录里有什么学习资料。找到和 Agent 有关的资料，读取需要的内容，整理成一份简短学习摘要，保存为 notes/agent_summary_eval.md。完成后告诉我你做了什么。",
+    "expected_output_file": "notes/agent_summary_eval.md",
+    "needs_manual_review": true,
+    "review_focus": "与 task_1 对比：工具顺序、文件选择、token 消耗是否一致",
+    "success": {
+      "require_final_answer": true,
+      "require_output_file": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "output_content_checks": [
+        { "contains": "Agent", "scope": "output_file" }
+      ]
+    }
+  }
+]

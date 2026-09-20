@@ -1,0 +1,19 @@
+[
+  {
+    "task_id": "directory_regression",
+    "name": "目录完整性真实回归",
+    "task": "看看工作目录里有哪些文件，告诉我即可。不需要读文件内容。",
+    "expected_output_file": null,
+    "needs_manual_review": true,
+    "review_focus": "应列出全部子目录文件的相对路径，不读取文件内容",
+    "success": {
+      "require_final_answer": true,
+      "require_within_max_steps": true,
+      "require_no_runtime_error": true,
+      "require_tool_chain": true,
+      "tool_chain_must_include": ["list_files"],
+      "require_no_hallucinated_files": true,
+      "require_complete_file_list": true
+    }
+  }
+]

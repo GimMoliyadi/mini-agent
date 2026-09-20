@@ -1,0 +1,733 @@
+# mini-agent-lab 交接文档 → Codex
+
+**写于**：2026-09-20　**状态**：Phase 6.5 完成，Phase 7 未开始
+**写给**：一个从没见过这个项目的开发 Agent（Codex）
+**目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
+
+如果你只有 5 分钟，只看第 1、3、5、9、10、13 章。
+如果你要动手改代码，第 3、4、5、14 章是硬材料。
+
+---
+
+## 1. 项目目标
+
+这是一个**学习项目**，不是产品。
+
+它的存在意义只有一条：让一个开发者亲手经历 Agent Runtime 的每一个环节，
+而不是套一个框架然后只调参数。所以本项目**刻意不用**任何框架——
+没有 LangChain、没有 LangGraph、没有 MCP、没有 RAG、没有 Memory、
+没有数据库、没有多 Agent、没有 Docker。唯一第三方依赖是 `openai`。
+
+**不要给这个项目堆功能。** 每加一层都要能说清楚"它教会了我什么"，
+否则就是偏离目标。Phase 7 的价值不在"做了个优化"，在"理解了上下文成本从哪来"。
+
+核心学习路线（这是项目的脊柱，改动前先对照）：
+
+```
+LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
+    → Multi-Tool → Completion Control → Eval → Context Management
+```
+
+现在走到最后一格之前一格。**下一步就是 Context Management。**
+
+---
+
+## 2. 当前项目状态
+
+Phase 0 到 Phase 6.5 全部完成并实测通过。每个阶段的三段式说明：
+**新增了什么 / 为什么新增 / 最重要的结论。**
+
+### Phase 0 — 项目骨架
+
+新增：`main.py`（只做启动打印 + `demo_workspace/` 自检）、`config.py`、`demo_workspace/` 及三份种子文件、`.gitignore`。
+为什么：先立起"程序能跑 + 沙盒目录存在"这两件事，后面所有东西挂在这个骨架上。
+结论：故意**没加** `sys.stdout.reconfigure()`，因为强改 stdout 编码可能让用户的 GBK 终端反而乱码；环境编码问题交给外部环境变量解决。
+
+### Phase 1 — LLM CLI 对话
+
+新增：`.env` 读取（自研标准库解析器，不用 python-dotenv）、`build_client()`、`ask()`、交互式聊天循环。
+为什么：先证明"能问能答"，确认 OpenAI 兼容协议的选型成立。
+结论：`openai` SDK 自动读 `OPENAI_API_KEY` + `OPENAI_BASE_URL`，**换服务商只改 `.env`，一行代码都不用动**——这是选这个协议的核心理由。
+
+### Phase 2 — Tool Schema / 模型决定调用工具
+
+新增：`read_file` 的 JSON Schema 声明 + 沙盒校验 `resolve_inside_workspace()`（**故意提前**，见下）。
+为什么：让模型自己决定读哪个文件，而不是脚本硬编码。
+结论：沙盒边界本该在 Phase 5 做，实际在 Phase 2 就做掉了。理由写在 README 末尾：`read_file` 是第一个吃路径的工具，
+若不带边界，Phase 3 一执行就能把 `.env` 里的 API Key 读进模型上下文——那是"先按构造引入泄密能力，再打算以后补"。
+**边界必须和第一个吃路径的工具同时出生。**
+
+### Phase 3 — 真正执行 Tool + Tool Result 回喂
+
+新增：`TOOL_HANDLERS`（工具名→函数表）、`execute_tool_call()`、`parse_tool_arguments()`、
+`assistant_tool_call_message()` / `tool_result_message()` 两个协议构造函数。
+为什么：模型提出调用只是"说了句话"，必须有人真的去执行并把结果喂回去。
+结论：**这是协议最脆弱的地方。** `arguments` 是 JSON **字符串**，必须原样保留在历史里
+（重新序列化可能改变字段顺序和转义，导致服务商 400）。失败清理必须用 `del messages[position:]`，
+用 `pop()` 会留下孤立的 assistant tool_calls，下一轮请求直接协议非法。
+
+### Phase 4 — Agent Loop
+
+新增：`MAX_AGENT_STEPS = 8`、`run_agent_loop()`（唯一循环点）、`finalize()`；`run_tool_round` 去掉 `ask`。
+为什么：一次调用不够，一个任务需要连续多步。
+结论：三个关键设计决定——
+(1) 步数上限检查放在**执行之前**，命中上限时模型最后那条 tool_call 请求**故意不进历史**，
+所以下一轮的历史始终是协议合法的；
+(2) `first_reply` 从 `main` 传进来，让第一次 `ask` 仍在 `main` 的 `try` 块内，失败回滚 `del messages[position:]` 覆盖全程；
+(3) 它数的是**问了几次模型**不是**执行了几次工具**，所以最后一问必须留给收口。
+
+### Phase 5 — Multi-Tool Agent
+
+新增：`list_files` / `write_file` 两个工具、`MAX_TOOL_RESULT_CHARS = 4000` 结果长度保护。
+为什么：只有读没有写，Agent 只能"看"不能"做"。
+结论：**"加工具不动循环"是这个项目的核心工程结论。** 加一个工具 = 一份 `*_TOOL` 说明书
++ `AVAILABLE_TOOLS` 加一项 + `TOOL_HANDLERS` 加一行，`main.py` 里连一个工具名都没有。
+分层也在这里定型：`tools.py` 只抛原生异常、不知道模型；`main.py` 的 `execute_tool_call` 把所有工具结果统一收口，
+所以结果截断做在那一层，新旧工具自动都有保护——**工具本身不需要知道模型的上下文预算。**
+另外 `write_file` **允许覆盖**已有文本文件（沙盒已锁死破坏范围；拒绝覆盖会让"重跑同一任务"直接失败，
+还得再引入 `force` 参数让模型学怎么绕过，比覆盖本身更复杂）。
+
+### Phase 5.5 — 真实 LLM 验证
+
+新增：**什么都没加。** 只把 Phase 5 指向真实模型（`sensenova-6.8-flash-lite` @ `https://token.sensenova.cn/v1`），
+跑和 mock 一模一样的任务。
+为什么：mock 是自己写的，跑通不代表真模型跑通。
+结论：**任务实质 3 步就完成，模型走了 8 步，撞 `MAX_AGENT_STEPS`，没有 Final Answer。**
+第 4~7 步全是纯冗余：重列目录、读回自己刚写的产物、改写一遍、**再写成逐字节相同的内容**。
+归因：**模型行为，不是代码缺陷。一行代码都没改。** 这一条归因很重要，后面 Phase 6 和 Phase 6.5 的失败分类都建立在它上面。
+
+### Phase 6 — Completion / Loop Control / Observability
+
+新增：不新增 Agent 能力、不加工具、不动循环，只在同一个循环上叠**三层互相独立的防线**，外加可观测性。
+为什么：Phase 5.5 暴露了"做完了不知道自己该停"，这是 Runtime 层面的问题。
+结论：三层是——
+(1) 模型自己判断：系统提示词加一句收敛原则（每次拿到工具结果后判断目标是否已满足，满足就直接 Final Answer）；
+(2) 程序侧重复调用检测：同一工具名 + 规范化后完全相同的参数，且上一次**成功**执行过 → 不真执行，回喂一条重复提示；
+(3) `MAX_AGENT_STEPS` 保留为最后保险丝。
+第 1 层是主力，第 2 层只提醒一次，**绝不**在 Python 里强制 Final Answer——是否结束仍由模型决定。
+可观测性：`ask()` 原来只返回 `.message`，把 `finish_reason` 和 `usage` 丢了；改成返回 `ModelReply` dataclass。
+**复测：同一任务从 8 步无收口变成 5 步正常 Final Answer，`finish_reason` 链 `tool_calls×4 → stop`。**
+
+### Phase 6.5 — Lightweight Agent Eval
+
+新增：整个 `eval/` 目录（`tasks.json` 8 个任务 / `run_task.py` 单任务执行器 / `run_eval.py` 总控 /
+`test_metrics.py` 19 个单测 / `results.json` / `REPORT.md`）。
+为什么：Phase 6 只跑过一次（n=1），"变好了"可能是运气。得有一把尺子。
+结论：**结果稳定，过程不稳定。** 8/8 成功，但同一个任务跑三次 token 差 **2.20 倍**。
+`main.py` 一个字都没改——Eval 只**驱动**它，不复写它的逻辑，所以测出来的就是终端里手打时的行为。
+
+---
+
+## 3. 当前架构
+
+### 文件职责
+
+```
+main.py           入口 + Agent Loop + 工具执行层 + 回喂模型。全部 Runtime 逻辑在这里
+config.py         配置：读 .env，产出 LLMConfig、WORKSPACE_DIR、MAX_AGENT_STEPS、
+                  MAX_TOOL_RESULT_CHARS、LOCAL_NO_PROXY。WORKSPACE_DIR 在这里唯一定义一次
+tools.py          三个工具说明书（*_TOOL）+ AVAILABLE_TOOLS + TOOL_HANDLERS
+                  + 沙盒校验 resolve_inside_workspace + 三个 handler 函数
+tests/            mock_server.py（本地假服务器，不需要 Key）
+                  test_sandbox.py（沙盒边界 + 注册表一致性，27 项）
+                  test_loop.py（重复调用检测 + 协议合法性，4 组）
+                  inputs/*.txt（喂给 main.py 的 stdin，用来复现某次实测）
+eval/             轻量 Eval（Phase 6.5）
+  tasks.json        8 个任务 + 每个任务的成功规则
+  run_task.py       单任务执行器：驱动 main.py + 收集指标 + 判定 success
+  run_eval.py       总控：工作目录快照隔离 + 跑全部任务 + 失败分类
+  test_metrics.py   19 个单测：只测「尺子准不准」，不发任何网络请求
+  results.json      最近一轮 Eval 的完整原始数据
+  REPORT.md         人类可读报告
+  .run_log.txt      过程日志（已 gitignore）
+  .workspace_snapshot/  跑 Eval 前备份的 demo_workspace（已 gitignore，重跑前必须删）
+demo_workspace/   Agent 唯一允许读写的工作目录（沙盒），当前 5 个文件
+README.md         项目说明 + 每个阶段的解释
+REAL_RUN_LOG.md   真模型实测记录（Phase 5.5 首轮 + Phase 6 复测）
+HANDOFF_TO_CODEX.md  本文件
+```
+
+### 真实数据流
+
+```
+User
+  │
+  ▼
+messages  ──►  ask()  ──►  LLM
+                │
+                └──► Tool Call  /  Final Answer
+                            │
+                ┌───────────┘
+                ▼
+        Tool Registry（AVAILABLE_TOOLS / TOOL_HANDLERS）
+                ▼
+          Tool Handler（tools.py 里的函数）
+                ▼
+          Tool Result
+                ▼
+        messages ◄── 回喂
+                │
+                ▼
+          Agent Loop（run_agent_loop）
+                │
+                └──► 再 ask() → LLM
+```
+
+### 必须记住的四条架构事实
+
+1. **`AVAILABLE_TOOLS` 是模型看到的 Tool Schema。** 模型对工具的所有一切了解都来自这三份
+   JSON 说明书，不是来自代码、不是来自系统提示词。系统提示词只说"有三个工具、各干什么、
+   用哪个工具什么顺序你自己决定"。
+
+2. **`TOOL_HANDLERS` 是工具名 → Python 函数的映射表。** 执行时按名字查表调用。
+   加工具就在这里加一行。
+
+3. **`run_agent_loop` 只知道 Tool Call 协议，不知道任何具体工具。**
+   它没有 `if name == "read_file"` 这种分支，里面连一个工具名都没写。
+   **Phase 7 如果要在循环里加特殊逻辑，你就是在破坏这个结论。**
+
+4. **Tool Result 一旦进 messages，之后每一次 `ask` 都把完整 messages 原样重发。**
+   LLM 本身没有记忆，上下文全靠每次重述。**这一条是 Phase 7 的出发点，也是当前最大的技术问题。**
+
+---
+
+## 4. 当前三个工具
+
+### `list_files`
+
+| | |
+|---|---|
+| 参数 | `path`（string，**可选**）——省略就是列工作目录根 |
+| 用途 | 列一层内容，标 `[f]`/`[d]` 前缀，文件带 `(N 字节)`，目录为空会明说 |
+| 沙盒限制 | 同样走 `resolve_inside_workspace()`，越界抛 `PermissionError` |
+| 失败行为 | 不是目录 → `NotADirectoryError`；不存在 → `FileNotFoundError`；都不吞异常 |
+| 副作用 | **无**（只读） |
+
+说明书里特意写了"如果你不知道有哪些文件，先用这个工具，不要猜文件名"——
+这句话放在**工具描述**里而不是系统提示词里，因为前者是模型从读工具说明自然形成的用法，
+后者是脚本式的指令。
+
+### `read_file`
+
+| | |
+|---|---|
+| 参数 | `path`（string，必填） |
+| 用途 | 读 UTF-8 文本文件，全量返回 |
+| 沙盒限制 | 同上，先 `resolve()` 再 `is_relative_to()` 校验 |
+| 失败行为 | `FileNotFoundError` / `PermissionError` / `UnicodeDecodeError`，全部原生抛出 |
+| 副作用 | **无**（只读） |
+
+注意：`tools.py` 里的 handler **不吞异常、不返回错误字符串**。异常交给 `main.py` 的
+`execute_tool_call` 统一转成 `"[工具失败] ..."` 文本。这个分层是刻意的。
+
+### `write_file`
+
+| | |
+|---|---|
+| 参数 | `path`（string，必填）、`content`（string，必填） |
+| 用途 | 写 UTF-8 文本；父目录不存在会 `mkdir(parents=True, exist_ok=True)` |
+| 沙盒限制 | **先校验路径，再 mkdir**——所以自动创建的父目录也保证在沙盒内 |
+| 失败行为 | 同上，原生抛出 |
+| 返回值 | `已写入 xxx.md（N 字节，已写入新文件 / 已覆盖已有文件）`，字节数用 `len(content.encode("utf-8"))` |
+| 副作用 | **有**（创建目录、写入/覆盖文件）——三个工具里唯一一个 |
+
+实现用 `open(path, "w", encoding="utf-8", newline="")` 而不是 `Path.write_text()`。
+原因：Windows 上 `write_text()` 默认文本模式会把 `\n` 翻成 `\r\n`，
+导致"工具报 304 字节、磁盘落 311"。真模型实测已确认修复成立（1617 = 1617）。
+
+> **不要重新设计 Tool。** 三个工具的边界、参数名、覆盖策略、失败语义都已实测固化。
+> Phase 7 的任务是上下文成本，不是工具层。要加工具的话先读第 11 章的禁止事项。
+
+---
+
+## 5. 安全边界
+
+**这部分是硬约束。** 违反任何一条都要停下来问，不要自己判断"这个应该没关系"。
+
+1. **`WORKSPACE_DIR` 是唯一的沙盒根。** 只在 `config.py` 里定义一次。
+   Agent 没有任何机制读写这个目录之外的任何东西。
+
+2. **路径必须先 `resolve()` 再 `is_relative_to()` 校验。**
+   只做字符串前缀检查会漏掉三种情况：
+   - `../` 跳级
+   - 符号链接指向沙盒外
+   - 模型直接给绝对路径（`C:/evil.txt`、`/etc/passwd`）
+   越界一律抛 `PermissionError`，**绝不静默降级成一个沙盒内的路径**。
+
+3. **`write_file` 必须在 `mkdir(parents=True)` 之前校验路径。**
+   反过来的话，模型可以用"写一个深路径"把沙盒外的父目录造出来。
+
+4. **`.env` 永不进 Git。** `.gitignore` 已配置。
+
+5. **API Key 绝对不许打印。** 日志里不许出现 API Key、Authorization 头、任何完整 HTTP 头。
+   本文件的任何地方都没有 Key，也不要把它写进任何文档、测试输出或记忆文件。
+
+其他已固化的事实：没有删除文件的能力，没有执行程序的入口，
+所有工具结果统一在 `main.py` 的 `execute_tool_call` 出口截断到 4000 字符
+（超限要明说"已截断、原始多少字符、省略多少"，不静默丢——静默截断会让模型以为拿到全文）。
+
+---
+
+## 6. Phase 5.5 真模型暴露的问题
+
+第一次把项目指向真实模型（同一任务，之前 mock 是 4 次问模型 / 3 轮工具 / 正常收口），结果：
+
+- **8 次问模型、7 次工具执行、撞上 `MAX_AGENT_STEPS`**
+- **没有 Final Answer**
+- 任务实质在第 3 步就完成了（`list_files` → `read_file agent_notes.md` → `write_file` 1616 字节）
+- 第 4 步：又 `list_files` 了一遍（只多了个 `[d] notes`，无新信息）
+- 第 5 步：`read_file` **读回自己刚写的那个摘要**
+- 第 6 步：`write_file` 改写一遍（1533 字节）
+- 第 7 步：`write_file` 同一路径，**内容与第 6 步逐字节相同**（只是 JSON 键序把 `"path"` 和 `"content"` 换了个先后）
+- 第 8 步：模型仍要求调用工具 → 命中步数上限，停止
+
+同时**没发生**的事（这些都要单独确认过）：
+零编造文件名（第一个动作就是 `list_files`）、零沙盒突破、零协议 400、零静默覆盖、结果截断未触发。
+
+### 这个结果证明了什么
+
+**证明了 Runtime 能跑。** 沙盒拦截、覆盖策略、长度保护、协议清理、步数上限、
+上限处的干净退出，全部按设计工作。
+
+**证明不了的是模型不知道收口。** 模型的失败模式是"写完之后不知道该收手"：
+`write_file` 已经回报了成功和字节数，它却继续重列目录、读回自己的产物、再写两遍。
+
+归因结论：**模型行为，不是代码缺陷。一行代码都没改。**
+
+这一条归因是后面所有工作的地基。Phase 6 的三层防线是为它而建的；
+Phase 6.5 的失败分类里 `max_steps_hit` 被归为 **Model Behavior** 而不是 Runtime，也是因为它。
+
+---
+
+## 7. Phase 6 的解决方案
+
+三层防线，**互相独立**——任何一层失效，另外两层仍能兜住。
+
+| 层 | 谁负责 | 机制 |
+|---|---|---|
+| 1. 自己判断 | 模型 | 系统提示词加一句收敛原则：每次拿到工具结果后先判断用户明确要求的目标是否已经满足，满足就直接给最终回答；不要为"再确认一下"反复调用工具；需要验证有副作用的操作可以验证，但验证成功后要收口 |
+| 2. 重复调用拦截 | Runtime | 同一 **Tool Name** + 规范化后**完全相同的参数**，且上一次**成功**执行过 → 不真执行，回喂一条重复提示 |
+| 3. 最大步数 | Runtime | `MAX_AGENT_STEPS = 8`，最后保险丝，撞线就停并明确告知 |
+
+### 第 2 层的实现细节（这些是"为什么"，代码里看不出）
+
+- 指纹 = `json.loads(arguments)` 后 `json.dumps(ensure_ascii=False, sort_keys=True, separators=(",",":"))`。
+  所以**键序换了、多了空格算同一个**——Phase 5.5 那两次 write_file 就是键序不同、内容逐字节相同，
+  字符串直比会漏。
+- 参数不是合法 JSON 时，`JSONDecodeError` 退回原始字符串**并且不拦截**——拿不准宁可放行。
+- **失败过的调用不进检测表**（以 `result.startswith("[工具失败]")` 为门）。
+  否则模型第一次读错文件名后换参数重试会被当重复拦死，永远过不去。
+- **拦下后仍按正常协议回喂一条 tool result**（内容是 `DUPLICATE_NOTICE`），让模型继续下一轮。
+  **绝不**在 Python 里强制 Final Answer——是否结束仍然由模型决定。
+- 指纹表是**每个任务一份**（`executed` 在 `main` 里随任务创建、任务结束即弃）。
+  跨任务不清的话，上一轮的正常调用会被这一轮误判成重复。
+- 回放顺序必须和 `main` 一致：先看指纹在不在集合里，**再**更新集合。
+
+### 可观测性
+
+`ask()` 原来只返回 `response.choices[0].message`，把 `finish_reason` 和 `usage` 都丢了，
+导致 Phase 5.5 那轮根本报告不出每步的 `finish_reason`。
+改成返回 `ModelReply(message, finish_reason, prompt_tokens, completion_tokens, total_tokens)`，
+数值字段类型是 `int | None`，全用 `getattr(..., None)` 取，`None` 打印成 `unavailable`。
+**不为这件事做大规模重构。**
+
+### Phase 6 复测结果
+
+同一任务（只有输出路径改成 `notes/agent_summary_real_v2.md`）：
+
+| | Phase 5.5 首轮 | Phase 6 复测 |
+|---|---|---|
+| 问模型次数 | 8 | **5** |
+| 真实工具执行 | 7 | **5** |
+| `write_file` 次数 | 3（第 2、3 次内容逐字节相同） | **1** |
+| 读回自己的产物 | 1 次 | **0 次** |
+| 重列目录 | 1 次（无新信息） | **0 次** |
+| 撞 `MAX_AGENT_STEPS` | 是（第 8 步） | **否（5 / 8）** |
+| Final Answer | **无** | **有** |
+| `finish_reason` | 无法报告 | `tool_calls×4 → stop` |
+
+token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求都返回 `usage`，无一项缺失。
+
+**诚实的 caveat：这是单次运行（n=1）的对比，没有对照组。** 只能说"这次明显更好、机制上对症"，
+不能说"必然每次都这样"。防再犯靠的是三层防线同时存在。Phase 6.5 就是为这个 n=1 问题而建的。
+
+### ⚠️ 一条警告
+
+**不要把正常的「write 后 read 验证」误判成错误。**
+
+这是刻意的设计选择，写在 README 里：
+不写死"写完文件以后禁止 read_file"（内容变了就是模型在改，得放行），
+也不写死"write_file 成功以后立刻结束"（那样验证写入成功就被禁止了）。
+所以拦下来的只有"同一个工具、完全相同的参数、上一次已经成功"这一种情况。
+
+---
+
+## 8. Phase 6.5 Eval 结果
+
+数据来源：`eval/REPORT.md`（人类可读）+ `eval/results.json`（完整原始数据）。
+**下面每个数字都可以在这两个文件里核对到。**
+
+### 一句话结论
+
+**结果相对稳定，但过程和成本不稳定。**
+
+### 核心数据
+
+| 指标 | 数值 |
+|---|---|
+| 总任务数 | 8（6 个基准任务 + task_1 重复 2 次） |
+| 成功 / 失败 | **8 / 0（100%）** |
+| 有 Final Answer | **8 / 8** |
+| 撞 `MAX_AGENT_STEPS` | **0 次**（最多用到第 6 轮，上限 8） |
+| 编造文件 | **0 次** |
+| 工具调用 | 共 **31 次**，其中失败 1 次（task_4 故意读不存在的文件）、被拦 0 次、被丢弃 0 次 |
+| Provider/网络失败 | 0 次 |
+| 总模型调用 | 29 次，**平均 3.62 次/任务** |
+| 总 token | **46,011**，平均 **5,751/任务** |
+| prompt / completion | **40,816（88.71%）** / 5,195（11.29%） |
+| 需要人工评审 | **7 / 8**（只有 task_5 写指定字符串能 100% 机器验证） |
+
+### 过程不稳定的证据（本轮最关键的数据）
+
+**task_1 的任务文本在三个任务里完全一致**，三次运行：
+
+| | task_1 | task_1_b | task_1_c |
+|---|---|---|---|
+| 模型调用 | 5 | 4 | 6 |
+| 工具调用数 | 6 | 4 | 7 |
+| total_tokens | 9,172 | **5,884（最省）** | **12,962（最贵）** |
+| prompt_tokens | 8,260 | 5,030 | 11,483 |
+| 读了哪些文件 | agent_notes.md + notes/ 下两份旧摘要 | **只读 agent_notes.md** | agent_notes.md + notes/ 下两份旧摘要 |
+| 是否重复写文件 | 否 | 否 | **是（连写两次同一文件）** |
+
+**均值 9,339 token，标准差 2,892，变异系数 31.0%，最大/最小比 2.20 倍。**
+
+差异不是"多花点钱"，是**不同的解题策略**：
+1. **文件选择变了**——task_1_b 判断 `python_notes.md` 和 Agent 无关就跳过，只读一份就写。
+2. **task_1_c 写完又改了一遍**——它发现原笔记写的 `demo_workspace/` 在当前工作目录里不存在，
+   想在摘要里加一句注释。**两次 write 参数不同 → 不算重复、没被拦截，这是正确行为**，
+   但代价是一整轮往返 + 3,254 prompt token。
+3. 模型调用数在 4～6 浮动，变异系数 14%。
+
+三次都成功了，三份摘要都真实基于 `agent_notes.md`，零编造。**结果对，路径不同。**
+
+### 上下文增长（只记录，不解决）
+
+全部 8 次运行，**每轮 `prompt_tokens` 严格单调递增，无一例外。**
+
+| 任务 | 每轮 prompt_tokens | 增量来源 |
+|---|---|---|
+| task_1 | 859 → 953 → 1390 → 2294 → 2764 | +94 → +437（读 agent_notes.md）→ +904（读旧摘要）→ +470 |
+| task_6 | 831 → 914 → 1825 → 2729 | +83 → **+911**（读 python_notes.md）→ +904（读两份旧摘要） |
+| task_4 | 833 → 926 → 1009 → 1090 | +93 → +83 → +81 |
+| task_5 | 843 → 923 | +80 |
+
+三个规律：
+1. **第 1 轮是固定底数**：8 次运行的第一轮是 **831～859**（波动仅 1.7%）。
+   这部分是 SYSTEM_PROMPT + 工具 JSON Schema + 任务文本，跟任务难度无关。
+2. **第 2 轮跳得小**：80～104，只是加上"模型那句工具调用" + "一个小的工具结果"。
+3. **跳得大的一轮都是读了完整文件的轮次**：读 `agent_notes.md` 约 +437，读 `python_notes.md` 约 +911。
+   **token 的增量几乎等于被读文件的内容体积。**
+
+机制：Agent 的方式就是"工具结果回喂模型"，历史写进去之后，
+**之后每一次请求都要把整条历史原样重发一遍**。读一个大文件不只那一次贵，
+它让**后面每一轮永久变贵**。
+
+### 规则看不到什么（这条必须交代）
+
+100% 成功是个**弱结论**。7/8 任务标了 `needs_manual_review`，因为
+"摘要写得好不好""比较说得对不对"这类主观指标一律不给分。
+
+人工看过的最典型一例：**task_3「列目录」被规则判为通过，但它实质是不完整的**——
+模型列了根目录文件、还说了 `notes/` 是个目录，但**从来没有列过 `notes/` 里面的内容**。
+规则（`require_tool_chain: ["list_files"]` + 没编造文件）全都满足了，任务却没做完。
+这是"为什么需要语义 Eval"最直接的演示。
+
+另外两个次要观察：
+- **重复调用拦截 31 次调用 0 次触发。** Phase 5.5 那个失败模式在这 8 次里根本没出现，
+  是那次运行的偶发问题，不是系统性问题。（功能本身正确，19 个单测覆盖，只是没被需要过。）
+- **步数上限余量只有 2**：最多用到第 6 轮，上限 8。task_1_c 已证明稍微复杂一点就逼近上限。
+
+### Eval 自身的三个问题（都诚实披露在 REPORT.md 里）
+
+1. `finish_workspace` 死分支：总控在调 `finish_workspace` 之前多调了一次 `restore_snapshot`，
+   把"保留 Eval 写出文件作为证据"分支变成死代码。**已修。**
+   代价：这个 bug 是**跑完之后**才发现的，Agent 写出的两个文件已被清掉无法展示——
+   但 `output_file_exists` 判定发生在清理之前，`results.json` 里的判定是当时真实测出来的，**不影响测量结论**。
+2. `max_steps_hit` 原先被误分类为 Runtime，与 Phase 5.5 的归因矛盾。**在跑之前已修**，归为 Model Behavior。
+3. `require_no_runtime_error` 这个规则名有误导性。**未改**，不影响判定。
+
+---
+
+## 9. 当前最大的技术问题
+
+**首要问题不是 Tool，不是真模型的收口，不是 Memory。是 Context Growth（上下文增长）。**
+
+理由，用 Eval 的真实数据：
+
+- **88.71% 的钱花在 prompt** 上，completion 只占 11.29%。
+- prompt 之所以占这么大比重，是因为**每次 `ask` 都重发完整历史**。
+- 历史之所以持续变长，是因为**工具结果一旦加进 messages，之后的每一次请求都要把它重新发一遍**。
+- 所以：读一个 1,000 字节的文件，不只那一轮贵——
+  它让后面**每一轮**都永久变贵。Eval 里每轮 `prompt_tokens` 严格单调递增、无一例外，就是这个的直接证据。
+- 而且这是**结构性**的，调 Prompt 解决不了：它不取决于模型聪不聪明，
+  取决于"把结果回喂给模型"这个机制本身。Phase 7 越复杂，咬得越狠。
+  task_1 三次运行 2.20 倍的 token 差，本质就是"这个模型决定多读了两份文件"。
+
+对比另外三个候选问题，都不在同一个量级：
+
+| 候选 | 为什么不是首要 |
+|---|---|
+| Tool 不够 | 三个工具已覆盖读/写/列，"加工具不动循环"已验证。问题不在数量 |
+| 模型不会收口 | Phase 6 的三层防线 + Eval 8 次运行 0 撞上限、0 重复拦截。已缓解，且是单点问题 |
+| 没有 Memory | 任务结束历史就丢，这是真的缺失，但**当前一个任务内的成本就已经 88% 花在重发历史**，跨任务记忆是下一个层次的问题 |
+
+> **不要解决这个问题，只把事实交接清楚。**
+> 本阶段的职责是记录、量化、把证据交给下一阶段——不是顺手做个优化。
+> 如果你发现自己在写压缩代码，说明你越界了。
+
+---
+
+## 10. 下一阶段：Phase 7 Context Management
+
+**本章只描述目标和要分析的问题。不要实现。**
+
+### 目标
+
+降低 Tool Result 对历史造成的**持续性**上下文成本，
+同时**尽可能少地丢失信息**。
+
+注意目标里有两个约束是同时成立的：**既省 token，又少丢信息。**
+只做前者就是靠丢信息换 token，那不是优化。
+
+### 不要从复杂框架开始
+
+不要一上来就设计一个完整的上下文管理系统。先调研最小可行的选项，
+把下面这些写成**需要 Codex 先分析的问题**：
+
+1. **Tool Result 的生命周期应该是什么？**
+   当前所有工具结果一视同仁地永久留在历史里。哪些结果有长期价值，哪些只是"这一次看过了"？
+   能不能先给工具结果分个类，而不是做统一处理？
+
+2. **哪些结果必须长期保留？**
+   想想 `write_file` 的返回值（"已写入 xxx.md（1617 字节，已写入新文件）"）
+   和 `read_file` 的返回值（一整个文件内容）的区别——
+   模型后续轮次真正需要哪个？写操作的**确认**是不是比读操作的**全文**更有长期价值？
+
+3. **哪些可以压缩？**
+   当前有 `MAX_TOOL_RESULT_CHARS = 4000` 这个**单次**上限。
+   但截断是发生在"进入历史的那一刻"，之后它就永久以截断形态存在。
+   压缩和截断是不是一件事？压缩能不能保留结构信息（"已读过这个文件、有 N 行、关键内容是什么"）而截断不能？
+
+4. **哪些可以只留摘要或引用？**
+   模型第 4 轮真的还需要第 2 轮读到的全文，还是只需要知道"我读过这个文件、结论是 X"？
+   如果它后面想再看一遍，能不能**再调一次 read_file**——工具还在，重读的成本是可控的？
+
+5. **能不能区分"当前轮"和"后续轮"的视图？**
+   一个可能的方向：当前这一轮用完整结果（模型正在做决定，需要全文），
+   进入下一轮之后替换成压缩版。
+   这个方向的技术难点在哪？会不会破坏 `assistant tool_calls` / `tool result` 的配对协议？
+
+6. **怎么量化"信息损失"？**
+   现有 8 个任务里 7 个必须人工看。如果 Phase 7 改了上下文策略，
+   **怎么知道是省了 token 还是偷偷让模型看不到关键信息了？**
+   这个问题不解决，Phase 7 就没有验收标准。
+
+### 明确不要做的事
+
+**不要直接给出最终实现答案。** 上面每一条都应该先形成分析和方案对比，
+**等用户确认**再动手。这是本项目的硬规矩（见第 11 章）。
+
+---
+
+## 11. Phase 7 禁止事项
+
+除非有明确理由（而且要写清楚理由、等用户确认），**不要**做以下任何一件事：
+
+- ❌ 重写 Agent Loop（`run_agent_loop` 是这个项目最值钱的一段代码）
+- ❌ 重写 Tool Registry（`AVAILABLE_TOOLS` / `TOOL_HANDLERS` 的分离已经验证过"加工具不动循环"）
+- ❌ 换框架
+- ❌ 引入 LangGraph
+- ❌ 引入 Memory
+- ❌ 引入 RAG
+- ❌ 引入 MCP
+- ❌ 增加新 Tool（三个工具已够，见第 4 章）
+- ❌ 做 GUI
+- ❌ 做 Multi-Agent
+- ❌ 修改沙盒安全边界（见第 5 章，硬约束）
+- ❌ 为了优化 Context 破坏 Eval 基线（现有 8 个任务 + 46,011 token 的基线是 Phase 7 唯一可比的参照物；
+  改掉它就没法判断改好了还是改坏了）
+
+**理由**：这个项目的学习路线是线性的。每一步都必须能独立说明"教会了我什么"。
+同时动三样东西，出了问题分不清是哪一层，也学不到任何东西。
+
+---
+
+## 12. 接手前必须阅读的文件（按优先级）
+
+按这个顺序读，后面的文件在前面的语境下才有意义：
+
+| # | 文件 | 为什么读它 |
+|---|---|---|
+| 1 | `HANDOFF_TO_CODEX.md` | 本文件，先看全局 |
+| 2 | `README.md` | 项目自述 + 每个阶段的设计选择（注意：有几处已知不一致，见本文件末尾备注） |
+| 3 | `eval/REPORT.md` | Phase 6.5 的人类可读报告，理解"结果稳定、过程不稳定"这个结论 |
+| 4 | `eval/results.json` | 完整原始数据。REPORT 里每个数字都能在这里核对 |
+| 5 | `REAL_RUN_LOG.md` | 真模型实测记录：Phase 5.5 首轮（失败模式）+ Phase 6 复测（修复效果） |
+| 6 | `main.py` | 442 行，全部 Runtime 逻辑。Agent Loop + 工具执行层 + 重复检测都在这里 |
+| 7 | `tools.py` | 205 行。三个工具说明书 + 沙盒校验 + handler |
+| 8 | `config.py` | 144 行。所有常量 + `.env` 解析 |
+| 9 | `eval/tasks.json` | 8 个任务 + 成功规则。Phase 7 的验收基线 |
+
+读的时候建议特别看这三处，因为它们的注释里写着"为什么"：
+- `main.py` 的 `run_agent_loop` —— 上限检查为什么放在执行**之前**
+- `main.py` 的 `call_fingerprint` —— 为什么要规范化 JSON 而不是字符串直比
+- `tools.py` 的 `resolve_inside_workspace` —— 为什么必须 `resolve()` 之后再比较
+
+---
+
+## 13. Codex 接手后的第一件事
+
+**不要直接改代码。** 先做下面的六件事，做完给用户看，**等确认**再动手：
+
+1. **读第 12 章列的那些文件。**
+
+2. **检查 `git status`。**
+   当前状态：仓库已 `git init`，但**还没有任何 commit**，所有文件都是 untracked
+   （`?? main.py` `?? config.py` `?? tools.py` `?? README.md` `?? tests/` `?? eval/` `?? demo_workspace/` 等）。
+   先跟用户确认要不要先做首次提交。**这一步很关键**：
+   没有基线 commit，Phase 7 的任何改动都无从 diff。
+
+3. **画出当前的 messages 生命周期。**
+   从 `main()` 里 `messages = [{"role":"system", ...}]` 开始，到任务结束为止，
+   每一条消息是谁在什么时候加进去的、什么时候被删掉的、什么条件下永久留存。
+   要标清楚 `del messages[position:]` 这个回滚点的位置。
+
+4. **定位上下文增长到底发生在哪一步。**
+   具体到函数和行号。参考方向：工具结果是通过 `tool_result_message()` 加进历史的，
+   然后被 `ask()` 在后续每次调用里原样重发。**"增长发生点"和"成本发生点"是两回事**，
+   要分开说清楚——增长点只有一处，成本点是每一轮 `ask`。
+
+5. **基于真实的 Eval 数据，提出 2～3 个最小可行的 Context Management 选项。**
+   每个选项都要按下面四个维度对比：
+
+   | 维度 | 要回答什么 |
+   |---|---|
+   | 实现复杂度 | 改几个文件、加多少行、要不要动协议 |
+   | 信息损失风险 | 模型可能因此看不到什么？会不会重演 task_3 那种"实质不完整" |
+   | token 节省潜力 | 用 46,011 / 88.71% 这个基线估算，量级是多少 |
+   | 是否破坏现有协议 | `assistant tool_calls` 和 `tool result` 的配对、`tool_call_id` 匹配、`arguments` 原样保留 |
+
+   **不要在这一步实现。** 只出方案对比，交给用户选。
+
+6. **跑一遍现有测试确认基线是绿的**（这些不发网络请求）：
+
+   ```bash
+   C:\30858\mini-agent-lab\.venv\Scripts\python.exe tests\test_sandbox.py
+   C:\30858\mini-agent-lab\.venv\Scripts\python.exe tests\test_loop.py
+   C:\30858\mini-agent-lab\.venv\Scripts\python.exe eval\test_metrics.py
+   ```
+
+   注意：系统 `python`（3.11.9）**没有装 openai**，必须用 `.venv` 里的解释器。
+   `tests/` 和 `eval/` 都不是包，脚本开头靠 `sys.path.insert(0, 项目根)` 才能 import 项目模块。
+
+   如果要重跑 Eval 本身：先删 `eval\.workspace_snapshot\`（它现在存在，
+   `prepare_snapshot` 遇到已存在且非空的快照会直接 `SystemExit(2)` 拒绝），
+   而且那会花真金白银的 API 调用。
+
+---
+
+## 14. 已知细节 / 坑
+
+这些都是在真跑中踩出来的，不是理论推断。改代码前过一遍。
+
+1. **Tool Schema 的参数名必须和函数形参逐字一致。**
+   `handler(**arguments)` 是按**名字**转发关键字参数的。
+   实际踩过：声明写 `relative_path`、形参写 `path` → `unexpected keyword argument`。
+   `tests/test_sandbox.py` 里用 `inspect.signature` 把 schema 的 `properties` 键和 handler 形参自动对一遍，
+   就是为了封死这个坑。改工具时不要绕过这个测试。
+
+2. **assistant 的 `tool_calls` 消息和 `tool` 结果消息必须成对、且顺序正确。**
+   `tool_call_id` 必须匹配原始 call 的 `id`。
+   服务商会直接 400。`tests/mock_server.py` 内置了一个协议校验器专门查这个。
+
+3. **请求失败时不能只 `pop()` 最后一条消息。**
+   要用 `del messages[position:]` 清掉整个半截回合。
+   只 pop 一条会留下孤立的 assistant tool_calls，下一轮请求协议非法 → 服务商 400。
+   `tests/mock_server.py` 的 `中途崩` 触发词就是为了验这个。
+
+4. **Windows 上 localhost 的代理绕行问题。**
+   `urllib.request.getproxies()` 读 `ProxyServer` 但**不读** `ProxyOverride`，
+   所以 Windows 系统代理设置里的"局域网除外"那条会被静默丢掉，localhost 流量被送去走代理，
+   表现是**代理 502** 而不是"connection refused"。
+   **`NO_PROXY` 是唯一真正生效的开关。** 所以 `config.load_config()` 里有
+   `os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")`，而且这一步**必须在 `.env` 解析之后**。
+   （本机代理是 mihomo @ `127.0.0.1:9674`。另外：`openai` 的 `Connection error` 不保证是配置错——
+   先探测连通性再怀疑配置。有一次是纯网络抖动，重跑即恢复。）
+
+5. **mock 和真实模型的行为差异很大。**
+   同一个任务，mock 是 4 次问模型 / 3 轮工具 / 正常收口；
+   真实模型是 8 次 / 7 次 / 撞上限 / 无 Final Answer。
+   **mock 只用来验协议和接线，不用来判断 Agent 好不好。** 任何关于"模型行为"的结论都必须来自真模型。
+   另外 mock 的触发词是**顺序敏感**的（更具体的词要排在更短的词前面，"写越界"含"越界"，反了会误判），
+   而且必须是**连续出现的字面串**（"越界 的情况"不触发）。
+
+6. **相同 Tool Call 的重复检测不能误伤参数不同的修正行为。**
+   两个具体的例子，必须放行：
+   - 模型第一次读错文件名，换参数重试——**失败过的调用不进检测表**（门是 `result.startswith("[工具失败]")`）。
+   - task_1_c 写完文件后用**略微不同的内容**重写一遍——参数不同就不算重复，**正确放行**。
+   - 读 A、读 B、再读 A 的同类变体：重复检测只认"工具名 + 规范化参数全等"，这种发现不了，仍只靠步数上限兜住。这是已知的局限，README 已声明。
+
+7. **`finish_reason` / `usage` 不能丢。**
+   Phase 5.5 那轮就是因为 `ask()` 只返回 `.message`，导致整轮报告不出 `finish_reason`，
+   只能靠"`reply.tool_calls` 非空"反推。改成 `ModelReply` dataclass 之后再没丢过。
+   用 `getattr(..., None)` 取，因为有些兼容网关不返回 `usage`；`None` 显示成 `unavailable`，不崩、不编造。
+   **不要在没确认服务商真的返回的情况下，编一个 token 数字出来。**
+
+8. **Eval 不应该修改 Agent 的行为。**
+   `eval/run_task.py` 只**驱动** `main.build_client` / `main.ask` / `main.log_reply` / `main.run_agent_loop`，
+   一个字都不改，所以测出来的 = 终端手打时的行为。
+   它要看到第 2..N 轮回复，做法是用一个**只记录不修改**的 wrapper 替换模块全局 `main.ask`，用完立刻还原。
+   它要拿到纯 JSON stdout，做法是跑 Agent 期间把 `sys.stdout = sys.stderr`（`main.py` 没有缓存流引用，安全）。
+   **改 Eval 的时候不要顺手"优化"一下 main.py——那就不是测基线了。**
+
+9. **Eval 的 success 规则只能判断客观项，不能证明内容质量。**
+   规则集只有：有没有最终回答、撞没撞步数上限、有没有运行时报错、
+   文件在不在/空不空/是不是指定路径、工具链里有没有必需步骤、
+   最终回答里有没有提到不存在的文件、文本含不含指定词。
+   **"摘要写得好不好""比较说得对不对"一律不给分，只记 `needs_manual_review`。**
+   这就是为什么 8/8 成功是个弱结论——task_3 被规则判过、但它实质没做完。
+   改 success 规则时要警惕：加一条主观规则就等于把这个 Eval 变成另一个 LLM 打分，那不是这个项目想要的。
+
+10. **补两条环境层面的（不常踩但踩过）：**
+    - Windows 上 `Path.write_text()` 默认文本模式会把 `\n` 翻成 `\r\n`。
+      `write_file` 用 `open(..., newline="")` 就是为了这个。
+      （反过来 `read_text()` 默认 `newline=None` 会把 `\r\n` 翻回 `\n`，所以读不受影响。）
+    - `len(x) or 0` **防不住 `None`**——`len(None)` 先抛错，`or 0` 轮不到短路。正确写法 `len(x) if x else 0`。
+    - 本机 stdout 编码是 `gbk`(cp936)，程序在自己终端里中文正常，**被管道捕获时会乱码**。
+      用 `$env:PYTHONUTF8='1'`（或 `PYTHONIOENCODING=utf-8`）修。
+    - PowerShell 5.1 没有 `&&` / `||`。喂多行输入要用真实文件 `cmd /c "... < file"`。
+
+---
+
+## 附：本文件核对时发现的事实不一致（只指出，未自行修复）
+
+按你交代的规矩，这些**只指出来，不动**。全部是文档层面的，不影响代码、不影响测量结论。
+
+| # | 位置 | 不一致内容 | 严重度 |
+|---|---|---|---|
+| 1 | `README.md:24` | 标题仍是「当前状态：Phase 6」，但 README 自己第 255 行有 Phase 6.5 章节、第 337 行 checklist 也有 Phase 6.5 ✅ | 低（标题过期） |
+| 2 | `README.md:33-39` | 「Phase 5 加的三样东西」表格里列了 `TOOL_HANDLERS`。但 `TOOL_HANDLERS` 实际是 **Phase 3** 加的（Phase 3 是关键的工具执行层）；Phase 5 真正新增的是 `list_files` / `write_file` + 结果长度保护 | 中（阶段归属错误，会让接手者误判工具执行层是什么时候引入的） |
+| 3 | `README.md:72-80` | 同一个 ```bash 代码块（`cd mini-agent-lab` + `.venv\Scripts\python.exe main.py`）**连续重复了两次** | 低（明显的粘贴残留） |
+| 4 | `README.md:230-233` | 项目结构树里 `demo_workspace/` 只列了 3 个文件，实际现在是 **5 个**：多出 `notes/agent_summary.md`（1533 B，Phase 5.5 产物）和 `notes/agent_summary_real_v2.md`（1617 B，Phase 6 复测产物） | 低（真模型实测的产物留在沙盒里，没同步进文档） |
+| 5 | `README.md:93-125` | 「预期输出（mock）」块里 Turn 1 的 token 是 `861 / 29 / 890`——**这三个数字和 REAL_RUN_LOG 里 Phase 6 真模型复测的 Turn 1 完全一致**。作为"mock 输出"展示时数值来源不对（mock 不会返回真实 token 用量） | 低（展示口径混淆，不是数据错误） |
+| 6 | `README.md:167-173` | 「两组测试都用 venv 的 Python 跑」——Phase 6.5 之后实际是**三组**（`tests/test_sandbox.py`、`tests/test_loop.py`、`eval/test_metrics.py`） | 低（表述过期） |
+| 7 | `eval/REPORT.md:46` | task_6 的工具链写成 `list → read×2 → list → read×2`（数出来 6 次），但 `results.json` 里 task_6 的 `tool_calls_requested` 是 **7**。总览里的"共 31 次"是对的（6+2+1+3+1+**7**+4+7=31），只有这一格的链路记述少了 1 次调用 | 低（表格记述不精确，汇总数正确） |
+
+**没有发现**冲突的项：REAL_RUN_LOG 的 Phase 6 复测 token 合计（861+944+1363+1808+2312 = 7288 prompt；29+73+58+508+216 = 884 completion；890+1017+1421+2316+2528 = 8172 total，7288+884 = 8172 自洽）；
+`prompt 40,816 + completion 5,195 = total 46,011`；Phase 5.5 的归因结论与 Phase 6.5 失败分类里 `max_steps_hit` 归 Model Behavior 一致；
+README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复拦截、0 撞上限、7/8 人工评审的口径全部一致。
+
+---
+
+**交接完毕。** 项目停在 Phase 6.5，Phase 7 尚未开始，代码一行未改。

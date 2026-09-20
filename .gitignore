@@ -1,0 +1,27 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 虚拟环境（Phase 1 起才会建）
+.venv/
+venv/
+env/
+
+# 密钥：任何情况下都不要提交 .env
+.env
+
+# IDE / 编辑器
+.idea/
+.vscode/
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+
+# Eval 用的工作目录快照（跑之前临时备份 demo_workspace，跑完即可删）
+eval/.workspace_snapshot/
+# 每次跑 Eval 都会重新生成的过程日志
+eval/.run_log.txt
+# 每次运行生成的逐题原始记录（基线结果仍保留在 eval/results.json）
+eval/runs/
