@@ -21,13 +21,13 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 11
+## 当前状态：Phase 12
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
 
 ```
-用户任务 → list_files（探索）→ read_file（读取）→ write_file（写入）→ 最终回答
+用户任务 → list_files（探索）→ read_file（读取）→ write_file / run_command（受控执行）→ 最终回答
 ```
 
 Phase 7 已完成 Context Management：默认模式为 `WRITE_ONLY`，只压缩发给模型的历史
@@ -55,20 +55,21 @@ Phase 11 已完成 Generalized Tool Capability / Permission Policy：工具的 S
 `AVAILABLE_TOOLS` 只是 Registry 派生出的 OpenAI-compatible Schema 视图；Permission
 Runtime 只读取 `risk_level`，不再按 `write_file` 这样的具体工具名写分支。`READ_ONLY`
 自动执行，`SIDE_EFFECT` 走现有 `ASK` / `ALLOW` / `DENY` 审批；`EXECUTION` 和
-`EXTERNAL_SIDE_EFFECT` 只作为未来 metadata 预留，本阶段不实现 Shell、MCP 或新的正式工具。
+`EXTERNAL_SIDE_EFFECT` 作为统一风险 metadata 使用。
 
-Phase 5 的三个工具：
+当前正式工具：
 
 | 新增 | 说明 |
 |---|---|
 | `list_files` | 列工作目录一层内容，标 `[f]`/`[d]` 和字节数。`path` 可选，省略就是列根目录 |
 | `write_file` | 写 UTF-8 文本，父目录不存在会自动创建，但只能创建在沙盒内 |
+| `run_command` | 以 `shell=False` 执行白名单内的 Python 测试或 Git 只读命令 |
 | `TOOL_REGISTRY` | 工具名 → `ToolDefinition(name, schema, handler, risk_level)`。新增正式工具只在这里注册 |
 
 「先看目录、再决定读哪个」这件事**没有**写进系统提示词，程序里也不强制。
 工具说明书里只有一句「如果你不知道有哪些文件，先用这个工具，不要猜文件名」——
 让模型自己从工具描述里学出用法，而不是照着脚本走。
-系统提示词只说「有三个工具、各干什么」，最后一句是「用哪个工具、用什么顺序，你自己决定」。
+系统提示词只说「有哪些工具、各干什么」，最后一句是「用哪个工具、用什么顺序，你自己决定」。
 
 Phase 6 在同一个循环上叠了三层**互相独立**的防线，解决真模型实测暴露的
 「任务已经完成，但 Agent 不知道什么时候该停」：
@@ -252,7 +253,7 @@ cmd /c '.venv\Scripts\python.exe main.py < tests\inputs\real_retest_v2.txt'
 ### 2. Risk level 和 approval mode 的区别
 
 `risk_level` 是工具自身声明的能力风险：`READ_ONLY` 表示只读，`SIDE_EFFECT`
-表示会改变状态；`EXECUTION` 和 `EXTERNAL_SIDE_EFFECT` 只是未来预留的 metadata。
+表示会改变状态；`EXECUTION` 和 `EXTERNAL_SIDE_EFFECT` 是统一的风险 metadata。
 它回答「这个工具是什么性质」。
 
 `ASK`、`ALLOW`、`DENY` 是本次运行选择的审批策略，回答「遇到需要审批的风险时
@@ -264,12 +265,31 @@ cmd /c '.venv\Scripts\python.exe main.py < tests\inputs\real_retest_v2.txt'
 如果 Permission Runtime 判断 `if tool_name == "write_file"`，每增加一个有副作用的
 工具就必须修改 Runtime，容易漏掉风险规则。现在 Runtime 只查 Registry 中的
 `risk_level`；测试注册的 `mock_side_effect` 即使名字完全不同，也会自动走同一条
-审批路径。正式工具仍然只有三个，测试工具不会进入 `AVAILABLE_TOOLS`。
+审批路径。测试工具不会进入 `AVAILABLE_TOOLS`。
 
 这还不是 MCP：这里仍是本地 Python 函数、项目自己的 JSON Schema 和本地 Registry。
-没有远程 Tool Server、MCP 握手、传输协议或跨进程能力发现。未来增加 Shell 时，
-只需新增 Shell 的 Schema 和 handler，并在 `TOOL_REGISTRY` 注册其 risk level；
-Permission Runtime、Agent Loop、Session、Context 和重复检测无需按工具名新增分支。
+没有远程 Tool Server、MCP 握手、传输协议或跨进程能力发现。
+
+## Phase 12：Controlled Command Execution
+
+`run_command(command, args=[], cwd=".")` 是第一个 `EXECUTION` Tool。它不接受完整
+shell script，而是接收程序名和参数数组，并始终使用 `subprocess.run(..., shell=False)`。
+
+第一版 Command Policy 只允许：
+
+- `python -m pytest ...`
+- `python -m unittest ...`
+- `git status`、`git diff`、`git log`
+
+`python -c`、`python -m pip`、写入型 Git 子命令、PowerShell、cmd、bash、网络命令、
+未知程序和 shell 操作符都会被拒绝。`cwd` 解析后必须位于 `WORKSPACE_DIR` 内，且
+Sandbox 预检发生在 Permission callback 之前。
+
+`EXECUTION` 自动复用 Phase 11 Permission Runtime：交互式运行默认 `ASK`，测试和自动
+入口使用 `ALLOW` / `DENY`。拒绝时不会启动 subprocess，但仍回传合法 `role="tool"`
+结果。结果包含 `Command`、`CWD`、`Exit code`、`Timed out`、`STDOUT` 和 `STDERR`；
+默认超时为 30 秒，stdout/stderr 各有独立输出上限，超时和非零退出都会作为正常 Tool
+Result 返回给模型。
 
 ## 工具结果长度保护
 
@@ -278,7 +298,7 @@ Permission Runtime、Agent Loop、Session、Context 和重复检测无需按工�
 静默截断会让模型以为拿到的是全文，然后基于不完整信息下结论。
 
 裁在 `main.py` 的 `execute_tool_call` 里，那里是所有工具结果的唯一出口，
-所以现在的三个工具和以后任何新工具自动都有保护；工具本身不需要知道模型的上下文预算。
+所以现在的工具和以后任何新工具自动都有保护；工具本身不需要知道模型的上下文预算。
 用字符数而不是 token 数：数 token 要引 tokenizer、要装依赖，
 对「别把上下文撑爆」这个目的完全没必要。
 
@@ -289,7 +309,7 @@ mini-agent-lab/
 ├── main.py               # 程序入口：聊天循环 + Agent 循环 + 执行工具并回喂模型
 ├── config.py             # 配置：读 .env，产出模型连接信息、沙盒目录、最大步数、结果上限
 ├── session.py            # Session JSON 的创建、保存、加载和 canonical message 校验
-├── tools.py              # 工具层：三个工具说明书 + 沙盒校验 + list/read/write + 名字→函数表
+├── tools.py              # 工具层：工具 Schema/Handler/Policy + 沙盒校验 + Registry
 ├── requirements.txt      # 唯一第三方依赖：openai
 ├── README.md             # 本文件
 ├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9、Phase 10）
@@ -436,7 +456,10 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 - **Phase 11 · Generalized Tool Capability / Permission Policy** ✅ —— 用统一的
   `ToolDefinition` / `TOOL_REGISTRY` 收拢 Schema、Handler 和 `risk_level`；`AVAILABLE_TOOLS`
   从 Registry 派生，Permission Runtime 不再依赖具体工具名。增加仅测试使用的
-  `mock_side_effect` 验证通用审批，未新增正式 Tool、Shell 或 MCP。
+  `mock_side_effect` 验证通用审批。
+- **Phase 12 · Controlled Command Execution** ✅ —— 增加 `run_command`，以 `shell=False`
+  执行受限的 Python 测试和 Git 只读命令；增加 workspace cwd 预检、命令审批、超时、
+  stdout/stderr 截断、非零退出结果和本地/Mock 测试。
 
 当前阶段已收尾，后续能力等待明确确认后再开始。
 

@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-20　**状态**：Phase 11 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy 均已收尾）
+**写于**：2026-09-20　**状态**：Phase 12 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -28,15 +28,16 @@ LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
     → Multi-Tool → Completion Control → Eval → Context Management → Session Persistence
     → Long File Reading → Tool Permission / Side-effect Approval
     → Generalized Tool Capability / Permission Policy
+    → Controlled Command Execution
 ```
 
-当前已完成 Phase 11。本项目暂不自动进入 Shell、Memory、RAG、MCP 或其它后续能力。
+当前已完成 Phase 12。本项目暂不自动进入 unrestricted shell、Memory、RAG、MCP 或其它后续能力。
 
 ---
 
 ## 2. 当前项目状态
 
-Phase 0 到 Phase 10 全部完成并按阶段验证。每个阶段的三段式说明：
+Phase 0 到 Phase 12 全部完成并按阶段验证。每个阶段的三段式说明：
 **新增了什么 / 为什么新增 / 最重要的结论。**
 
 ### Phase 0 — 项目骨架
@@ -148,8 +149,8 @@ Phase 0 到 Phase 10 全部完成并按阶段验证。每个阶段的三段式�
 正式的 `AVAILABLE_TOOLS` 由 Registry 派生，只把 Schema 发给模型；Runtime 执行时从
 同一注册项取 Handler，Permission Runtime 从同一注册项取 `risk_level`。正式工具的
 metadata 为：`list_files=READ_ONLY`、`read_file=READ_ONLY`、`write_file=SIDE_EFFECT`。
-`EXECUTION` 与 `EXTERNAL_SIDE_EFFECT` 已定义为未来可用的风险等级，但本阶段不实现
-Shell，也不新增 MCP。
+`run_command=EXECUTION` 现在复用同一套风险 metadata；没有开放 unrestricted shell，也
+没有新增 MCP。
 
 审批决策不再依赖任何具体工具名：`READ_ONLY` 自动放行，其他当前需要审批的风险
 走原有 `ASK` / `ALLOW` / `DENY` callback。带路径的副作用工具仍先经过
@@ -161,6 +162,28 @@ Shell，也不新增 MCP。
 成功重复调用集合。Session 仍只保存 canonical messages，Context 的 `WRITE_ONLY`
 行为、Long File 分页和 Tool Call 协议配对均保持不变。
 
+### Phase 12 — Controlled Command Execution
+
+`run_command(command: str, args: list[str] = [], cwd: str = ".")` 已加入正式
+`TOOL_REGISTRY`，风险等级为 `EXECUTION`。它使用 `subprocess.run` 且明确传入
+`shell=False`，不接受完整 shell script。
+
+Command Policy 只允许 `python -m pytest ...`、`python -m unittest ...`、`git status`、
+`git diff` 和 `git log`。`python -c`、`python -m pip`、写入型 Git 子命令、PowerShell、
+cmd、bash、curl、wget、ssh、未知命令和 shell 操作符都会被拒绝。
+
+`cwd` 通过 `resolve_inside_workspace` 预检，且发生在 Permission callback 之前；这项
+预检通过 `ToolDefinition.workspace_arguments` 描述，不在 Runtime 里写工具名特判。
+`ToolDefinition.preflight` 负责在审批前执行通用命令策略校验。
+
+`COMMAND_TIMEOUT_SECONDS` 默认 30 秒，`MAX_COMMAND_OUTPUT_CHARS` 默认 1500。结果包含
+Command、CWD、Exit code、Timed out、STDOUT 和 STDERR；超时会终止 subprocess 并返回
+合法 Tool Result，非零 exit code 也只作为结果交给模型。stdout/stderr 各自截断并明确
+标记，敏感环境值和 `.env` 相关输出不会回传。
+
+拒绝路径经过现有 `ASK` / `ALLOW` / `DENY` callback；DENY 不启动 subprocess，仍保留
+合法 `role="tool"` 历史记录，也不会进入成功重复调用集合。
+
 ---
 
 ## 3. 当前架构
@@ -170,14 +193,15 @@ Shell，也不新增 MCP。
 ```
 main.py           入口 + Agent Loop + 权限检查 + 工具执行层 + 回喂模型。全部 Runtime 逻辑在这里
 config.py         配置：读 .env，产出 LLMConfig、WORKSPACE_DIR、MAX_AGENT_STEPS、
-                  MAX_TOOL_RESULT_CHARS、MAX_READ_RESULT_CHARS、审批模式、LOCAL_NO_PROXY。
+                  MAX_TOOL_RESULT_CHARS、MAX_READ_RESULT_CHARS、命令超时/输出上限、审批模式、LOCAL_NO_PROXY。
                   WORKSPACE_DIR 在这里唯一定义一次
-tools.py          三个工具 Schema + ToolDefinition / TOOL_REGISTRY / AVAILABLE_TOOLS
-                  + 沙盒校验 resolve_inside_workspace + 三个 handler 函数（含分页 read_file）
+tools.py          工具 Schema + ToolDefinition / TOOL_REGISTRY / AVAILABLE_TOOLS
+                  + 沙盒校验、Command Policy、受控 subprocess handler
 tests/            mock_server.py（本地假服务器，不需要 Key）
                   test_sandbox.py（沙盒边界 + 注册表一致性，27 项）
                   test_loop.py（重复调用检测 + 协议合法性，4 组）
-                  test_permissions.py（Phase 10 审批/拒绝、Sandbox、Session、Mock Agent）
+                  test_permissions.py（Phase 10/11 审批/拒绝、Sandbox、Session、Mock Agent）
+                  test_commands.py（Phase 12 Command Policy、subprocess、超时和输出边界）
                   test_long_file.py（Phase 9 分段读取、完整行和 mock 分页）
                   inputs/*.txt（喂给 main.py 的 stdin，用来复现某次实测）
 eval/             轻量 Eval（Phase 6.5）
@@ -209,7 +233,7 @@ messages  ──►  ask()  ──►  LLM
                 ▼
         Tool Registry（TOOL_REGISTRY，AVAILABLE_TOOLS 是其 Schema 视图）
                 ▼
-        Permission Check（READ_ONLY 直通；SIDE_EFFECT 先审批）
+        Permission Check（READ_ONLY 直通；其他风险先做边界/策略检查再审批）
                 ▼
           Tool Handler（tools.py 里的函数）
                 ▼
@@ -236,15 +260,16 @@ messages  ──►  ask()  ──►  LLM
    它没有 `if name == "read_file"` 这种分支，里面连一个工具名都没写。
    **Phase 7 如果要在循环里加特殊逻辑，你就是在破坏这个结论。**
 
-4. **权限检查属于 Runtime，不属于 `write_file`。** `write_file` 仍只负责执行写入；
-   `run_tool_round` 在调用 handler 前先做 Sandbox 预检和审批。模型提出 Tool Call 不等于 Runtime 已授权。
+4. **权限检查属于 Runtime，不属于具体 handler。** `write_file` 只负责执行写入，
+   `run_command` 只负责受控执行；`run_tool_round` 在调用 handler 前先做 Sandbox/Policy
+   预检和审批。模型提出 Tool Call 不等于 Runtime 已授权。
 
 5. **Tool Result 一旦进 messages，之后每一次 `ask` 都把完整 messages 原样重发。**
    LLM 本身没有记忆，上下文全靠每次重述。**这一条是 Phase 7 的出发点，也是当前最大的技术问题。**
 
 ---
 
-## 4. 当前三个工具
+## 4. 当前四个工具
 
 ### `list_files`
 
@@ -282,14 +307,27 @@ messages  ──►  ask()  ──►  LLM
 | 沙盒限制 | **先校验路径，再 mkdir**——所以自动创建的父目录也保证在沙盒内 |
 | 失败行为 | 同上，原生抛出 |
 | 返回值 | `已写入 xxx.md（N 字节，已写入新文件 / 已覆盖已有文件）`，字节数用 `len(content.encode("utf-8"))` |
-| 副作用 | **有**（创建目录、写入/覆盖文件）——三个工具里唯一一个 |
+| 副作用 | **有**（创建目录、写入/覆盖文件） |
 
 实现用 `open(path, "w", encoding="utf-8", newline="")` 而不是 `Path.write_text()`。
 原因：Windows 上 `write_text()` 默认文本模式会把 `\n` 翻成 `\r\n`，
 导致"工具报 304 字节、磁盘落 311"。真模型实测已确认修复成立（1617 = 1617）。
 
-> **不要重新设计 Tool。** 三个工具的边界、参数名、覆盖策略、失败语义都已实测固化。
-> Phase 7 的任务是上下文成本，不是工具层。要加工具的话先读第 11 章的禁止事项。
+> **不要重新设计现有 Tool。** 现有工具的边界、参数名、覆盖策略、失败语义都已实测固化。
+> `run_command` 的边界见上表；它不是 unrestricted shell。
+
+### `run_command`
+
+| | |
+|---|---|
+| 参数 | `command`（string，必填）、`args`（string 数组，默认 `[]`）、`cwd`（string，默认 `.`） |
+| 用途 | 受控执行本地 Python 测试或 Git 只读命令，使用 `subprocess` + `shell=False` |
+| 允许 | `python -m pytest ...`、`python -m unittest ...`、`git status`、`git diff`、`git log` |
+| 禁止 | `python -c`、pip、写入型 Git、PowerShell、cmd、bash、curl、wget、ssh、未知命令、shell 操作符 |
+| 沙盒限制 | `cwd` 和 path-like 命令参数必须位于 `WORKSPACE_DIR`；检查早于 Permission callback |
+| 返回值 | `Command`、`CWD`、`Exit code`、`Timed out`、`STDOUT`、`STDERR` |
+| 运行保护 | 默认 30 秒超时；stdout/stderr 各自最多 1500 字符，超出明确标记截断 |
+| 风险 | `EXECUTION`，复用 `ASK` / `ALLOW` / `DENY`；DENY 不启动进程 |
 
 ---
 
@@ -531,7 +569,7 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 
 | 候选 | 为什么不是首要 |
 |---|---|
-| Tool 不够 | 三个工具已覆盖读/写/列，"加工具不动循环"已验证。问题不在数量 |
+| Tool 不够 | 四个工具已覆盖读/写/列/受控执行，"加工具不动循环"已验证。问题不在数量 |
 | 模型不会收口 | Phase 6 的三层防线 + Eval 8 次运行 0 撞上限、0 重复拦截。已缓解，且是单点问题 |
 | 没有 Memory | 任务结束历史就丢，这是真的缺失，但**当前一个任务内的成本就已经 88% 花在重发历史**，跨任务记忆是下一个层次的问题 |
 
@@ -604,7 +642,7 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 
 ---
 
-## 11. 当前阶段禁止事项（Phase 11 已完成）
+## 11. 当前阶段禁止事项（Phase 12 已完成）
 
 除非有明确理由（而且要写清楚理由、等用户确认），**不要**做以下任何一件事：
 
@@ -615,9 +653,9 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 - ❌ 引入 Memory
 - ❌ 引入 RAG
 - ❌ 引入 MCP
-- ❌ 实现 Shell；未来只需新增 Shell 的 Schema、handler 和 Registry 注册项，现有
-  Permission Runtime、Agent Loop、Session、Context、Sandbox 复用即可
-- ❌ 增加新 Tool（三个工具已够，见第 4 章）
+- ❌ 把 `run_command` 扩展成 unrestricted shell；不得加入 shell=True、PowerShell、cmd、bash、网络命令或安装命令
+- ❌ 进入 MCP、RAG、Memory 或自动 Coding Loop
+- ❌ 增加超出当前学习目标的新 Tool
 - ❌ 做 GUI
 - ❌ 做 Multi-Agent
 - ❌ 修改沙盒安全边界（见第 5 章，硬约束）
@@ -641,7 +679,7 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 | 4 | `eval/results.json` | 完整原始数据。REPORT 里每个数字都能在这里核对 |
 | 5 | `REAL_RUN_LOG.md` | 真模型实测记录：Phase 5.5 首轮（失败模式）+ Phase 6 复测（修复效果） |
 | 6 | `main.py` | 442 行，全部 Runtime 逻辑。Agent Loop + 工具执行层 + 重复检测都在这里 |
-| 7 | `tools.py` | 205 行。三个工具说明书 + 沙盒校验 + handler |
+| 7 | `tools.py` | 工具 Schema/Registry + 沙盒校验 + Command Policy + handler |
 | 8 | `config.py` | 144 行。所有常量 + `.env` 解析 |
 | 9 | `eval/tasks.json` | 8 个任务 + 成功规则。Phase 7 的历史验收基线 |
 | 10 | `session.py` | Phase 8 Session JSON 的创建、保存、加载和 canonical message 校验 |
@@ -795,6 +833,7 @@ README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复
 
 ---
 
-**交接完毕。** 项目已完成 Phase 11：Context Management、Session Persistence、Long File Reading、
-Tool Permission / Side-effect Approval 与 Generalized Tool Capability / Permission Policy 均已收尾；
+**交接完毕。** 项目已完成 Phase 12：Context Management、Session Persistence、Long File Reading、
+Tool Permission / Side-effect Approval、Generalized Tool Capability / Permission Policy 与
+Controlled Command Execution 均已收尾；
 Session 文件默认不进入版本库，后续阶段不自动开始。

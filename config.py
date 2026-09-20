@@ -52,6 +52,10 @@ MAX_AGENT_STEPS = 8
 # 定 4000 是因为它明显小于常见模型的上下文窗口，又够装下几页笔记。
 MAX_TOOL_RESULT_CHARS = 4000
 
+# run_command 的单次进程执行上限与 stdout/stderr 独立预算。
+COMMAND_TIMEOUT_SECONDS = 30
+MAX_COMMAND_OUTPUT_CHARS = 1500
+
 # read_file 的内容预算要小于全局工具结果上限，给文件名、分页元数据和边界标记
 # 留出空间。这样正常的 read_file 不会先生成一个会被 main.py 截断的结果。
 READ_RESULT_OVERHEAD_RESERVE_CHARS = 512

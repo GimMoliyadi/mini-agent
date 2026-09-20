@@ -61,8 +61,11 @@ EXIT_COMMANDS = {"exit", "quit", "q"}
 # 这种合理的验证也一起砍掉。真正拦住重复动作的是重复调用检测。
 SYSTEM_PROMPT = (
     "你是一个运行在命令行里的助手。直接回答用户的问题，尽量简短，不要客套开场。\n"
-    "你有三个工具：list_files 看工作目录里有什么，read_file 读文件内容，"
-    "write_file 把内容写进工作目录。\n"
+    "你有四个工具：list_files 看工作目录里有什么，read_file 读文件内容，"
+    "write_file 把内容写进工作目录，run_command 执行受控的本地开发命令。\n"
+    "run_command 只能使用 command + args 数组，允许 python -m pytest、"
+    "python -m unittest、git status、git diff、git log；不要使用 shell 语法、"
+    "python -c、pip、PowerShell、cmd 或网络命令。cwd 必须在工作目录内。\n"
     "需要文件内容时去读，不要凭记忆编造；用户希望结果被保存下来时用 write_file。\n"
     "用户要求列出工作目录中的文件时，应包含子目录中的文件；list_files 只列一层，"
     "遇到子目录需继续查看，最终列出相对路径。\n"
@@ -300,16 +303,23 @@ def check_tool_permission(call, approval_callback: ApprovalCallback) -> tuple[bo
 
     try:
         arguments = parse_tool_arguments(call)
-        if "path" in arguments and not isinstance(arguments["path"], str):
-            # Let the handler produce the normal missing/invalid-argument error.
-            return True, None
-
         operation = definition.risk_level.value
-        if isinstance(arguments.get("path"), str):
+        for argument_name in definition.workspace_arguments:
+            value = arguments.get(argument_name)
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                # Let the handler produce the normal missing/invalid-argument error.
+                return True, None
+
             # Sandbox validation is deliberately before asking the user. Approval
             # cannot turn an invalid path into an allowed one.
-            target = resolve_inside_workspace(arguments["path"])
-            operation = "OVERWRITE" if target.is_file() else "CREATE"
+            target = resolve_inside_workspace(value)
+            if argument_name == definition.operation_path_argument:
+                operation = "OVERWRITE" if target.is_file() else "CREATE"
+
+        if definition.preflight is not None:
+            definition.preflight(arguments)
         if approval_callback(tool_name, arguments, operation):
             return True, None
         return False, (

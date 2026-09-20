@@ -5,12 +5,21 @@
 三个运行时要素来自同一个注册来源，不会出现只注册了 Schema 或 handler 的漂移。
 """
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from config import MAX_READ_RESULT_CHARS, MAX_TOOL_RESULT_CHARS, WORKSPACE_DIR
+from config import (
+    COMMAND_TIMEOUT_SECONDS,
+    MAX_COMMAND_OUTPUT_CHARS,
+    MAX_READ_RESULT_CHARS,
+    MAX_TOOL_RESULT_CHARS,
+    WORKSPACE_DIR,
+)
 
 
 class RiskLevel(str, Enum):
@@ -30,6 +39,9 @@ class ToolDefinition:
     schema: dict
     handler: Callable[..., str]
     risk_level: RiskLevel
+    workspace_arguments: tuple[str, ...] = ("path",)
+    operation_path_argument: str | None = "path"
+    preflight: Callable[[dict], None] | None = None
 
 # 工具的「说明书」。发给模型的不是函数本身，而是这份 JSON 描述；
 # 模型照着它生成一次工具调用请求。
@@ -123,6 +135,39 @@ WRITE_FILE_TOOL = {
                 },
             },
             "required": ["path", "content"],
+        },
+    },
+}
+
+RUN_COMMAND_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "run_command",
+        "description": (
+            "在工作目录内执行一个受控的本地开发命令。只允许 python -m pytest、"
+            "python -m unittest，以及 git status、git diff、git log；command 和 args "
+            "必须分开提供，不要传入 shell script。该工具需要用户批准。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "程序名，只允许 python 或 git",
+                },
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                    "description": "传给程序的参数数组，不是 shell 命令字符串",
+                },
+                "cwd": {
+                    "type": "string",
+                    "default": ".",
+                    "description": "工作目录，必须位于 Agent workspace 内",
+                },
+            },
+            "required": ["command"],
         },
     },
 }
@@ -293,8 +338,194 @@ def write_file(path: str, content: str) -> str:
 
 
 # 一个工具的 Schema、Handler 和风险等级在这里一起注册。
-# 测试可以临时向这个字典注册假的工具；AVAILABLE_TOOLS 只包含正式注册的
-# 三个工具，因此测试工具不会暴露给模型。
+# 测试可以临时向这个字典注册假的工具；AVAILABLE_TOOLS 只包含正式注册的工具，
+# 因此测试工具不会暴露给模型。
+_COMMAND_SHELL_SYNTAX = frozenset("&|;><`\r\n")
+_ALLOWED_PYTHON_MODULES = frozenset({"pytest", "unittest"})
+_ALLOWED_GIT_COMMANDS = frozenset({"status", "diff", "log"})
+
+
+class CommandPolicyError(ValueError):
+    """A command is outside the deliberately small Phase 12 allowlist."""
+
+
+def _reject_shell_syntax(tokens: list[str]) -> None:
+    for token in tokens:
+        if any(character in token for character in _COMMAND_SHELL_SYNTAX):
+            raise CommandPolicyError(
+                "命令参数不能包含 shell 操作符或换行；请使用 command + args 数组"
+            )
+
+
+def _reject_workspace_escape_tokens(tokens: list[str]) -> None:
+    """Reject path-like command arguments that resolve outside the workspace."""
+    for token in tokens:
+        candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+        if (
+            candidate in {".", ".."}
+            or "/" in candidate
+            or "\\" in candidate
+            or Path(candidate).is_absolute()
+        ):
+            try:
+                resolve_inside_workspace(candidate)
+            except PermissionError as exc:
+                raise CommandPolicyError(f"命令参数越出工作目录：{token}") from exc
+
+
+def validate_run_command_arguments(arguments: dict) -> None:
+    """Validate the command policy without starting a process."""
+    command = arguments.get("command")
+    args = arguments.get("args", [])
+    if not isinstance(command, str) or not command:
+        raise CommandPolicyError("command 必须是非空字符串")
+    if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+        raise CommandPolicyError("args 必须是字符串数组")
+
+    _reject_shell_syntax([command, *args])
+    normalized_command = command.casefold()
+    if normalized_command not in {"python", "git"} or "/" in command or "\\" in command:
+        raise CommandPolicyError(f"不允许执行命令：{command}")
+
+    if normalized_command == "python":
+        if len(args) < 2 or args[0] != "-m" or args[1] not in _ALLOWED_PYTHON_MODULES:
+            raise CommandPolicyError("python 只允许执行 python -m pytest 或 python -m unittest")
+        if any(arg == "-c" or arg.startswith("-c") for arg in args):
+            raise CommandPolicyError("禁止 python -c 任意执行代码")
+        _reject_workspace_escape_tokens(args[2:])
+        return
+
+    if not args or args[0] not in _ALLOWED_GIT_COMMANDS:
+        raise CommandPolicyError("git 只允许 status、diff、log 子命令")
+    if any(
+        arg in {"-c", "--exec-path", "--config-env", "--output", "-o", "--no-index"}
+        or arg.startswith("--output=")
+        for arg in args[1:]
+    ):
+        raise CommandPolicyError("该 git 参数可能改变状态或访问未受控目标，已拒绝")
+    _reject_workspace_escape_tokens(args[1:])
+
+
+def _decode_process_output(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _redact_process_output(value: object) -> str:
+    text = _decode_process_output(value)
+    sensitive_values = {
+        value
+        for key, value in os.environ.items()
+        if value
+        and any(
+            marker in key.upper()
+            for marker in ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
+        )
+    }
+    for sensitive_value in sorted(sensitive_values, key=len, reverse=True):
+        text = text.replace(sensitive_value, "[REDACTED]")
+
+    redacted_lines = []
+    for line in text.splitlines(keepends=True):
+        upper = line.upper()
+        if any(marker in upper for marker in ("OPENAI_API_KEY", "AUTHORIZATION", ".ENV")):
+            redacted_lines.append("[sensitive output redacted]\n")
+        else:
+            redacted_lines.append(line)
+    return "".join(redacted_lines)
+
+
+def _limit_command_output(value: object) -> str:
+    text = _redact_process_output(value)
+    if len(text) <= MAX_COMMAND_OUTPUT_CHARS:
+        return text
+    omitted = len(text) - MAX_COMMAND_OUTPUT_CHARS
+    return text[:MAX_COMMAND_OUTPUT_CHARS] + f"\n[output truncated: omitted {omitted} chars]"
+
+
+def _format_command_result(
+    command: str,
+    cwd: Path,
+    exit_code: int | None,
+    timed_out: bool,
+    stdout: object,
+    stderr: object,
+) -> str:
+    return "\n".join(
+        [
+            f"Command: {command}",
+            f"CWD: {cwd}",
+            f"Exit code: {exit_code}",
+            f"Timed out: {'true' if timed_out else 'false'}",
+            "STDOUT:",
+            _limit_command_output(stdout) or "<empty>",
+            "STDERR:",
+            _limit_command_output(stderr) or "<empty>",
+        ]
+    )
+
+
+def run_command(command: str, args: list[str] = [], cwd: str = ".") -> str:
+    """Run one allowlisted local development command without a shell."""
+    arguments = {"command": command, "args": args, "cwd": cwd}
+    validate_run_command_arguments(arguments)
+    if not isinstance(cwd, str):
+        raise ValueError("cwd 必须是字符串")
+
+    target = resolve_inside_workspace(cwd)
+    if not target.is_dir():
+        raise NotADirectoryError(f"cwd 不是目录：{cwd}")
+
+    command_line = subprocess.list2cmdline([command, *args])
+    executable = sys.executable if command.casefold() == "python" else command
+    try:
+        completed = subprocess.run(
+            [executable, *args],
+            cwd=str(target),
+            shell=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=COMMAND_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        timeout_stderr = "[命令执行超时]"
+        captured_stderr = _decode_process_output(exc.stderr)
+        if captured_stderr:
+            timeout_stderr += f"\n{captured_stderr}"
+        return _format_command_result(
+            command_line,
+            target,
+            None,
+            True,
+            exc.stdout,
+            timeout_stderr,
+        )
+    except OSError as exc:
+        return _format_command_result(
+            command_line,
+            target,
+            None,
+            False,
+            "",
+            f"[命令启动失败] {exc}",
+        )
+
+    return _format_command_result(
+        command_line,
+        target,
+        completed.returncode,
+        False,
+        completed.stdout,
+        completed.stderr,
+    )
+
+
 TOOL_REGISTRY = {
     "list_files": ToolDefinition(
         name="list_files",
@@ -313,6 +544,15 @@ TOOL_REGISTRY = {
         schema=WRITE_FILE_TOOL,
         handler=write_file,
         risk_level=RiskLevel.SIDE_EFFECT,
+    ),
+    "run_command": ToolDefinition(
+        name="run_command",
+        schema=RUN_COMMAND_TOOL,
+        handler=run_command,
+        risk_level=RiskLevel.EXECUTION,
+        workspace_arguments=("cwd",),
+        operation_path_argument=None,
+        preflight=validate_run_command_arguments,
     ),
 }
 
