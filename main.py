@@ -24,12 +24,14 @@ from openai import APIError, OpenAI
 from openai.types.chat import ChatCompletionMessage
 
 from config import (
+    CONTEXT_MODES,
     MAX_AGENT_STEPS,
     MAX_RECENT_TOOL_ROUNDS,
     MAX_TOOL_RESULT_CHARS,
     REQUEST_TIMEOUT_SECONDS,
     WORKSPACE_DIR,
     LLMConfig,
+    get_context_mode,
     load_config,
 )
 from tools import AVAILABLE_TOOLS, TOOL_HANDLERS
@@ -387,8 +389,21 @@ def _compact_old_round(message: dict, results: list[dict]) -> tuple[dict, list[d
     return compact_message, compact_results
 
 
-def build_model_context(messages: list[dict]) -> list[dict]:
-    """Keep canonical history intact while bounding old tool payloads for the model."""
+def build_model_context(messages: list[dict], mode: str | None = None) -> list[dict]:
+    """Build the outbound model view without changing canonical history.
+
+    OFF sends the original history unchanged. WRITE_ONLY compacts successful
+    write contents in every completed tool round but leaves read results and
+    round recency untouched. FULL keeps the existing write/read compaction and
+    recent-round policy.
+    """
+    selected_mode = get_context_mode() if mode is None else mode.strip().upper()
+    if selected_mode not in CONTEXT_MODES:
+        allowed = ", ".join(CONTEXT_MODES)
+        raise ValueError(f"Context mode 必须是 {allowed} 之一，当前是：{selected_mode!r}")
+    if selected_mode == "OFF":
+        return list(messages)
+
     rounds: list[tuple[int, int, dict, list[dict]]] = []
     index = 0
     while index < len(messages):
@@ -400,7 +415,11 @@ def build_model_context(messages: list[dict]) -> list[dict]:
         rounds.append((index, index + 1 + len(message["tool_calls"]), message, results))
         index += 1 + len(message["tool_calls"])
 
-    recent_rounds = {start for start, _, _, _ in rounds[-MAX_RECENT_TOOL_ROUNDS:]}
+    recent_rounds = (
+        {start for start, _, _, _ in rounds[-MAX_RECENT_TOOL_ROUNDS:]}
+        if selected_mode == "FULL"
+        else set()
+    )
     context: list[dict] = []
     index = 0
 
@@ -415,7 +434,11 @@ def build_model_context(messages: list[dict]) -> list[dict]:
                 context.append(message)
                 context.extend(results)
             else:
-                compact_message, compact_results = _compact_old_round(message, results)
+                if selected_mode == "WRITE_ONLY":
+                    compact_message = _compact_write_round(message, results) or message
+                    compact_results = results
+                else:
+                    compact_message, compact_results = _compact_old_round(message, results)
                 context.append(compact_message)
                 context.extend(compact_results)
             index = end
@@ -559,6 +582,7 @@ def print_environment(config: LLMConfig) -> None:
     print(f"可用工具：{tool_names}")
     print(f"单个任务最多 {MAX_AGENT_STEPS} 步（模型问了几轮就停，防止无限循环）")
     print(f"工具结果上限 {MAX_TOOL_RESULT_CHARS} 字符（超过会截断并告知模型）")
+    print(f"Context 模式：{get_context_mode()}")
     print("重复调用保护：同一工具 + 完全相同参数已成功执行过，就不会重复执行")
     print("每次请求会打印 finish_reason 和 token 用量（服务商没返回就显示 unavailable）")
 

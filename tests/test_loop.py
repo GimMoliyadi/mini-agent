@@ -16,6 +16,7 @@
 （tests\test_sandbox.py 只用标准库，系统 python 也能跑。）
 """
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -130,7 +131,7 @@ def check_write_context_compaction() -> None:
             ]
         )
 
-    context = main.build_model_context(messages)
+    context = main.build_model_context(messages, mode="FULL")
     assistant_messages = [m for m in context if m.get("role") == "assistant" and m.get("tool_calls")]
     assert len(assistant_messages) == 3
     assert "historical read compacted" in context[2 + 1]["content"]
@@ -144,12 +145,106 @@ def check_write_context_compaction() -> None:
     failed = [dict(message) for message in messages]
     failed[3] = dict(failed[3])
     failed[3]["content"] = f"{main.TOOL_FAILURE_PREFIX} PermissionError"
-    failed_context = main.build_model_context(failed)
+    failed_context = main.build_model_context(failed, mode="FULL")
     assert failed_context[3]["content"].startswith(main.TOOL_FAILURE_PREFIX)
     print(
         "OK  recent rounds stay full, old reads become references, "
         "and canonical/failed history stay intact"
     )
+
+
+def check_all_context_modes() -> None:
+    """All context modes preserve protocol pairing and their promised scope."""
+    messages: list[dict] = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "compare and save"},
+    ]
+    write_arguments = []
+    read_contents = []
+    for index in range(3):
+        read_arguments = json.dumps({"path": f"note_{index}.md"})
+        write_content = f"summary {index} " + ("x" * 200)
+        write_argument = json.dumps(
+            {"path": "summary.md", "content": write_content}, ensure_ascii=False
+        )
+        write_arguments.append(write_argument)
+        read_contents.append(f"read content {index} " + ("r" * 180))
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": f"read_{index}",
+                            "type": "function",
+                            "function": {"name": "read_file", "arguments": read_arguments},
+                        },
+                        {
+                            "id": f"write_{index}",
+                            "type": "function",
+                            "function": {"name": "write_file", "arguments": write_argument},
+                        },
+                    ],
+                },
+                {"role": "tool", "tool_call_id": f"read_{index}", "content": read_contents[-1]},
+                {
+                    "role": "tool",
+                    "tool_call_id": f"write_{index}",
+                    "content": f"已写入 summary.md（{len(write_content)} 字节）",
+                },
+            ]
+        )
+
+    original = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+
+    def rounds(context: list[dict]) -> list[tuple[dict, list[dict]]]:
+        result = []
+        for index, message in enumerate(context):
+            calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+            if calls:
+                result.append((message, context[index + 1 : index + 1 + len(calls)]))
+        return result
+
+    for mode in ("OFF", "WRITE_ONLY", "FULL"):
+        context = main.build_model_context(messages, mode=mode)
+        assert _pairing_legal(context), f"{mode} 破坏了 tool_call/tool result 配对"
+        assert json.dumps(messages, ensure_ascii=False, sort_keys=True) == original
+
+        for assistant, results in rounds(context):
+            for call in assistant["tool_calls"]:
+                json.loads(call["function"]["arguments"])
+            assert [result["tool_call_id"] for result in results] == [
+                call["id"] for call in assistant["tool_calls"]
+            ]
+
+        context_rounds = rounds(context)
+        write_args = [
+            json.loads(call["function"]["arguments"])["content"]
+            for assistant, _ in context_rounds
+            for call in assistant["tool_calls"]
+            if call["function"]["name"] == "write_file"
+        ]
+        read_results = [
+            result["content"]
+            for assistant, results in context_rounds
+            for call, result in zip(assistant["tool_calls"], results)
+            if call["function"]["name"] == "read_file"
+        ]
+
+        if mode == "OFF":
+            assert write_args == [json.loads(item)["content"] for item in write_arguments]
+            assert read_results == read_contents
+        elif mode == "WRITE_ONLY":
+            assert all("previous write content omitted" in item for item in write_args)
+            assert read_results == read_contents
+        else:
+            assert "previous write content omitted" in write_args[0]
+            assert write_args[1:] == [json.loads(item)["content"] for item in write_arguments[1:]]
+            assert "historical read compacted" in read_results[0]
+            assert read_results[1:] == read_contents[1:]
+
+    print("OK  OFF / WRITE_ONLY / FULL 均保持协议合法且只执行各自的压缩范围")
 
 
 def check_duplicate_interception() -> None:
@@ -277,6 +372,7 @@ def run_all() -> None:
     check_fingerprint_equivalence()
     check_fingerprint_not_equal()
     check_write_context_compaction()
+    check_all_context_modes()
     check_duplicate_interception()
     check_failed_call_not_locked()
     print("\n重复调用检测测试全部通过。")

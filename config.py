@@ -56,6 +56,20 @@ MAX_TOOL_RESULT_CHARS = 4000
 # 更早的 read_file 结果会变成可重读的引用，避免长任务把整段旧内容永久带上。
 MAX_RECENT_TOOL_ROUNDS = 2
 
+# Context Management 实验模式。
+# OFF 是控制组；WRITE_ONLY 是最初的 Phase 7A 方案；FULL 保留当前完整策略。
+CONTEXT_MODES = ("OFF", "WRITE_ONLY", "FULL")
+DEFAULT_CONTEXT_MODE = "WRITE_ONLY"
+
+
+def get_context_mode() -> str:
+    """读取并校验当前 Context Management 实验模式。"""
+    mode = os.environ.get("CONTEXT_MODE", DEFAULT_CONTEXT_MODE).strip().upper()
+    if mode not in CONTEXT_MODES:
+        allowed = ", ".join(CONTEXT_MODES)
+        raise ValueError(f"CONTEXT_MODE 必须是 {allowed} 之一，当前是：{mode!r}")
+    return mode
+
 # 本地地址不走代理的绕过清单。
 #
 # 为什么必须显式写它：HTTP 库取代理时会调 urllib.request.getproxies()，
@@ -125,6 +139,7 @@ def load_config() -> LLMConfig:
     比让 KeyError 在聊天中途炸出来好得多。
     """
     load_env_file()
+    get_context_mode()
 
     # 只补默认值，不覆盖：若你已经在终端里 export 过 NO_PROXY，以你的为准。
     # 放在 load_env_file 之后，是因为解析 .env 用 setdefault 写进 environ，

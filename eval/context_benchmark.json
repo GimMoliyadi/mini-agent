@@ -1,0 +1,42 @@
+{
+  "sample": {
+    "source": "demo_workspace real files + eval/tasks.json task_1 text",
+    "rounds": 5,
+    "input_messages": 12
+  },
+  "results": [
+    {
+      "mode": "OFF",
+      "message_count": 12,
+      "serialized_chars": 4007,
+      "tool_result_chars": 1523,
+      "write_content_original_chars": 621,
+      "write_content_retained_chars": 621,
+      "read_result_original_chars": 1253,
+      "read_result_retained_chars": 1253,
+      "protocol_pairing_legal": true
+    },
+    {
+      "mode": "WRITE_ONLY",
+      "message_count": 12,
+      "serialized_chars": 3345,
+      "tool_result_chars": 1523,
+      "write_content_original_chars": 621,
+      "write_content_retained_chars": 48,
+      "read_result_original_chars": 1253,
+      "read_result_retained_chars": 1253,
+      "protocol_pairing_legal": true
+    },
+    {
+      "mode": "FULL",
+      "message_count": 12,
+      "serialized_chars": 2877,
+      "tool_result_chars": 1087,
+      "write_content_original_chars": 621,
+      "write_content_retained_chars": 48,
+      "read_result_original_chars": 1253,
+      "read_result_retained_chars": 817,
+      "protocol_pairing_legal": true
+    }
+  ]
+}
