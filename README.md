@@ -21,7 +21,7 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 10
+## 当前状态：Phase 11
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -50,13 +50,20 @@ Phase 10 已完成 Tool Permission / Side-effect Approval：`list_files` / `read
 交互式 CLI 默认 `ASK`，自动入口和测试显式使用 `ALLOW` 或 `DENY`。拒绝也会生成合法的
 `role="tool"` 结果，但不会写文件、不会进入成功重复调用集合，也不会被当作成功写入压缩。
 
-Phase 5 加的三样东西：
+Phase 11 已完成 Generalized Tool Capability / Permission Policy：工具的 Schema、Handler
+和 `risk_level` 现在由同一个 `ToolDefinition` 放进 `TOOL_REGISTRY`。发给模型的
+`AVAILABLE_TOOLS` 只是 Registry 派生出的 OpenAI-compatible Schema 视图；Permission
+Runtime 只读取 `risk_level`，不再按 `write_file` 这样的具体工具名写分支。`READ_ONLY`
+自动执行，`SIDE_EFFECT` 走现有 `ASK` / `ALLOW` / `DENY` 审批；`EXECUTION` 和
+`EXTERNAL_SIDE_EFFECT` 只作为未来 metadata 预留，本阶段不实现 Shell、MCP 或新的正式工具。
+
+Phase 5 的三个工具：
 
 | 新增 | 说明 |
 |---|---|
 | `list_files` | 列工作目录一层内容，标 `[f]`/`[d]` 和字节数。`path` 可选，省略就是列根目录 |
 | `write_file` | 写 UTF-8 文本，父目录不存在会自动创建，但只能创建在沙盒内 |
-| `TOOL_HANDLERS` | 工具名 → 函数的映射表。加一个工具 = 一份说明书 + 清单里加一项 + 表里加一行 |
+| `TOOL_REGISTRY` | 工具名 → `ToolDefinition(name, schema, handler, risk_level)`。新增正式工具只在这里注册 |
 
 「先看目录、再决定读哪个」这件事**没有**写进系统提示词，程序里也不强制。
 工具说明书里只有一句「如果你不知道有哪些文件，先用这个工具，不要猜文件名」——
@@ -186,8 +193,8 @@ Phase 10 的非交互测试/评测需要显式设置：
 $env:TOOL_APPROVAL_MODE = "ALLOW"
 ```
 
-真实 CLI 保持默认 `ASK`。审批提示会显示目标文件和 `CREATE` / `OVERWRITE`；输入
-`Y` 才执行 `write_file`，其他输入均视为拒绝。
+真实 CLI 保持默认 `ASK`。有路径的副作用工具会显示目标文件和 `CREATE` /
+`OVERWRITE`；输入 `Y` 才执行，其他输入均视为拒绝。
 
 mock 服务器还内置了一个协议校验器：它检查 `tool_calls` 和 `tool` 结果是否
 成对出现、顺序是否正确，不满足就返回 400。真实服务商不满足这个条件也会直接
@@ -226,6 +233,43 @@ cmd /c '.venv\Scripts\python.exe main.py < tests\inputs\real_retest_v2.txt'
 那比覆盖本身更复杂。为了让覆盖不静默，返回值会明确说
 `已写入 xxx.md（304 字节，已覆盖已有文件）` 或 `（304 字节，已写入新文件）`。
 本项目不做版本控制，覆盖前不自动备份。
+
+## Phase 11：Tool Registry 与统一 Permission Policy
+
+### 1. 什么是 Tool Registry
+
+`TOOL_REGISTRY` 是 Runtime 的正式工具注册表。每个名字对应一个
+`ToolDefinition`，里面同时放着：
+
+- `name`：模型 Tool Call 使用的名字
+- `schema`：发给模型的 OpenAI-compatible Tool Schema
+- `handler`：真正执行工作的 Python 函数
+- `risk_level`：Runtime 用来决定权限路径的风险等级
+
+`AVAILABLE_TOOLS` 不再是独立登记表，而是从 Registry 生成的 Schema 列表。
+因此 Schema、Handler、Risk 不会因分别维护而漂移。
+
+### 2. Risk level 和 approval mode 的区别
+
+`risk_level` 是工具自身声明的能力风险：`READ_ONLY` 表示只读，`SIDE_EFFECT`
+表示会改变状态；`EXECUTION` 和 `EXTERNAL_SIDE_EFFECT` 只是未来预留的 metadata。
+它回答「这个工具是什么性质」。
+
+`ASK`、`ALLOW`、`DENY` 是本次运行选择的审批策略，回答「遇到需要审批的风险时
+怎么处理」。因此 `READ_ONLY` 不请求审批，`SIDE_EFFECT` 才进入现有策略；用户批准
+仍不能越过 Sandbox 预检。
+
+### 3. 为什么 Runtime 不应该认识 `write_file`
+
+如果 Permission Runtime 判断 `if tool_name == "write_file"`，每增加一个有副作用的
+工具就必须修改 Runtime，容易漏掉风险规则。现在 Runtime 只查 Registry 中的
+`risk_level`；测试注册的 `mock_side_effect` 即使名字完全不同，也会自动走同一条
+审批路径。正式工具仍然只有三个，测试工具不会进入 `AVAILABLE_TOOLS`。
+
+这还不是 MCP：这里仍是本地 Python 函数、项目自己的 JSON Schema 和本地 Registry。
+没有远程 Tool Server、MCP 握手、传输协议或跨进程能力发现。未来增加 Shell 时，
+只需新增 Shell 的 Schema 和 handler，并在 `TOOL_REGISTRY` 注册其 risk level；
+Permission Runtime、Agent Loop、Session、Context 和重复检测无需按工具名新增分支。
 
 ## 工具结果长度保护
 
@@ -389,6 +433,10 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 - **Phase 10 · Tool Permission / Side-effect Approval** ✅ —— 增加 `READ_ONLY` / `SIDE_EFFECT`
   风险分类和 Runtime 审批层；`ASK` / `ALLOW` / `DENY` 通过可注入 callback 选择策略。
   审批前仍先做 Sandbox 校验，批准才执行 `write_file`，拒绝仍回传合法 Tool Result。
+- **Phase 11 · Generalized Tool Capability / Permission Policy** ✅ —— 用统一的
+  `ToolDefinition` / `TOOL_REGISTRY` 收拢 Schema、Handler 和 `risk_level`；`AVAILABLE_TOOLS`
+  从 Registry 派生，Permission Runtime 不再依赖具体工具名。增加仅测试使用的
+  `mock_side_effect` 验证通用审批，未新增正式 Tool、Shell 或 MCP。
 
 当前阶段已收尾，后续能力等待明确确认后再开始。
 

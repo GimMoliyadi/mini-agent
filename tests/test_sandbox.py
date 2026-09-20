@@ -43,7 +43,7 @@ INSIDE_PATHS = ["todo.txt", "notes/todo.txt"]
 
 
 def check_registry() -> None:
-    """校验工具说明书、名字表、真实函数三者是否真的对得上。
+    """校验每个工具的 Schema、Handler 和风险 metadata 来自同一注册项。
 
     守的是 Phase 3 踩过的坑：执行层把模型给的 JSON 键**按名字**
     当关键字参数转发给函数，名字对不上工具就永远调不动。
@@ -51,18 +51,31 @@ def check_registry() -> None:
     用 inspect 去读函数真实的形参名，而不是手写一份名单比对——
     手写名单就是第二份真相，改函数时很容易忘了改它。
     """
+    registry_names = set(tools.TOOL_REGISTRY)
     schema_names = {tool["function"]["name"] for tool in tools.AVAILABLE_TOOLS}
-    handler_names = set(tools.TOOL_HANDLERS)
-    assert schema_names == handler_names, (
-        f"工具清单和实现表不一致："
-        f"有说明书没实现 {sorted(schema_names - handler_names)}，"
-        f"有实现没说明书 {sorted(handler_names - schema_names)}"
+    expected_risks = {
+        "list_files": tools.RiskLevel.READ_ONLY,
+        "read_file": tools.RiskLevel.READ_ONLY,
+        "write_file": tools.RiskLevel.SIDE_EFFECT,
+    }
+    assert schema_names == registry_names, (
+        f"正式工具 Schema 和 Registry 不一致："
+        f"Registry 缺少 {sorted(schema_names - registry_names)}，"
+        f"Schema 缺少 {sorted(registry_names - schema_names)}"
     )
+    assert {
+        name: definition.risk_level
+        for name, definition in tools.TOOL_REGISTRY.items()
+    } == expected_risks
 
-    for tool in tools.AVAILABLE_TOOLS:
-        declared = tool["function"]
-        name = declared["name"]
-        handler = tools.TOOL_HANDLERS[name]
+    for name, definition in tools.TOOL_REGISTRY.items():
+        declared = definition.schema["function"]
+        assert definition.name == name == declared["name"], (
+            f"工具名称不一致：key={name!r}，definition={definition.name!r}，"
+            f"schema={declared['name']!r}"
+        )
+        handler = definition.handler
+        assert isinstance(definition.risk_level, tools.RiskLevel)
 
         declared_params = set(declared["parameters"]["properties"])
         real_params = set(inspect.signature(handler).parameters)
@@ -78,7 +91,10 @@ def check_registry() -> None:
             f"{sorted(required - declared_params)}"
         )
 
-        print(f"OK  工具 {name}：说明书参数与函数形参一致（{sorted(declared_params)}）")
+        print(
+            f"OK  工具 {name}：Schema / Handler / Risk 一致 "
+            f"（{definition.risk_level.value}，参数 {sorted(declared_params)}）"
+        )
 
 
 def check_tools() -> None:

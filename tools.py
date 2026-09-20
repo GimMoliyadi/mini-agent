@@ -1,20 +1,35 @@
-"""工具层：工具的「说明书」和真正干活的函数。
+"""工具层：统一保存工具 Schema、Handler 和风险 metadata。
 
-这里只有两样东西，一一对应：
-    - *_TOOL：写给模型看的 JSON 描述（模型照着它生成调用请求）
-    - TOOL_HANDLERS：写给 Python 用的函数表（真的去干活）
-
-Phase 5 有三个工具：list_files（看有什么）、read_file（读内容）、
-write_file（把结果留下来）。加工具只改这一个文件，main.py 一行都不用动。
-
-为什么单独一个模块：工具定义要贴合「模型能读懂的描述」，
-执行层要处理「真实文件系统与错误」，两者的变化原因完全不同。
-main.py 的执行器会从这两处各取一半，所以边界现在就划对。
+模型只看到 ``AVAILABLE_TOOLS`` 中的 OpenAI-compatible Schema；Runtime 通过
+``TOOL_REGISTRY`` 找到同一个工具的 handler 和 risk level。这样新增工具时，
+三个运行时要素来自同一个注册来源，不会出现只注册了 Schema 或 handler 的漂移。
 """
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from config import MAX_READ_RESULT_CHARS, MAX_TOOL_RESULT_CHARS, WORKSPACE_DIR
+
+
+class RiskLevel(str, Enum):
+    """Tool 的副作用风险等级；后两个值只为未来工具预留。"""
+
+    READ_ONLY = "READ_ONLY"
+    SIDE_EFFECT = "SIDE_EFFECT"
+    EXECUTION = "EXECUTION"
+    EXTERNAL_SIDE_EFFECT = "EXTERNAL_SIDE_EFFECT"
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    """一个工具的完整 Runtime 定义。"""
+
+    name: str
+    schema: dict
+    handler: Callable[..., str]
+    risk_level: RiskLevel
 
 # 工具的「说明书」。发给模型的不是函数本身，而是这份 JSON 描述；
 # 模型照着它生成一次工具调用请求。
@@ -111,20 +126,6 @@ WRITE_FILE_TOOL = {
         },
     },
 }
-
-# 已注册工具清单。主程序把这份列表原样发给模型，
-# 所以这里就是「模型知道自己会什么」的唯一来源。
-# 三份必须名字对得上：这里的 name、TOOL_HANDLERS 的 key、函数形参名。
-AVAILABLE_TOOLS = [LIST_FILES_TOOL, READ_FILE_TOOL, WRITE_FILE_TOOL]
-
-# Tool 权限分类只描述风险，不执行审批。真正的检查和回调在 Runtime，
-# 这样 write_file 仍然只负责「获得允许后如何写入」。
-TOOL_PERMISSIONS = {
-    "list_files": "READ_ONLY",
-    "read_file": "READ_ONLY",
-    "write_file": "SIDE_EFFECT",
-}
-
 
 def resolve_inside_workspace(path: str) -> Path:
     """把模型给的路径解析成绝对路径，并保证它落在工作目录内。
@@ -291,16 +292,29 @@ def write_file(path: str, content: str) -> str:
     return f"已写入 {target.name}（{size} 字节，{state}）"
 
 
-# 工具名 → 真正干活的函数。
-#
-# 为什么需要这张表：模型回过来的调用里只有「名字 + 参数」，没有函数引用。
-# 它没法直接调用你代码里的 read_file，只能通过名字找到它。
-# 这一张表就是「名字」翻译成「函数」的唯一地点。
-#
-# 加一个新工具 = 一个 *_TOOL 说明书 + AVAILABLE_TOOLS 里加一项 + 这里加一行。
-# main.py 里没有任何工具名字，所以主流程一行都不用改。
-TOOL_HANDLERS = {
-    "list_files": list_files,
-    "read_file": read_file,
-    "write_file": write_file,
+# 一个工具的 Schema、Handler 和风险等级在这里一起注册。
+# 测试可以临时向这个字典注册假的工具；AVAILABLE_TOOLS 只包含正式注册的
+# 三个工具，因此测试工具不会暴露给模型。
+TOOL_REGISTRY = {
+    "list_files": ToolDefinition(
+        name="list_files",
+        schema=LIST_FILES_TOOL,
+        handler=list_files,
+        risk_level=RiskLevel.READ_ONLY,
+    ),
+    "read_file": ToolDefinition(
+        name="read_file",
+        schema=READ_FILE_TOOL,
+        handler=read_file,
+        risk_level=RiskLevel.READ_ONLY,
+    ),
+    "write_file": ToolDefinition(
+        name="write_file",
+        schema=WRITE_FILE_TOOL,
+        handler=write_file,
+        risk_level=RiskLevel.SIDE_EFFECT,
+    ),
 }
+
+# 这是给模型的公开 Schema 视图，不是另一份注册表。
+AVAILABLE_TOOLS = [definition.schema for definition in TOOL_REGISTRY.values()]

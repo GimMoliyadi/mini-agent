@@ -38,7 +38,7 @@ from config import (
     get_context_mode,
     load_config,
 )
-from tools import AVAILABLE_TOOLS, TOOL_HANDLERS, TOOL_PERMISSIONS, resolve_inside_workspace
+from tools import AVAILABLE_TOOLS, RiskLevel, TOOL_REGISTRY, resolve_inside_workspace
 from session import SessionError, create_session, load_session, save_session
 
 BANNER = "Mini Agent Lab"
@@ -221,8 +221,8 @@ def limit_result_length(result: str) -> str:
 def execute_tool_call(call) -> str:
     """执行一次工具调用，返回**模型能读懂的文本**结果。
 
-    这一层做的事就三件：按名字查出函数 → 调用它 → 出错就换成文字。
-    名字是怎么变成函数的？靠 TOOL_HANDLERS 这张表——
+    这一层做的事就三件：按名字查出 ToolDefinition → 调用 handler →
+    出错就换成文字。Schema、handler 和风险等级来自同一个 TOOL_REGISTRY，
     所以这里没有 if/elif，也不认识任何具体工具。
 
     为什么出错要换成文字，而不是让异常继续往上抛：
@@ -231,11 +231,11 @@ def execute_tool_call(call) -> str:
     而不是让程序崩掉。
     """
     try:
-        handler = TOOL_HANDLERS.get(call.function.name)
-        if handler is None:
+        definition = TOOL_REGISTRY.get(call.function.name)
+        if definition is None:
             return f"{TOOL_FAILURE_PREFIX} 没有名为 {call.function.name} 的工具，无法执行"
         arguments = parse_tool_arguments(call)
-        return limit_result_length(handler(**arguments))
+        return limit_result_length(definition.handler(**arguments))
     except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
         # OSError 涵盖了 FileNotFoundError / PermissionError / IsADirectoryError，
         # 也就是沙盒拦截、文件不存在、路径指向目录这几类情况。
@@ -254,8 +254,10 @@ def always_deny(tool_name: str, arguments: dict, operation: str) -> bool:
 
 def ask_for_approval(tool_name: str, arguments: dict, operation: str) -> bool:
     """CLI approval callback; input stays at the CLI boundary, not in execution."""
-    print("\nAgent 请求写入：")
-    print(f"文件：{arguments.get('path', '?')}")
+    print("\nAgent 请求执行有副作用的工具：")
+    print(f"工具：{tool_name}")
+    if "path" in arguments:
+        print(f"文件：{arguments.get('path', '?')}")
     print(f"操作：{operation}")
     try:
         answer = input("是否允许？[y/N] ").strip().lower()
@@ -277,8 +279,10 @@ def approval_callback_for_mode(mode: str, input_func=None) -> ApprovalCallback:
             return ask_for_approval
 
         def ask_with_injected_input(tool_name: str, arguments: dict, operation: str) -> bool:
-            print("\nAgent 请求写入：")
-            print(f"文件：{arguments.get('path', '?')}")
+            print("\nAgent 请求执行有副作用的工具：")
+            print(f"工具：{tool_name}")
+            if "path" in arguments:
+                print(f"文件：{arguments.get('path', '?')}")
             print(f"操作：{operation}")
             answer = input_func("是否允许？[y/N] ").strip().lower()
             return answer in {"y", "yes"}
@@ -290,20 +294,22 @@ def approval_callback_for_mode(mode: str, input_func=None) -> ApprovalCallback:
 def check_tool_permission(call, approval_callback: ApprovalCallback) -> tuple[bool, str | None]:
     """Check permission before execution; return (may_execute, immediate_result)."""
     tool_name = call.function.name
-    if TOOL_PERMISSIONS.get(tool_name) != "SIDE_EFFECT":
+    definition = TOOL_REGISTRY.get(tool_name)
+    if definition is None or definition.risk_level is RiskLevel.READ_ONLY:
         return True, None
 
     try:
         arguments = parse_tool_arguments(call)
-        path = arguments.get("path")
-        if not isinstance(path, str):
+        if "path" in arguments and not isinstance(arguments["path"], str):
             # Let the handler produce the normal missing/invalid-argument error.
             return True, None
 
-        # Sandbox validation is deliberately before asking the user. Approval cannot
-        # turn an invalid path into an allowed one.
-        target = resolve_inside_workspace(path)
-        operation = "OVERWRITE" if target.is_file() else "CREATE"
+        operation = definition.risk_level.value
+        if isinstance(arguments.get("path"), str):
+            # Sandbox validation is deliberately before asking the user. Approval
+            # cannot turn an invalid path into an allowed one.
+            target = resolve_inside_workspace(arguments["path"])
+            operation = "OVERWRITE" if target.is_file() else "CREATE"
         if approval_callback(tool_name, arguments, operation):
             return True, None
         return False, (

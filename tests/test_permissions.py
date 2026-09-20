@@ -1,6 +1,7 @@
 """Phase 10 tests for tool permission checks and side-effect approval."""
 
 import json
+import inspect
 from pathlib import Path
 import sys
 import tempfile
@@ -76,6 +77,78 @@ class PermissionTests(unittest.TestCase):
         self.assertIn("hello", read_result)
         self.assertIn("note.txt", list_result)
         self.assertEqual(recorder.requests, [])
+
+    def test_side_effect_approval_uses_risk_not_tool_name(self):
+        operation_target = tools.WORKSPACE_DIR / "mock-operation.txt"
+        calls = []
+
+        def mock_side_effect(path: str) -> str:
+            operation_target.write_text("mock", encoding="utf-8")
+            return f"mock side effect: {path}"
+
+        definition = tools.ToolDefinition(
+            name="mock_side_effect",
+            schema={
+                "type": "function",
+                "function": {
+                    "name": "mock_side_effect",
+                    "description": "test-only side effect",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            },
+            handler=mock_side_effect,
+            risk_level=tools.RiskLevel.SIDE_EFFECT,
+        )
+        tools.TOOL_REGISTRY[definition.name] = definition
+        try:
+            def approval(tool_name, arguments, operation):
+                calls.append((tool_name, arguments, operation))
+                return True
+
+            messages = []
+            result = run_round(
+                messages,
+                set(),
+                "mock",
+                "mock_side_effect",
+                {"path": "mock-operation.txt"},
+                approval,
+            )
+
+            self.assertEqual(result, "mock side effect: mock-operation.txt")
+            self.assertEqual(calls[0][0], "mock_side_effect")
+            self.assertEqual(calls[0][2], "CREATE")
+            self.assertTrue(operation_target.is_file())
+            self.assertNotIn(
+                "mock_side_effect",
+                {tool["function"]["name"] for tool in tools.AVAILABLE_TOOLS},
+            )
+        finally:
+            tools.TOOL_REGISTRY.pop(definition.name, None)
+
+    def test_side_effect_ask_mode_uses_injected_callback(self):
+        input_func = Mock(return_value="y")
+        callback = main.approval_callback_for_mode("ASK", input_func=input_func)
+        result = run_round(
+            [], set(), "ask", "write_file", {"path": "ask.txt", "content": "OK"}, callback
+        )
+        self.assertIn("已写入", result)
+        input_func.assert_called_once()
+
+    def test_unknown_tool_returns_normal_failure(self):
+        result = run_round(
+            [], set(), "unknown", "not_registered", {}, main.always_deny
+        )
+        self.assertTrue(result.startswith(main.TOOL_FAILURE_PREFIX))
+
+    def test_permission_runtime_does_not_branch_on_write_file_name(self):
+        source = inspect.getsource(main.check_tool_permission)
+        self.assertNotIn('"write_file"', source)
+        self.assertNotIn("'write_file'", source)
 
     def test_approve_create_and_overwrite_reports_operation(self):
         recorder = ApprovalRecorder(True)

@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-20　**状态**：Phase 10 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission 均已收尾）
+**写于**：2026-09-20　**状态**：Phase 11 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -27,9 +27,10 @@
 LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
     → Multi-Tool → Completion Control → Eval → Context Management → Session Persistence
     → Long File Reading → Tool Permission / Side-effect Approval
+    → Generalized Tool Capability / Permission Policy
 ```
 
-当前已完成 Phase 10。本项目暂不自动进入 Memory、RAG、MCP 或其它后续能力。
+当前已完成 Phase 11。本项目暂不自动进入 Shell、Memory、RAG、MCP 或其它后续能力。
 
 ---
 
@@ -139,6 +140,27 @@ Phase 0 到 Phase 10 全部完成并按阶段验证。每个阶段的三段式�
 重复调用集合。拒绝结果也保留在 canonical Session 历史里；`WRITE_ONLY` 不会把它误压缩成成功写入。
 非交互测试与 Eval 显式使用 `ALLOW` / `DENY`，交互式 CLI 默认 `ASK`。
 
+### Phase 11 — Generalized Tool Capability / Permission Policy
+
+稳定基线：`f08f2cd Phase 10: add tool permission and write approval`。
+
+新增 `ToolDefinition(name, schema, handler, risk_level)` 和统一的 `TOOL_REGISTRY`。
+正式的 `AVAILABLE_TOOLS` 由 Registry 派生，只把 Schema 发给模型；Runtime 执行时从
+同一注册项取 Handler，Permission Runtime 从同一注册项取 `risk_level`。正式工具的
+metadata 为：`list_files=READ_ONLY`、`read_file=READ_ONLY`、`write_file=SIDE_EFFECT`。
+`EXECUTION` 与 `EXTERNAL_SIDE_EFFECT` 已定义为未来可用的风险等级，但本阶段不实现
+Shell，也不新增 MCP。
+
+审批决策不再依赖任何具体工具名：`READ_ONLY` 自动放行，其他当前需要审批的风险
+走原有 `ASK` / `ALLOW` / `DENY` callback。带路径的副作用工具仍先经过
+`resolve_inside_workspace`，所以审批不能突破 Sandbox。测试临时注册的
+`mock_side_effect` 已证明一个不叫 `write_file` 的工具也会进入同一审批路径，且不会
+进入正式 `AVAILABLE_TOOLS`。
+
+本阶段没有修改 `call_fingerprint` 的输入，仍只有工具名和规范化参数；拒绝结果不进
+成功重复调用集合。Session 仍只保存 canonical messages，Context 的 `WRITE_ONLY`
+行为、Long File 分页和 Tool Call 协议配对均保持不变。
+
 ---
 
 ## 3. 当前架构
@@ -150,7 +172,7 @@ main.py           入口 + Agent Loop + 权限检查 + 工具执行层 + 回喂�
 config.py         配置：读 .env，产出 LLMConfig、WORKSPACE_DIR、MAX_AGENT_STEPS、
                   MAX_TOOL_RESULT_CHARS、MAX_READ_RESULT_CHARS、审批模式、LOCAL_NO_PROXY。
                   WORKSPACE_DIR 在这里唯一定义一次
-tools.py          三个工具说明书（*_TOOL）+ AVAILABLE_TOOLS + TOOL_PERMISSIONS + TOOL_HANDLERS
+tools.py          三个工具 Schema + ToolDefinition / TOOL_REGISTRY / AVAILABLE_TOOLS
                   + 沙盒校验 resolve_inside_workspace + 三个 handler 函数（含分页 read_file）
 tests/            mock_server.py（本地假服务器，不需要 Key）
                   test_sandbox.py（沙盒边界 + 注册表一致性，27 项）
@@ -185,7 +207,7 @@ messages  ──►  ask()  ──►  LLM
                             │
                 ┌───────────┘
                 ▼
-        Tool Registry（AVAILABLE_TOOLS / TOOL_PERMISSIONS / TOOL_HANDLERS）
+        Tool Registry（TOOL_REGISTRY，AVAILABLE_TOOLS 是其 Schema 视图）
                 ▼
         Permission Check（READ_ONLY 直通；SIDE_EFFECT 先审批）
                 ▼
@@ -203,12 +225,12 @@ messages  ──►  ask()  ──►  LLM
 
 ### 必须记住的四条架构事实
 
-1. **`AVAILABLE_TOOLS` 是模型看到的 Tool Schema。** 模型对工具的所有一切了解都来自这三份
-   JSON 说明书，不是来自代码、不是来自系统提示词。系统提示词只说"有三个工具、各干什么、
-   用哪个工具什么顺序你自己决定"。
+1. **`TOOL_REGISTRY` 是工具的单一注册来源。** 每项 `ToolDefinition` 同时包含 name、
+   OpenAI-compatible Schema、Python handler 和 `risk_level`；`AVAILABLE_TOOLS` 只是从
+   它派生的模型可见 Schema 列表。
 
-2. **`TOOL_HANDLERS` 是工具名 → Python 函数的映射表。** 执行时按名字查表调用。
-   加工具就在这里加一行。
+2. **Schema / Handler / Risk 必须来自同一项。** 这样新增工具时不会出现 Schema 注册了
+   但忘记 Handler，或 Handler 存在却没有风险 metadata 的漂移。
 
 3. **`run_agent_loop` 只知道 Tool Call 协议，不知道任何具体工具。**
    它没有 `if name == "read_file"` 这种分支，里面连一个工具名都没写。
@@ -582,17 +604,19 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 
 ---
 
-## 11. Phase 7 禁止事项
+## 11. 当前阶段禁止事项（Phase 11 已完成）
 
 除非有明确理由（而且要写清楚理由、等用户确认），**不要**做以下任何一件事：
 
 - ❌ 重写 Agent Loop（`run_agent_loop` 是这个项目最值钱的一段代码）
-- ❌ 重写 Tool Registry（`AVAILABLE_TOOLS` / `TOOL_HANDLERS` 的分离已经验证过"加工具不动循环"）
+- ❌ 再次拆分 Tool Registry（`TOOL_REGISTRY` 已是 Schema / Handler / Risk 的单一来源）
 - ❌ 换框架
 - ❌ 引入 LangGraph
 - ❌ 引入 Memory
 - ❌ 引入 RAG
 - ❌ 引入 MCP
+- ❌ 实现 Shell；未来只需新增 Shell 的 Schema、handler 和 Registry 注册项，现有
+  Permission Runtime、Agent Loop、Session、Context、Sandbox 复用即可
 - ❌ 增加新 Tool（三个工具已够，见第 4 章）
 - ❌ 做 GUI
 - ❌ 做 Multi-Agent
@@ -771,5 +795,6 @@ README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复
 
 ---
 
-**交接完毕。** 项目已完成 Phase 10：Context Management、Session Persistence、Long File Reading
-与 Tool Permission / Side-effect Approval 均已收尾；Session 文件默认不进入版本库，后续阶段不自动开始。
+**交接完毕。** 项目已完成 Phase 11：Context Management、Session Persistence、Long File Reading、
+Tool Permission / Side-effect Approval 与 Generalized Tool Capability / Permission Policy 均已收尾；
+Session 文件默认不进入版本库，后续阶段不自动开始。
