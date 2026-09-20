@@ -29,6 +29,7 @@
         不存在                → 模拟读一个没有的文件
         坏参数                → 模拟模型给出了非法 JSON 参数
         大文件 / big_notes.txt → 读一个超长文件，验证结果会被截断
+        long_notes.md         → 根据 has_more / next_start_line 分段读取，找到 TARGET_FACT
         写个测试文件          → 正常写进工作目录
         写越界                → 模拟模型试图写 ../evil.txt，被沙盒拒绝
         写绝对路径            → 模拟模型试图写 C:/evil.txt，被沙盒拒绝
@@ -42,6 +43,7 @@
 """
 
 import json
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -104,6 +106,11 @@ SUMMARY_TEXT = (
     "- 模型只负责决定下一步，真正的读写由 Python 执行\n"
     "- 工具结果必须原样带回模型，否则它无从判断\n"
 )
+
+# 这个场景模拟模型根据 read_file 的返回元数据自主翻页。
+# TARGET_FACT 的具体行号和值都不写在 mock 逻辑里，只从工具结果中提取。
+LONG_READ_FLAG = "long_notes.md"
+LONG_READ_FILE = "long_notes.md"
 
 # 出现这个词时，mock 扮演一个「明知故问」的模型：对同一文件提两次
 # 完全相同的工具调用。用来验证重复调用保护——第一次正常执行，
@@ -182,7 +189,9 @@ class MockHandler(BaseHTTPRequestHandler):
 
         # 四个多步场景必须排在单工具触发词之前：它们的提问里同样写有文件名，
         # 会被当成「读单个文件」匹配上，那样只会读一次就收口，循环跑不起来。
-        if SUMMARY_FLAG in last_user:
+        if LONG_READ_FLAG in last_user:
+            body = self._long_read_body(payload)
+        elif SUMMARY_FLAG in last_user:
             body = self._summary_body(payload)
         elif COMPARE_FLAG in last_user:
             body = self._comparison_body(payload)
@@ -319,6 +328,43 @@ class MockHandler(BaseHTTPRequestHandler):
             self._next_call_id(payload),
             "read_file",
             json.dumps({"path": target}),
+        )
+
+    def _long_read_body(self, payload: dict) -> dict:
+        """Continue reading only when the latest result says more data exists."""
+        result = self._tool_result_after_user(payload)
+        fact = re.search(r'TARGET_FACT\s*=\s*["\']([^"\']+)["\']', result)
+        if fact:
+            return self._answer_body(
+                payload,
+                f"[mock 回复] 找到了 TARGET_FACT 的值：{fact.group(1)}。",
+            )
+
+        read_calls = [
+            args
+            for name, args in _history_calls(payload)
+            if name == "read_file" and args.get("path") == LONG_READ_FILE
+        ]
+        if not read_calls:
+            arguments = {"path": LONG_READ_FILE}
+        else:
+            next_line = re.search(r"next_start_line：(\d+)", result)
+            if "has_more：true" not in result or next_line is None:
+                return self._answer_body(
+                    payload,
+                    "[mock 回复] 已读到文件末尾，但没有找到 TARGET_FACT。",
+                )
+            arguments = {
+                "path": LONG_READ_FILE,
+                "start_line": int(next_line.group(1)),
+                "max_lines": 100,
+            }
+
+        return self._tool_call_body(
+            payload,
+            self._next_call_id(payload),
+            "read_file",
+            json.dumps(arguments, ensure_ascii=False),
         )
 
     def _comparison_answer(self, payload: dict, read_paths: list[str]) -> dict:

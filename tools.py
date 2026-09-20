@@ -14,7 +14,7 @@ main.py 的执行器会从这两处各取一半，所以边界现在就划对。
 
 from pathlib import Path
 
-from config import WORKSPACE_DIR
+from config import MAX_READ_RESULT_CHARS, MAX_TOOL_RESULT_CHARS, WORKSPACE_DIR
 
 # 工具的「说明书」。发给模型的不是函数本身，而是这份 JSON 描述；
 # 模型照着它生成一次工具调用请求。
@@ -26,6 +26,8 @@ READ_FILE_TOOL = {
         "description": (
             "读取工作目录内一个文件的文本内容。"
             "当用户想了解某个文件里写了什么时，用这个工具。"
+            "默认读取从第 1 行开始的最多 100 行；如果 has_more 为 true，"
+            "根据 next_start_line 决定是否继续读取下一段。"
         ),
         "parameters": {
             "type": "object",
@@ -33,6 +35,18 @@ READ_FILE_TOOL = {
                 "path": {
                     "type": "string",
                     "description": "相对于工作目录的路径，例如 \"todo.txt\"",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1,
+                    "description": "从第几行开始读取，行号从 1 开始",
+                },
+                "max_lines": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 100,
+                    "description": "本次最多读取多少行",
                 }
             },
             "required": ["path"],
@@ -128,8 +142,44 @@ def resolve_inside_workspace(path: str) -> Path:
     return target
 
 
-def read_file(path: str) -> str:
-    """读取工作目录内一个文件的文本内容。
+def _validate_positive_line_argument(name: str, value: int) -> None:
+    """Reject non-positive or non-integer line range arguments clearly."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} 必须是大于等于 1 的整数，当前是：{value!r}")
+
+
+def _format_read_result(
+    path: str, start_line: int, selected_lines: list[str], total_lines: int
+) -> str:
+    """Format a result whose metadata describes exactly ``selected_lines``."""
+    if selected_lines:
+        end_line = start_line + len(selected_lines) - 1
+        current_range = f"{start_line}-{end_line}"
+    else:
+        end_line = start_line - 1
+        current_range = "无"
+
+    has_more = end_line < total_lines
+    next_start_line = end_line + 1 if has_more else None
+    content = "".join(selected_lines)
+
+    return "\n".join(
+        [
+            f"文件：{path}",
+            f"当前范围：{current_range} 行",
+            f"总行数：{total_lines}",
+            f"has_more：{'true' if has_more else 'false'}",
+            f"next_start_line：{next_start_line if next_start_line is not None else 'null'}",
+            "",
+            "--- 内容开始 ---",
+            content,
+            "--- 内容结束 ---",
+        ]
+    )
+
+
+def read_file(path: str, start_line: int = 1, max_lines: int = 100) -> str:
+    """Read one line range from a UTF-8 file and report how to continue.
 
     纯函数：成功返回内容，失败抛原生异常
     （FileNotFoundError / PermissionError / UnicodeDecodeError）。
@@ -137,7 +187,50 @@ def read_file(path: str) -> str:
     不吞异常、也不返回错误字符串——「怎么把失败说给模型听」
     是 Phase 3 执行层的职责，工具本身不该知道模型的存在。
     """
-    return resolve_inside_workspace(path).read_text(encoding="utf-8")
+    _validate_positive_line_argument("start_line", start_line)
+    _validate_positive_line_argument("max_lines", max_lines)
+
+    target = resolve_inside_workspace(path)
+    selected_lines = []
+    end_exclusive = start_line + max_lines
+    total_lines = 0
+    selected_chars = 0
+    selection_stopped = False
+
+    # Scan to EOF so the model gets an accurate total line count, but retain
+    # only the requested range that fits as complete lines in the safe budget.
+    with target.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            total_lines = line_number
+            if not (start_line <= line_number < end_exclusive) or selection_stopped:
+                continue
+
+            line_chars = len(line)
+            if not selected_lines and line_chars > MAX_READ_RESULT_CHARS:
+                raise ValueError(
+                    f"第 {line_number} 行长度超过单次读取安全上限，"
+                    "当前行无法用行分页完整返回"
+                )
+
+            if selected_chars + line_chars > MAX_READ_RESULT_CHARS:
+                selection_stopped = True
+                continue
+
+            selected_lines.append(line)
+            selected_chars += line_chars
+
+    result = _format_read_result(path, start_line, selected_lines, total_lines)
+
+    # The reserve above covers normal metadata, but a very long path can consume
+    # that reserve. Keep the final guarantee explicit without splitting a line.
+    while len(result) > MAX_TOOL_RESULT_CHARS and selected_lines:
+        selected_lines.pop()
+        result = _format_read_result(path, start_line, selected_lines, total_lines)
+
+    if len(result) > MAX_TOOL_RESULT_CHARS:
+        raise ValueError("读取结果元数据超过单次工具结果上限，无法返回")
+
+    return result
 
 
 def list_files(path: str | None = None) -> str:

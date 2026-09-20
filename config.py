@@ -52,6 +52,11 @@ MAX_AGENT_STEPS = 8
 # 定 4000 是因为它明显小于常见模型的上下文窗口，又够装下几页笔记。
 MAX_TOOL_RESULT_CHARS = 4000
 
+# read_file 的内容预算要小于全局工具结果上限，给文件名、分页元数据和边界标记
+# 留出空间。这样正常的 read_file 不会先生成一个会被 main.py 截断的结果。
+READ_RESULT_OVERHEAD_RESERVE_CHARS = 512
+MAX_READ_RESULT_CHARS = MAX_TOOL_RESULT_CHARS - READ_RESULT_OVERHEAD_RESERVE_CHARS
+
 # 发给模型时保留最近几个完整的工具回合。
 # 更早的 read_file 结果会变成可重读的引用，避免长任务把整段旧内容永久带上。
 MAX_RECENT_TOOL_ROUNDS = 2

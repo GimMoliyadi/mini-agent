@@ -92,8 +92,17 @@ def check_tools() -> None:
 
         # 1) 正常读取必须放行，而且读到的确实是那个文件的内容
         text = tools.read_file("todo.txt")
-        assert text == "hello sandbox", f"内容不符：{text!r}"
+        assert "hello sandbox" in text, f"内容不符：{text!r}"
+        assert "当前范围：1-1 行" in text, f"缺少读取范围：{text!r}"
         print(f"OK  正常读取：todo.txt -> {text!r}")
+
+        # 范围参数不能绕过同一条沙盒边界
+        try:
+            tools.read_file("../config.py", start_line=2, max_lines=1)
+        except PermissionError:
+            print("OK  范围读取仍受沙盒约束：../config.py")
+        else:
+            raise AssertionError("范围读取竟然放行了沙盒外路径")
 
         # 2) 相对解析必须仍然落在沙盒内（没有偷偷跳到别处）
         for relative_path in INSIDE_PATHS:

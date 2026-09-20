@@ -21,7 +21,7 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 8
+## 当前状态：Phase 9
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -36,6 +36,14 @@ Phase 7 已完成 Context Management：默认模式为 `WRITE_ONLY`，只压缩�
 Phase 8 已完成 Session Persistence：交互式运行会把稳定的 canonical `messages` 保存到
 `sessions/<session_id>.json`，可用 `main.py --resume SESSION_ID` 恢复同一段对话。
 Session 不是 Memory：不做跨 Session 搜索、合并、自动摘要或知识提取。
+
+Phase 9 已完成 Long File Reading：`read_file(path, start_line=1, max_lines=100)`
+按完整行返回分页结果，并让 metadata 精确描述实际返回范围。工具层使用独立的安全字符预算，
+给分页 metadata 和边界标记预留空间；`MAX_TOOL_RESULT_CHARS = 4000` 仍是所有工具结果的最终兜底。
+Python 不自动循环翻页，模型根据 `has_more` 和 `next_start_line` 自主决定是否继续读取。
+
+Phase 9 真实验证已通过：模型实际读取 `1-100 → 101-200 → 201-300 → 301-400 → 401-450`，
+在第 377 行找到 `TARGET_FACT = "phase9-secret-value"`，随后正常给出 Final Answer，未撞步数上限。
 
 Phase 5 加的三样东西：
 
@@ -219,7 +227,7 @@ mini-agent-lab/
 ├── tools.py              # 工具层：三个工具说明书 + 沙盒校验 + list/read/write + 名字→函数表
 ├── requirements.txt      # 唯一第三方依赖：openai
 ├── README.md             # 本文件
-├── REAL_RUN_LOG.md       # 真模型实测记录（Phase 5.5 首轮 + Phase 6 复测）
+├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9）
 ├── .env.example          # 环境变量模板，复制成 .env 再填 Key
 ├── .gitignore            # 保证 .env 和 __pycache__ 不进版本库
 ├── eval/                 # Phase 6.5：轻量 Eval（不新增 Agent 能力，只测稳定性）
@@ -235,6 +243,7 @@ mini-agent-lab/
 │   ├── test_sandbox.py   # 沙盒边界 + 注册表一致性单元测试
 │   ├── test_loop.py      # 重复调用检测 + 工具调用协议合法性
 │   ├── test_session.py   # Session 保存/恢复、密钥排除和上下文视图测试
+│   ├── test_long_file.py # Phase 9 分段读取、完整行和 mock 分页测试
 │   └── inputs/           # 喂给 main.py 的 stdin 输入，用来复现某次实测
 ├── sessions/             # 本地 Session JSON（已加入 .gitignore，不提交实际会话）
 └── demo_workspace/       # Agent 唯一允许读写的工作目录（沙盒）
@@ -352,6 +361,9 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 - **Phase 8 · Session Persistence** ✅ —— 增加 `sessions/<session_id>.json` 保存/恢复，
   `python main.py --resume SESSION_ID` 恢复同一 Session；保存前校验 tool-call 配对，
   不保存 API Key，不进入 Memory。
+- **Phase 9 · Long File Reading** ✅ —— 扩展现有 `read_file` 的 `start_line` / `max_lines`，
+  只返回安全预算内的完整行，并由实际返回范围生成 `has_more` / `next_start_line`；
+  Python 不自动翻页，保留全局结果长度兜底。mock、多段本地测试和一次真实模型验证均通过。
 
 当前阶段已收尾，后续能力等待明确确认后再开始。
 

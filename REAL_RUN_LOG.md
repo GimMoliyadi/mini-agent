@@ -220,3 +220,40 @@ mock 服务器日志：3 次 POST，**全部 200，零 400**。
 没有对照组，所以只能说「这次表现明显更好、且机制上对症」，
 不能说「必然每次都这样」。防再犯靠的是三层防线同时存在，
 其中第 1 层（模型自己判断）是主要变化点。
+
+---
+
+# Phase 9 真实分段读取验证
+
+日期：2026-09-20
+模型：`sensenova-6.8-flash-lite` @ `https://token.sensenova.cn/v1`
+任务：阅读 `long_notes.md`，找到 `TARGET_FACT` 的值；允许按需要分段读取。
+代理：`127.0.0.1:9674`；未打印 API Key、Authorization 或敏感 Header。
+
+## 结论
+
+**通过。** Provider 请求成功，模型没有被 Python 自动翻页，实际自主提出了 5 次
+`read_file`，最后给出 Final Answer；没有撞 `MAX_AGENT_STEPS`，没有 Sandbox、Session、
+Context 回归。
+
+## 真实 Tool 链
+
+| Turn | finish_reason | Tool 调用与实际返回范围 | prompt / completion / total |
+|---|---|---|---|
+| 1 | `tool_calls` | `read_file(path="long_notes.md")` → 1-100，`has_more=true`，next=101 | 1056 / 48 / 1104 |
+| 2 | `tool_calls` | 101-200 → 201-300 → 301-400；最后一段 `has_more=true`，next=401 | 2037 / 243 / 2280 |
+| 3 | `stop` | 401-450，`has_more=false`，next=null | 5977 / 37 / 6014 |
+
+合计：**3 model calls / 5 tool calls；prompt 9070 / completion 328 / total 9398 tokens**。
+
+## Final Answer
+
+```text
+在 `long_notes.md` 的第 377 行找到了：
+
+**TARGET_FACT = "phase9-secret-value"**
+```
+
+模型实际看到了完整的 1-100、101-200、201-300、301-400、401-450 连续行段；正常
+`read_file` 结果没有触发 `MAX_TOOL_RESULT_CHARS` 的最终截断。真实验证使用修复后的
+metadata，`has_more` 与实际返回范围一致。

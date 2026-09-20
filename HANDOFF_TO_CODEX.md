@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-20　**状态**：Phase 8 完成（Phase 7 Context Management、Phase 8 Session Persistence 均已收尾）
+**写于**：2026-09-20　**状态**：Phase 9 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -19,22 +19,23 @@
 没有数据库、没有多 Agent、没有 Docker。唯一第三方依赖是 `openai`。
 
 **不要给这个项目堆功能。** 每加一层都要能说清楚"它教会了我什么"，
-否则就是偏离目标。Phase 7 的价值在于理解上下文成本从哪来，Phase 8 的价值在于理解同一段 canonical 对话如何稳定保存与恢复。
+否则就是偏离目标。Phase 7 的价值在于理解上下文成本从哪来，Phase 8 的价值在于理解同一段 canonical 对话如何稳定保存与恢复，Phase 9 的价值在于理解长文件读取的分页边界与上下文可见范围。
 
 核心学习路线（这是项目的脊柱，改动前先对照）：
 
 ```
 LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
     → Multi-Tool → Completion Control → Eval → Context Management → Session Persistence
+    → Long File Reading
 ```
 
-当前已完成 Phase 8。本项目暂不自动进入 Memory 或其它后续能力。
+当前已完成 Phase 9。本项目暂不自动进入 Memory、RAG、MCP 或其它后续能力。
 
 ---
 
 ## 2. 当前项目状态
 
-Phase 0 到 Phase 8 全部完成并按阶段验证。每个阶段的三段式说明：
+Phase 0 到 Phase 9 全部完成并按阶段验证。每个阶段的三段式说明：
 **新增了什么 / 为什么新增 / 最重要的结论。**
 
 ### Phase 0 — 项目骨架
@@ -116,6 +117,18 @@ Phase 0 到 Phase 8 全部完成并按阶段验证。每个阶段的三段式说
 结论：**结果稳定，过程不稳定。** 8/8 成功，但同一个任务跑三次 token 差 **2.20 倍**。
 `main.py` 一个字都没改——Eval 只**驱动**它，不复写它的逻辑，所以测出来的就是终端里手打时的行为。
 
+### Phase 9 — Long File Reading
+
+新增：扩展现有 `read_file(path, start_line=1, max_lines=100)`，按完整行返回实际能放入安全预算的连续片段，
+并返回实际范围、总行数、`has_more`、`next_start_line`。保留 `MAX_TOOL_RESULT_CHARS = 4000` 全局最终兜底，
+单行超过安全预算时显式返回工具错误。
+为什么：此前 `read_file` 的逻辑范围可能大于最终进入模型 Context 的文本范围，造成 metadata 与正文不一致，
+模型会误以为已经看完一个 `has_more=false` 的范围。
+结论：Python 不自动循环；模型自主发出后续 Tool Call。旧问题范围已回归验证，mock 分段读取通过，
+一次真实模型验证实际读取 `1-100 → 101-200 → 201-300 → 301-400 → 401-450`，在第 377 行找到目标并正常收口。
+
+真实验证明细见 `REAL_RUN_LOG.md` 的 Phase 9 小节。
+
 ---
 
 ## 3. 当前架构
@@ -125,12 +138,14 @@ Phase 0 到 Phase 8 全部完成并按阶段验证。每个阶段的三段式说
 ```
 main.py           入口 + Agent Loop + 工具执行层 + 回喂模型。全部 Runtime 逻辑在这里
 config.py         配置：读 .env，产出 LLMConfig、WORKSPACE_DIR、MAX_AGENT_STEPS、
-                  MAX_TOOL_RESULT_CHARS、LOCAL_NO_PROXY。WORKSPACE_DIR 在这里唯一定义一次
+                  MAX_TOOL_RESULT_CHARS、MAX_READ_RESULT_CHARS、LOCAL_NO_PROXY。
+                  WORKSPACE_DIR 在这里唯一定义一次
 tools.py          三个工具说明书（*_TOOL）+ AVAILABLE_TOOLS + TOOL_HANDLERS
-                  + 沙盒校验 resolve_inside_workspace + 三个 handler 函数
+                  + 沙盒校验 resolve_inside_workspace + 三个 handler 函数（含分页 read_file）
 tests/            mock_server.py（本地假服务器，不需要 Key）
                   test_sandbox.py（沙盒边界 + 注册表一致性，27 项）
                   test_loop.py（重复调用检测 + 协议合法性，4 组）
+                  test_long_file.py（Phase 9 分段读取、完整行和 mock 分页）
                   inputs/*.txt（喂给 main.py 的 stdin，用来复现某次实测）
 eval/             轻量 Eval（Phase 6.5）
   tasks.json        8 个任务 + 每个任务的成功规则
@@ -740,5 +755,5 @@ README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复
 
 ---
 
-**交接完毕。** 项目已完成 Phase 8：Context Management 与 Session Persistence 均已收尾；
+**交接完毕。** 项目已完成 Phase 9：Context Management、Session Persistence 与 Long File Reading 均已收尾；
 Session 文件默认不进入版本库，后续阶段不自动开始。
