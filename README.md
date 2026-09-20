@@ -21,7 +21,7 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 6
+## 当前状态：Phase 8
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -29,6 +29,13 @@
 ```
 用户任务 → list_files（探索）→ read_file（读取）→ write_file（写入）→ 最终回答
 ```
+
+Phase 7 已完成 Context Management：默认模式为 `WRITE_ONLY`，只压缩发给模型的历史
+`write_file` 内容，canonical `messages` 保持完整；同时保留 `OFF` 和 `FULL` 两种模式。
+
+Phase 8 已完成 Session Persistence：交互式运行会把稳定的 canonical `messages` 保存到
+`sessions/<session_id>.json`，可用 `main.py --resume SESSION_ID` 恢复同一段对话。
+Session 不是 Memory：不做跨 Session 搜索、合并、自动摘要或知识提取。
 
 Phase 5 加的三样东西：
 
@@ -208,6 +215,7 @@ cmd /c '.venv\Scripts\python.exe main.py < tests\inputs\real_retest_v2.txt'
 mini-agent-lab/
 ├── main.py               # 程序入口：聊天循环 + Agent 循环 + 执行工具并回喂模型
 ├── config.py             # 配置：读 .env，产出模型连接信息、沙盒目录、最大步数、结果上限
+├── session.py            # Session JSON 的创建、保存、加载和 canonical message 校验
 ├── tools.py              # 工具层：三个工具说明书 + 沙盒校验 + list/read/write + 名字→函数表
 ├── requirements.txt      # 唯一第三方依赖：openai
 ├── README.md             # 本文件
@@ -226,7 +234,9 @@ mini-agent-lab/
 │   ├── mock_server.py    # 本地假服务器，没有 Key 也能验证接线
 │   ├── test_sandbox.py   # 沙盒边界 + 注册表一致性单元测试
 │   ├── test_loop.py      # 重复调用检测 + 工具调用协议合法性
+│   ├── test_session.py   # Session 保存/恢复、密钥排除和上下文视图测试
 │   └── inputs/           # 喂给 main.py 的 stdin 输入，用来复现某次实测
+├── sessions/             # 本地 Session JSON（已加入 .gitignore，不提交实际会话）
 └── demo_workspace/       # Agent 唯一允许读写的工作目录（沙盒）
     ├── agent_notes.md    # Agent 学习笔记
     ├── python_notes.md   # Python 速记
@@ -246,7 +256,7 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 |---|---|
 | 模型的选择不可靠 | 挑哪个文件、读几个、要不要再读，全靠模型判断。它可能漏读关键文件，也可能读了不相干的 |
 | 只拦「完全相同」的重复 | 重复检测认的是工具名 + 规范化参数全等。模型换成不同参数原地打转（读 A、读 B、再读 A 的同类变体）不会被发现，仍只靠步数上限兜住 |
-| 没有记忆 | 任务结束，历史就丢了。下次问起，它不知道上次整理过什么 |
+| 没有 Memory | Session 只恢复同一段 canonical 对话，不做跨 Session 搜索、合并或自动记忆 |
 | 没有工具返回值校验 | 工具结果整段塞回模型，除了长度上限，没有检查它是不是模型能用上的 |
 
 这四处刻意不补。Phase 6 只解决「做完了不知道自己该停」这一件事本身；
@@ -320,7 +330,7 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
   功能本身正确（19 个单测覆盖），只是没被真正需要过。
 - **步数上限余量只有 2**：最多用到第 6 轮，上限是 8。稍微复杂一点的任务就会逼近上限。
 
-## 后续阶段
+## 阶段完成情况
 
 每一步都需要你确认才继续，不会自动往下走。
 
@@ -337,7 +347,13 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 - **Phase 6.5 · Eval / 稳定性验证** ✅ —— 仍然不新增 Agent 能力，`main.py` 一字未改。
   建了 `eval/tasks.json`（8 个任务）+ 总控 + 19 个单测，跑了一轮真模型。
   结论：**结果稳定（8/8 成功），过程不稳定（同一任务 token 差 2.20 倍）**。
-  下一步最值得做的是 Context Management，不是再加 Agent 能力。见 `eval/REPORT.md`。
+- **Phase 7 · Context Management** ✅ —— 增加 `OFF / WRITE_ONLY / FULL` 模式，默认
+  `WRITE_ONLY`；canonical history 与发给模型的上下文视图分离，并完成离线基准与受控验证。
+- **Phase 8 · Session Persistence** ✅ —— 增加 `sessions/<session_id>.json` 保存/恢复，
+  `python main.py --resume SESSION_ID` 恢复同一 Session；保存前校验 tool-call 配对，
+  不保存 API Key，不进入 Memory。
+
+当前阶段已收尾，后续能力等待明确确认后再开始。
 
 > **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
 > 实际在 Phase 2 就和 `read_file` 一起做掉了。

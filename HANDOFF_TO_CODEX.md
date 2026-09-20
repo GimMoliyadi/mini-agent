@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-20　**状态**：Phase 6.5 完成，Phase 7 未开始
+**写于**：2026-09-20　**状态**：Phase 8 完成（Phase 7 Context Management、Phase 8 Session Persistence 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -19,22 +19,22 @@
 没有数据库、没有多 Agent、没有 Docker。唯一第三方依赖是 `openai`。
 
 **不要给这个项目堆功能。** 每加一层都要能说清楚"它教会了我什么"，
-否则就是偏离目标。Phase 7 的价值不在"做了个优化"，在"理解了上下文成本从哪来"。
+否则就是偏离目标。Phase 7 的价值在于理解上下文成本从哪来，Phase 8 的价值在于理解同一段 canonical 对话如何稳定保存与恢复。
 
 核心学习路线（这是项目的脊柱，改动前先对照）：
 
 ```
 LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
-    → Multi-Tool → Completion Control → Eval → Context Management
+    → Multi-Tool → Completion Control → Eval → Context Management → Session Persistence
 ```
 
-现在走到最后一格之前一格。**下一步就是 Context Management。**
+当前已完成 Phase 8。本项目暂不自动进入 Memory 或其它后续能力。
 
 ---
 
 ## 2. 当前项目状态
 
-Phase 0 到 Phase 6.5 全部完成并实测通过。每个阶段的三段式说明：
+Phase 0 到 Phase 8 全部完成并按阶段验证。每个阶段的三段式说明：
 **新增了什么 / 为什么新增 / 最重要的结论。**
 
 ### Phase 0 — 项目骨架
@@ -488,9 +488,20 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 
 ---
 
-## 10. 下一阶段：Phase 7 Context Management
+## 10. Phase 7 Context Management（已完成）
 
-**本章只描述目标和要分析的问题。不要实现。**
+本章保留 Phase 7 实施前的设计记录；Phase 7 已完成，Phase 8 也已完成。
+
+### 实际完成情况
+
+- Phase 7 增加 `OFF / WRITE_ONLY / FULL` 三种上下文模式，默认 `WRITE_ONLY`。
+- canonical `messages` 保持完整，只有发给模型的视图由 `build_model_context()` 压缩。
+- Phase 8 增加 `session.py` 和 `main.py --resume SESSION_ID`。
+- Session JSON 保存 `session_id`、时间、模型、版本和 canonical `messages`，不保存 API Key。
+- 保存/加载时校验 `assistant.tool_calls` 与 `tool` result 的配对；不做 Memory、RAG 或跨 Session 合并。
+- Session 本地测试与既有 sandbox、loop、Eval metrics、reliability、CLI 测试均通过。
+
+以下内容只描述当时的目标和分析问题，供理解设计取舍，不是待执行任务。
 
 ### 目标
 
@@ -577,7 +588,8 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 | 6 | `main.py` | 442 行，全部 Runtime 逻辑。Agent Loop + 工具执行层 + 重复检测都在这里 |
 | 7 | `tools.py` | 205 行。三个工具说明书 + 沙盒校验 + handler |
 | 8 | `config.py` | 144 行。所有常量 + `.env` 解析 |
-| 9 | `eval/tasks.json` | 8 个任务 + 成功规则。Phase 7 的验收基线 |
+| 9 | `eval/tasks.json` | 8 个任务 + 成功规则。Phase 7 的历史验收基线 |
+| 10 | `session.py` | Phase 8 Session JSON 的创建、保存、加载和 canonical message 校验 |
 
 读的时候建议特别看这三处，因为它们的注释里写着"为什么"：
 - `main.py` 的 `run_agent_loop` —— 上限检查为什么放在执行**之前**
@@ -586,17 +598,15 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 
 ---
 
-## 13. Codex 接手后的第一件事
+## 13. Codex 接手后的第一件事（历史流程，已完成）
 
-**不要直接改代码。** 先做下面的六件事，做完给用户看，**等确认**再动手：
+以下是 Phase 7 接手时使用的历史流程；Phase 8 已完成，当前没有待执行的接手步骤。
 
 1. **读第 12 章列的那些文件。**
 
 2. **检查 `git status`。**
-   当前状态：仓库已 `git init`，但**还没有任何 commit**，所有文件都是 untracked
-   （`?? main.py` `?? config.py` `?? tools.py` `?? README.md` `?? tests/` `?? eval/` `?? demo_workspace/` 等）。
-   先跟用户确认要不要先做首次提交。**这一步很关键**：
-   没有基线 commit，Phase 7 的任何改动都无从 diff。
+   历史上这里曾经没有基线 commit；现在 Phase 7 已有基线提交，Phase 8 收尾提交后以
+   最新 `git status` 为准。不要把本段历史说明当成当前工作区状态。
 
 3. **画出当前的 messages 生命周期。**
    从 `main()` 里 `messages = [{"role":"system", ...}]` 开始，到任务结束为止，
@@ -730,4 +740,5 @@ README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复
 
 ---
 
-**交接完毕。** 项目停在 Phase 6.5，Phase 7 尚未开始，代码一行未改。
+**交接完毕。** 项目已完成 Phase 8：Context Management 与 Session Persistence 均已收尾；
+Session 文件默认不进入版本库，后续阶段不自动开始。

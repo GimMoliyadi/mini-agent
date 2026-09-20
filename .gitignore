@@ -25,3 +25,6 @@ eval/.workspace_snapshot/
 eval/.run_log.txt
 # 每次运行生成的逐题原始记录（基线结果仍保留在 eval/results.json）
 eval/runs/
+
+# 本地会话持久化文件，可能包含用户的完整对话和工具参数
+sessions/

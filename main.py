@@ -17,7 +17,9 @@ Phase 5 里 ask() 只返回 message，这两项被直接丢掉，
 不在 Python 里强行替模型做 Final Answer 的决定、不记 Memory。
 """
 
+import argparse
 import json
+import sys
 from dataclasses import dataclass
 
 from openai import APIError, OpenAI
@@ -35,6 +37,7 @@ from config import (
     load_config,
 )
 from tools import AVAILABLE_TOOLS, TOOL_HANDLERS
+from session import SessionError, create_session, load_session, save_session
 
 BANNER = "Mini Agent Lab"
 
@@ -587,52 +590,80 @@ def print_environment(config: LLMConfig) -> None:
     print("每次请求会打印 finish_reason 和 token 用量（服务商没返回就显示 unavailable）")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the interactive Mini Agent")
+    parser.add_argument("--resume", metavar="SESSION_ID", help="恢复一个已保存的 Session")
+    args = parser.parse_args(argv)
+
     config = load_config()
     print_environment(config)
+
+    if args.resume:
+        try:
+            record = load_session(args.resume)
+        except SessionError as exc:
+            print(f"[Session错误] {exc}", file=sys.stderr)
+            return 2
+        messages = record["messages"]
+        session_id = record["session_id"]
+        print(f"Session: {session_id}（已恢复）")
+    else:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        record = create_session(config.model, messages, get_context_mode())
+        session_id = record["session_id"]
+        save_session(record)
+        print(f"Session: {session_id}")
 
     client = build_client(config)
     print("输入一句话开始对话；输入 exit 退出。")
 
-    # 系统提示词作为第一条常驻历史
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    try:
+        while True:
+            try:
+                user_input = input("\n你 > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                # Ctrl+C / Ctrl+D 应当体面退出，而不是甩一屏 traceback
+                print("\n再见。")
+                return 0
 
-    while True:
-        try:
-            user_input = input("\n你 > ").strip()
-        except (EOFError, KeyboardInterrupt):
-            # Ctrl+C / Ctrl+D 应当体面退出，而不是甩一屏 traceback
-            print("\n再见。")
-            return
+            if not user_input:
+                continue
+            if user_input.lower() in EXIT_COMMANDS:
+                print("再见。")
+                return 0
 
-        if not user_input:
-            continue
-        if user_input.lower() in EXIT_COMMANDS:
-            print("再见。")
-            return
+            # 记下这条提问在历史里的位置。失败时要退回到它之前，
+            # 把悬空提问和它后面产生的半截记录（工具调用、工具结果）一起清掉。
+            messages.append({"role": "user", "content": user_input})
+            position = len(messages) - 1
 
-        # 记下这条提问在历史里的位置。失败时要退回到它之前，
-        # 把悬空提问和它后面产生的半截记录（工具调用、工具结果）一起清掉。
-        messages.append({"role": "user", "content": user_input})
-        position = len(messages) - 1
+            # 每个任务一份「已成功执行过的调用」指纹表，任务结束就丢。
+            # 跨任务不清的话，上一轮的正常调用会被这一轮误判成重复。
+            executed: set[tuple[str, str]] = set()
 
-        # 每个任务一份「已成功执行过的调用」指纹表，任务结束就丢。
-        # 跨任务不清的话，上一轮的正常调用会被这一轮误判成重复。
-        executed: set[tuple[str, str]] = set()
+            try:
+                # canonical history remains the source; only the outbound view is compressed.
+                first_reply = ask(client, config.model, build_model_context(messages))
+                log_reply(1, first_reply)
+                run_agent_loop(client, config.model, messages, first_reply, executed)
+            except (APIError, ConnectionError, TimeoutError) as exc:
+                # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通。
+                # 代码自身的 bug 不在此列，应当让它正常抛出来，方便你发现真问题。
+                del messages[position:]
+                print(f"\n[请求失败] {exc}")
+                continue
 
-        try:
-            # 第一次 ask 必须留在 main 的 try 里：它和后面整段共享同一个
-            # 回滚点，任何一次通信失败都能退回到这条提问之前。
-            first_reply = ask(client, config.model, messages)
-            log_reply(1, first_reply)
-            run_agent_loop(client, config.model, messages, first_reply, executed)
-        except (APIError, ConnectionError, TimeoutError) as exc:
-            # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通。
-            # 代码自身的 bug 不在此列，应当让它正常抛出来，方便你发现真问题。
-            del messages[position:]
-            print(f"\n[请求失败] {exc}")
-            continue
+            last = messages[-1] if messages else {}
+            completed = last.get("role") == "assistant" and not last.get("tool_calls")
+            if completed:
+                record["messages"] = messages
+                record["model"] = config.model
+                record["context_mode"] = get_context_mode()
+                save_session(record)
+                print(f"Session 已保存：{session_id}")
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

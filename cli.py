@@ -18,7 +18,7 @@ def run_task(task: str) -> dict:
     try:
         client = main.build_client(config)
         with redirect_stdout(sys.stderr):
-            reply = main.ask(client, config.model, messages)
+            reply = main.ask(client, config.model, main.build_model_context(messages))
             main.log_reply(1, reply)
             main.run_agent_loop(client, config.model, messages, reply, set())
         last = messages[-1]
