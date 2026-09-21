@@ -36,6 +36,8 @@ def model_final_reply(content: str = "完成") -> main.ModelReply:
 
 
 class CodingLoopTests(unittest.TestCase):
+    REQUIRED_TEST = ("python", ("-m", "unittest", "test_calculator", "-q"), ".")
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp_dir.name) / "coding_workspace"
@@ -50,7 +52,12 @@ class CodingLoopTests(unittest.TestCase):
         main.WORKSPACE_DIR = self.original_main_workspace
         self.temp_dir.cleanup()
 
-    def run_mock_loop(self, first_reply: main.ModelReply, following: list[main.ModelReply]):
+    def run_mock_loop(
+        self,
+        first_reply: main.ModelReply,
+        following: list[main.ModelReply],
+        required_test=None,
+    ):
         messages = [{"role": "user", "content": "修复 calculator.py，让测试通过。"}]
         trace = main.CodingTaskTrace()
         with patch.object(main, "ask", side_effect=following):
@@ -62,6 +69,7 @@ class CodingLoopTests(unittest.TestCase):
                 set(),
                 main.always_allow,
                 trace=trace,
+                required_test=required_test,
             )
         return messages, trace
 
@@ -91,6 +99,7 @@ class CodingLoopTests(unittest.TestCase):
                 ),
                 model_final_reply("已修复并通过测试。"),
             ],
+            required_test=self.REQUIRED_TEST,
         )
 
         self.assertEqual((self.workspace / "calculator.py").read_text(encoding="utf-8"), fixed)
@@ -100,6 +109,11 @@ class CodingLoopTests(unittest.TestCase):
         self.assertEqual(trace.model_calls, 4)
         self.assertFalse(trace.max_steps_reached)
         self.assertEqual(trace.final_answer, "已修复并通过测试。")
+        self.assertEqual(
+            [event["classification"] for event in trace.events if event.get("action") == "tool_call"],
+            ["PRODUCTIVE", "PRODUCTIVE", "SUCCESSFUL_COMMAND"],
+        )
+        self.assertTrue(any("[Completion status]" in m["content"] for m in messages if m["role"] == "tool"))
         write_event = next(event for event in trace.events if event.get("tool") == "write_file")
         command_event = next(event for event in trace.events if event.get("tool") == "run_command")
         self.assertEqual(write_event["approval"], "ALLOW")
@@ -131,6 +145,7 @@ class CodingLoopTests(unittest.TestCase):
                 ),
                 model_final_reply("第一次修复后仍失败，第二次修复已通过测试。"),
             ],
+            required_test=self.REQUIRED_TEST,
         )
 
         tool_results = [m["content"] for m in messages if m["role"] == "tool"]
@@ -145,6 +160,11 @@ class CodingLoopTests(unittest.TestCase):
             [event["exit_code"] for event in trace.events if event.get("tool") == "run_command"],
             ["1", "0"],
         )
+        command_results = [m["content"] for m in messages if m["role"] == "tool" and "Exit code:" in m["content"]]
+        self.assertNotIn("[Completion status]", command_results[0])
+        self.assertIn("[Completion status]", command_results[1])
+        self.assertEqual(trace.failed_commands, 1)
+        self.assertEqual(trace.successful_commands, 1)
 
     def test_mock_c_stops_at_max_steps_without_final_answer(self):
         first = model_tool_reply("c-1", "read_file", {"path": "calculator.py"})
@@ -159,6 +179,32 @@ class CodingLoopTests(unittest.TestCase):
         self.assertEqual(trace.model_calls, main.MAX_AGENT_STEPS)
         self.assertEqual(trace.tool_calls, main.MAX_AGENT_STEPS - 1)
         self.assertFalse(any(message.get("role") == "assistant" and not message.get("tool_calls") for message in messages))
+        self.assertEqual(trace.duplicate_blocked, main.MAX_AGENT_STEPS - 2)
+
+    def test_mock_d_policy_reject_recovers_with_required_test_hint(self):
+        fixed = "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"
+        (self.workspace / "calculator.py").write_text(fixed, encoding="utf-8")
+        first = model_tool_reply(
+            "d-invalid", "run_command", {"command": "python", "args": "not-a-list"}
+        )
+        messages, trace = self.run_mock_loop(
+            first,
+            [
+                model_tool_reply(
+                    "d-test",
+                    "run_command",
+                    {"command": "python", "args": ["-m", "unittest", "test_calculator", "-q"]},
+                ),
+                model_final_reply("策略拒绝后改用正确测试并通过。"),
+            ],
+            required_test=self.REQUIRED_TEST,
+        )
+
+        tool_results = [message["content"] for message in messages if message["role"] == "tool"]
+        self.assertTrue(tool_results[0].startswith(main.TOOL_FAILURE_PREFIX))
+        self.assertIn("[Completion status]", tool_results[1])
+        self.assertEqual(trace.policy_rejected, 1)
+        self.assertEqual(trace.successful_commands, 1)
 
     def test_denied_write_and_execution_do_not_change_or_start_process(self):
         write_messages = []

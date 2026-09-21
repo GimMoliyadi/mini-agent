@@ -25,7 +25,7 @@ class CliTests(unittest.TestCase):
         return result
 
     def test_completed(self):
-        def loop(client, model, messages, reply, executed, approval_callback, trace=None):
+        def loop(client, model, messages, reply, executed, approval_callback, trace=None, **kwargs):
             messages.append({"role": "assistant", "content": "done"})
         self.assertEqual(self.invoke(loop)["answer"], "done")
 
@@ -57,7 +57,12 @@ class CliTests(unittest.TestCase):
             },
         })
 
-        def loop(client, model, messages, reply, executed, approval_callback, trace=None):
+        def loop(client, model, messages, reply, executed, approval_callback, trace=None, **kwargs):
+            self.assertEqual(
+                kwargs["required_test"],
+                ("python", ("-m", "unittest", "test_calculator", "-q"), "."),
+            )
+            self.assertIn("Coding Task 收口规则", messages[0]["content"])
             messages.append({"role": "assistant", "content": "done"})
 
         original_workspace = cli.main.WORKSPACE_DIR

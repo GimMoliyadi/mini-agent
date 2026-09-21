@@ -706,3 +706,125 @@ Turn 8  仍请求工具，撞 MAX_AGENT_STEPS；没有 Final Answer
 
 这次真实运行证明：Agent 做对代码、测试通过、甚至工作区没有越界修改，仍不等于
 Coding Task accepted；Final Answer 和步数上限也是机器验收契约的一部分。
+
+---
+
+# Phase 15：Coding Completion & Budget Control
+
+日期：2026-09-21
+基线：`ab440bf Phase 14: add coding task acceptance contracts`
+
+## 实现范围
+
+Phase 15 保持 `MAX_AGENT_STEPS = 8`，没有用提高步数解决收口问题，也没有新增 Planner、
+Reviewer LLM、MCP、Memory、RAG、Diff/Patch Tool、Parallel Execution 或 Git 写操作。
+
+### Completion Trace
+
+`CodingTaskTrace` 现在按 Runtime 已有信息为每个 Tool Call 分类：
+
+| 分类 | 判定 |
+|---|---|
+| `PRODUCTIVE` | 非命令工具正常进入执行路径 |
+| `BLOCKED_DUPLICATE` | 完全相同的已成功调用被重复保护拦截 |
+| `POLICY_REJECTED` | 审批拒绝或 Command Policy / preflight 拒绝 |
+| `FAILED_COMMAND` | `run_command` 已执行但 exit code 不是 0（含无可解析成功码） |
+| `SUCCESSFUL_COMMAND` | `run_command` 已执行且 exit code 为 0 |
+
+每个 Coding Task 的 summary 额外记录：`executed_tools`、`duplicate_blocked`、
+`policy_rejected`、`failed_commands`、`successful_commands`；原有 model/tool/token 统计保留。
+
+### Acceptance 状态
+
+Verifier 结果现在同时给出：
+
+```text
+artifact_passed      = unexpected_changes 为空 且 Contract 最终测试通过
+interaction_completed = 有 Final Answer 且没有 MAX_AGENT_STEPS
+accepted              = artifact_passed AND interaction_completed AND 其它现有必要条件
+```
+
+因此 Phase 14 的真实结果可以更准确地表达为：
+
+```text
+artifact_passed=true
+interaction_completed=false
+accepted=false
+```
+
+独立 Verifier 没有改变：仍然重新计算 workspace diff，并用 Contract 固定命令重跑最终测试。
+
+### Guidance 与 Completion Hint
+
+Contract 模式的模型上下文增加了短 Guidance，明确目标文件、`command + args + cwd` required
+test 和收口规则：代码改动完成、required test 成功、没有新错误/未满足要求时，直接 Final
+Answer，简述改动和测试结果。
+
+只有严格匹配 Contract 的 required test 且该次 `run_command` exit 0，Tool Result 才附加：
+
+```text
+[Completion status]
+Command succeeded.
+If this satisfies the requested coding task and no work remains, return the final answer instead of repeating reads/writes/tests.
+```
+
+普通成功命令（例如 `git status`）不会触发该 Hint。Runtime 不自动生成 Final Answer，重复调用
+也仍然回喂合法 Tool Result，由模型决定是否收口。
+
+## Mock A-E
+
+| Case | 链路 | 结果 |
+|---|---|---|
+| A | `read → write → required test pass → Final` | 通过；成功测试有 Hint，随后 Final |
+| B | `read → write v1 → test fail → write v2 → test pass → Final` | 第一次失败不触发 Hint，第二次成功触发 |
+| C | `write → same write again` | 第二次不执行，分类 `BLOCKED_DUPLICATE`，仍可随后 Final |
+| D | `bad command → POLICY_REJECTED → correct required test → PASS → Final` | 策略拒绝不终止循环，合法测试成功并收口 |
+| E | 持续请求工具 | `MAX_AGENT_STEPS = 8` 仍触发，未删除保险丝 |
+
+## 本地验证
+
+```text
+python -m unittest tests.test_coding_loop tests.test_acceptance tests.test_cli -q
+Ran 24 tests ... OK
+
+python -m unittest discover -s tests -p "test_*.py" -q
+Ran 68 tests ... OK
+
+git diff --check
+OK
+```
+
+现有能力回归通过：Coding Loop、Acceptance、Command、Permission、Sandbox、Session、Context、
+Long-file、CLI 及其余 tests 全部通过。`MAX_AGENT_STEPS` 仍为 8。
+
+## Phase 15 真实模型实验
+
+按要求准备了全新的同构 fixture，使用同一个 `tests/fixtures/coding_contract.json`、同一个
+allowed path、同一个 required test 和同一个 `MAX_AGENT_STEPS=8`。但真实模型链没有成功启动，
+因此不能提供伪造的 model/tool calls 或 token 对比。
+
+第一次启动结果：
+
+```text
+OPENAI_BASE_URL=https://token.sensenova.cn/v1
+ImportError: Using SOCKS proxy, but the 'socksio' package is not installed.
+model_calls=0, tool_calls=0
+```
+
+修正本次运行的代理选择为 HTTP/HTTPS 后，第二次启动仍未进入模型：
+
+```text
+APIConnectionError: Connection error.
+model_calls=0, tool_calls=0
+```
+
+只读连通性证据：`Test-NetConnection 127.0.0.1 -Port 7897` 返回
+`TcpTestSucceeded=False`，通过该代理访问 `token.sensenova.cn:443` 失败。故 Phase 15 的
+真实 Agent 链、Final Answer、是否早于 Phase 14 收口、token 对比和独立 Verifier 真实结果均为
+“未执行/不可验证”；本地 Mock 与独立 Verifier 结果不受影响。
+
+## 结论
+
+Phase 15 已完成代码与本地验证，证明了 Completion Hint、双状态 Acceptance、Trace 分类和
+8 步保险丝的行为。尚未证明真实模型在同一 fixture 上比 Phase 14 更早收口；下一步最值得做的
+是恢复可用的模型/代理后，仅重跑这一项对照实验，不扩展系统架构。

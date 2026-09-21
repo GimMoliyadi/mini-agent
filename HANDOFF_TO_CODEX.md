@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-21　**状态**：Phase 13 正式关闭（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution、Phase 12.5 真实闭环及 Phase 13 Bounded Coding Loop 均已收尾）
+**写于**：2026-09-21　**状态**：Phase 15 已实现并完成本地验证（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution、Phase 12.5 真实闭环、Phase 13 Bounded Coding Loop、Phase 14 Coding Task Acceptance 及 Phase 15 Coding Completion & Budget Control 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -910,3 +910,48 @@ OK
 Tool Permission / Side-effect Approval、Generalized Tool Capability / Permission Policy、
 Controlled Command Execution、Bounded Coding Loop 与 Coding Task Acceptance 均已收尾；
 Session 文件默认不进入版本库，后续阶段不自动开始。
+
+---
+
+## 16. Phase 15：Coding Completion & Budget Control
+
+Phase 15 的唯一目标是让 Coding Task 在证据充分后更可靠地收口，同时保留
+`MAX_AGENT_STEPS = 8` 作为最终保险丝。没有引入 Planner、Reviewer LLM、MCP、Memory、RAG、
+Diff/Patch Tool、Parallel Execution 或 Git 写操作。
+
+### 实现
+
+- `main.py`：`CodingTaskTrace` 为每个 Tool Call 记录 `classification`：
+  `PRODUCTIVE`、`BLOCKED_DUPLICATE`、`POLICY_REJECTED`、`FAILED_COMMAND`、
+  `SUCCESSFUL_COMMAND`；汇总 `executed_tools`、重复拦截、策略拒绝、失败/成功命令和 token。
+- `acceptance.py`：Verifier 结果增加 `artifact_passed` 与 `interaction_completed`；
+  `accepted = artifact_passed AND interaction_completed AND 其它现有必要条件`。
+- `cli.py`：Contract 模式给模型短 Guidance，包含 `allowed_paths`、严格 required test 和
+  测试成功后的收口规则；普通 `--task` 不改变。
+- required test 只按 `command + args + cwd` 严格匹配。匹配且 exit 0 才添加 Completion Hint；
+  普通 `exit 0` 命令不触发。
+- Coding Task 下重复调用提示明确说明“动作刚刚已经成功执行，没有新信息”，但仍只回喂 Tool
+  Result，由模型决定是否 Final Answer。
+
+### Mock 与回归
+
+| Case | 结果 |
+|---|---|
+| A：read → write → required test pass → Final | 正常收口；Hint 出现 |
+| B：test fail → rewrite → required test pass → Final | 第一次不触发 Hint，第二次触发 |
+| C：重复动作 | 第二次不执行，分类 `BLOCKED_DUPLICATE`，可随后 Final |
+| D：Policy Reject → 正确 required test → pass → Final | 正常恢复，分类 `POLICY_REJECTED` |
+| E：顽固模型持续调用 | 仍在第 8 个 model call 触发保险丝 |
+
+本地验证：`python -m unittest discover -s tests -p "test_*.py" -q` 共 68 项通过；
+`git diff --check` 通过。Phase 14 的真实基线仍是 8 model calls / 8 tool calls、
+最终测试通过但无 Final Answer、`artifact_passed=true`、`interaction_completed=false`、
+`accepted=false`。
+
+Phase 15 真实模型复跑未进入模型：第一次因缺少 `socksio` 无法初始化 SOCKS 代理，修正为
+HTTP/HTTPS 代理后，连通性检查确认 `127.0.0.1:7897` 不可连接，客户端返回
+`APIConnectionError`；两次 trace 均为 0 model calls / 0 tool calls。因此没有合法的 Phase 15
+真实 Agent 链、token 对比或“更早收口”结论，避免将环境失败冒充模型结果。
+
+下一阶段最值得补的是在可用模型/代理环境下重复同一 fixture 的真实对照实验，并比较
+Completion Hint 对 model/tool calls、Final Answer、MAX_AGENT_STEPS 和 token 的影响；本阶段不实现。

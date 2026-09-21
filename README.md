@@ -21,7 +21,7 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 14
+## 当前状态：Phase 15
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -501,6 +501,29 @@ $env:TOOL_APPROVAL_MODE = "ALLOW"
 对象。Phase 14 本地共 66 项测试通过；一次真实模型运行的详细结果见 `REAL_RUN_LOG.md`，
 模型修复了允许文件且最终测试通过，但撞步数上限、没有 Final Answer，所以被 Verifier 正确拒绝。
 
+## Phase 15：Coding Completion & Budget Control
+
+Phase 15 保持 `MAX_AGENT_STEPS = 8`，解决的是“产物已经正确但 Agent 继续调用工具”的可观测性与
+收口提示，不把步数上限改大，也不让 Runtime 代替模型生成 Final Answer。
+
+Coding Task Trace 现在给每个 Tool Call 标注：`PRODUCTIVE`、`BLOCKED_DUPLICATE`、
+`POLICY_REJECTED`、`FAILED_COMMAND` 或 `SUCCESSFUL_COMMAND`，并汇总
+`executed_tools`、`duplicate_blocked`、`policy_rejected`、`failed_commands` 和
+`successful_commands`。Contract 验收结果另外拆成：
+
+- `artifact_passed`：没有越界文件变化，且独立最终测试满足 Contract；
+- `interaction_completed`：有 Final Answer，且没有撞 `MAX_AGENT_STEPS`；
+- `accepted`：两者都成立，并通过其余现有必要条件。
+
+Contract 模式会给模型一段很短的目标文件、严格 required test 和收口规则。只有严格匹配
+Contract 的 `command + args + cwd` 且 exit code 为 0 时，Tool Result 才附加 Completion Hint；
+普通成功命令不会被误报为任务完成。Verifier 仍然独立拍快照并重跑固定测试。
+
+Mock A（成功测试后 Final）、Mock B（失败测试后修复再测）、Mock C（重复调用）、Mock D（策略
+拒绝后恢复）均按预期工作；Mock E（顽固模型）仍由 8 步保险丝停止。Phase 15 本地全量共 68 项
+测试通过。真实模型复跑因当前代理端口 `127.0.0.1:7897` 不可连接而未进入模型，详见
+`REAL_RUN_LOG.md`，不把它伪装成成功样本。
+
 ## 阶段完成情况
 
 每一步都需要你确认才继续，不会自动往下走。
@@ -543,8 +566,11 @@ $env:TOOL_APPROVAL_MODE = "ALLOW"
 - **Phase 14 · Coding Task Contract / Machine-Verifiable Acceptance** ✅ —— 增加结构化
   Contract、文件快照差异和独立最终测试 Verifier；Mock A/B/C/D、增删文件、命令安全策略和
   全量 66 项本地测试通过。真实模型样本被正确判为未接受，暴露出当前 Agent 收口仍受步数上限影响。
+- **Phase 15 · Coding Completion & Budget Control** ✅ —— 增加 Tool Call 分类、产物/交互双状态、
+  Contract 收口 Guidance、严格 required-test Completion Hint 和 Mock A-E 回归；保持独立 Verifier
+  与 `MAX_AGENT_STEPS = 8`。本地 68 项测试通过；真实模型实验因代理不可达未完成。
 
-Phase 14 已收尾；下一阶段只做分析，不在本阶段自动开始。
+Phase 15 已收尾；下一阶段只做分析，不在本阶段自动开始。
 
 > **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
 > 实际在 Phase 2 就和 `read_file` 一起做掉了。

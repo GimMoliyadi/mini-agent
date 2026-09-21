@@ -81,6 +81,8 @@ class AcceptanceTests(unittest.TestCase):
         self.fix_calculator()
         result = self.verify()
         self.assertTrue(result["accepted"])
+        self.assertTrue(result["artifact_passed"])
+        self.assertTrue(result["interaction_completed"])
         self.assertEqual(result["changed_files"], ["calculator.py"])
         self.assertEqual(result["unexpected_changes"], [])
         self.assertEqual(result["final_test_exit_code"], 0)
@@ -95,6 +97,8 @@ class AcceptanceTests(unittest.TestCase):
         )
         result = self.verify()
         self.assertFalse(result["accepted"])
+        self.assertFalse(result["artifact_passed"])
+        self.assertTrue(result["interaction_completed"])
         self.assertEqual(result["final_test_exit_code"], 0)
         self.assertEqual(result["unexpected_changes"], ["test_calculator.py"])
         self.assertIn("unexpected file changed: test_calculator.py", result["reasons"])
@@ -102,9 +106,17 @@ class AcceptanceTests(unittest.TestCase):
     def test_mock_c_final_answer_does_not_override_failing_final_test(self):
         result = self.verify()
         self.assertFalse(result["accepted"])
+        self.assertFalse(result["artifact_passed"])
         self.assertTrue(result["agent_final_answer_present"])
         self.assertNotEqual(result["final_test_exit_code"], 0)
         self.assertIn("final_test_failed", result["reasons"])
+
+    def test_mock_d_artifact_passes_but_missing_final_is_not_accepted(self):
+        self.fix_calculator()
+        result = self.verify(final=False, max_steps_reached=True)
+        self.assertTrue(result["artifact_passed"])
+        self.assertFalse(result["interaction_completed"])
+        self.assertFalse(result["accepted"])
 
     def test_mock_d_final_test_catches_regression_after_agent_test(self):
         self.fix_calculator()

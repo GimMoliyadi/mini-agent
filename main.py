@@ -97,6 +97,21 @@ DUPLICATE_NOTICE = (
     "如果已经完成，请直接给出最终回答。"
 )
 
+CODING_DUPLICATE_NOTICE = (
+    DUPLICATE_NOTICE
+    + "\n该动作刚刚已经成功执行，没有新信息。"
+    + "如果 Coding Task 目标已满足，请直接 Final Answer。"
+)
+
+COMPLETION_HINT = (
+    "[Completion status]\n"
+    "Command succeeded.\n"
+    "If this satisfies the requested coding task and no work remains, "
+    "return the final answer instead of repeating reads/writes/tests."
+)
+
+RequiredTest = tuple[str, tuple[str, ...], str]
+
 
 def build_client(config: LLMConfig) -> OpenAI:
     """建立 OpenAI 兼容客户端。
@@ -146,6 +161,11 @@ class CodingTaskTrace:
     executed_tool_calls: int = 0
     write_file_calls: int = 0
     run_command_calls: int = 0
+    productive_calls: int = 0
+    duplicate_blocked: int = 0
+    policy_rejected: int = 0
+    failed_commands: int = 0
+    successful_commands: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -171,15 +191,22 @@ class CodingTaskTrace:
         result: str,
         approval: str,
         executed: bool,
+        classification: str | None = None,
     ) -> dict:
         tool_name = call.function.name
         arguments_summary, write_target = trace_arguments(call)
         exit_code = trace_exit_code(result)
         result_summary = result.splitlines()[0][:160] if result else "<empty>"
+        classification = classification or classify_tool_call(call, result, approval)
         self.tool_calls += 1
         self.executed_tool_calls += int(executed)
         self.write_file_calls += int(tool_name == "write_file")
         self.run_command_calls += int(tool_name == "run_command")
+        self.productive_calls += int(classification == "PRODUCTIVE")
+        self.duplicate_blocked += int(classification == "BLOCKED_DUPLICATE")
+        self.policy_rejected += int(classification == "POLICY_REJECTED")
+        self.failed_commands += int(classification == "FAILED_COMMAND")
+        self.successful_commands += int(classification == "SUCCESSFUL_COMMAND")
         event = {
             "turn": turn,
             "action": "tool_call",
@@ -190,6 +217,7 @@ class CodingTaskTrace:
             "exit_code": exit_code,
             "write_target": write_target,
             "executed": executed,
+            "classification": classification,
         }
         self.events.append(event)
         return event
@@ -204,6 +232,12 @@ class CodingTaskTrace:
             "executed_tool_calls": self.executed_tool_calls,
             "write_file_calls": self.write_file_calls,
             "run_command_calls": self.run_command_calls,
+            "productive_calls": self.productive_calls,
+            "executed_tools": self.executed_tool_calls,
+            "duplicate_blocked": self.duplicate_blocked,
+            "policy_rejected": self.policy_rejected,
+            "failed_commands": self.failed_commands,
+            "successful_commands": self.successful_commands,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -238,6 +272,46 @@ def trace_exit_code(result: str) -> str | None:
         if line.startswith("Exit code: "):
             return line.removeprefix("Exit code: ")
     return None
+
+
+def is_duplicate_notice(result: str) -> bool:
+    return result.startswith("[重复调用被拦截]")
+
+
+def classify_tool_call(call, result: str, approval: str) -> str:
+    """Classify one tool call using the existing Runtime result signals."""
+    if approval == "DUPLICATE_BLOCKED" or is_duplicate_notice(result):
+        return "BLOCKED_DUPLICATE"
+    if approval in {"DENY", "BLOCKED"}:
+        return "POLICY_REJECTED"
+    if call.function.name == "run_command":
+        return "SUCCESSFUL_COMMAND" if trace_exit_code(result) == "0" else "FAILED_COMMAND"
+    return "PRODUCTIVE"
+
+
+def call_matches_required_test(call, required_test: RequiredTest | None) -> bool:
+    if required_test is None or call.function.name != "run_command":
+        return False
+    try:
+        arguments = parse_tool_arguments(call)
+    except ValueError:
+        return False
+    command, args, cwd = required_test
+    return (
+        arguments.get("command") == command
+        and arguments.get("args", []) == list(args)
+        and arguments.get("cwd", ".") == cwd
+    )
+
+
+def add_completion_hint(
+    call,
+    result: str,
+    required_test: RequiredTest | None,
+) -> str:
+    if call_matches_required_test(call, required_test) and trace_exit_code(result) == "0":
+        return f"{result}\n\n{COMPLETION_HINT}"
+    return result
 
 
 def ask(client: OpenAI, model: str, messages: list[dict]) -> ModelReply:
@@ -509,7 +583,7 @@ def _compact_write_round(message: dict, results: list[dict]) -> dict | None:
             or not isinstance(result.get("content"), str)
             or result["content"].startswith(TOOL_FAILURE_PREFIX)
             or result["content"].startswith(APPROVAL_DENIED_PREFIX)
-            or result["content"] == DUPLICATE_NOTICE
+            or is_duplicate_notice(result["content"])
         ):
             return None
 
@@ -564,7 +638,7 @@ def _read_reference(call: dict, result: dict) -> str | None:
         call["function"]["name"] != "read_file"
         or not isinstance(content, str)
         or content.startswith(TOOL_FAILURE_PREFIX)
-        or content == DUPLICATE_NOTICE
+        or is_duplicate_notice(content)
     ):
         return None
 
@@ -695,7 +769,7 @@ def counts_as_successful_duplicate(call, result: str) -> bool:
     if (
         result.startswith(TOOL_FAILURE_PREFIX)
         or result.startswith(APPROVAL_DENIED_PREFIX)
-        or result == DUPLICATE_NOTICE
+        or is_duplicate_notice(result)
     ):
         return False
     if call.function.name == "run_command":
@@ -710,6 +784,7 @@ def run_tool_round(
     approval_callback: ApprovalCallback,
     trace: CodingTaskTrace | None = None,
     turn: int | None = None,
+    required_test: RequiredTest | None = None,
 ) -> None:
     """执行这一批工具调用，把「模型提了调用」和「调用结果」都写进历史。
 
@@ -733,12 +808,15 @@ def run_tool_round(
         if fingerprint in executed:
             # 不重复干活，把「这次没新信息」作为一条普通工具结果回喂。
             # 是否收口仍然由模型自己决定。
+            duplicate_notice = (
+                CODING_DUPLICATE_NOTICE if required_test is not None else DUPLICATE_NOTICE
+            )
             print("（重复调用被拦截，未真正执行）")
-            print(f"Tool 结果 > {DUPLICATE_NOTICE}")
-            messages.append(tool_result_message(call, DUPLICATE_NOTICE))
+            print(f"Tool 结果 > {duplicate_notice}")
+            messages.append(tool_result_message(call, duplicate_notice))
             if trace is not None:
                 event = trace.record_tool(
-                    turn or 0, call, DUPLICATE_NOTICE, "DUPLICATE_BLOCKED", False
+                    turn or 0, call, duplicate_notice, "DUPLICATE_BLOCKED", False
                 )
                 print(
                     "Trace > "
@@ -751,6 +829,8 @@ def run_tool_round(
 
         may_execute, permission_result = check_tool_permission(call, approval_callback)
         result = permission_result if not may_execute else execute_tool_call(call)
+        if may_execute:
+            result = add_completion_hint(call, result, required_test)
         if may_execute and counts_as_successful_duplicate(call, result):
             # 只有成功执行过的调用才记下来。失败的那次不该被锁定——
             # 模型换个参数重试是合理行为，拦它才是帮倒忙。
@@ -803,6 +883,7 @@ def run_agent_loop(
     executed: set[tuple[str, str]],
     approval_callback: ApprovalCallback,
     trace: CodingTaskTrace | None = None,
+    required_test: RequiredTest | None = None,
 ) -> None:
     """把「问模型 → 执行工具 → 回喂 → 再问」装进循环。
 
@@ -853,6 +934,7 @@ def run_agent_loop(
             approval_callback,
             trace=trace,
             turn=step,
+            required_test=required_test,
         )
         # Keep canonical history intact; only shrink the outbound model view.
         reply = ask(client, model, build_model_context(messages))

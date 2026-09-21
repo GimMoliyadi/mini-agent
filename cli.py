@@ -6,7 +6,13 @@ import sys
 
 from openai import APIError
 
-from acceptance import CodingTaskContract, load_contract, snapshot_workspace, verify_contract
+from acceptance import (
+    CodingTaskContract,
+    coding_task_guidance,
+    load_contract,
+    snapshot_workspace,
+    verify_contract,
+)
 import main
 from config import get_approval_mode, load_config
 
@@ -14,7 +20,10 @@ from config import get_approval_mode, load_config
 def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
     if contract is not None:
         task = contract.instruction
-    messages = [{"role": "system", "content": main.SYSTEM_PROMPT},
+    system_prompt = main.SYSTEM_PROMPT
+    if contract is not None:
+        system_prompt += "\n\n" + coding_task_guidance(contract)
+    messages = [{"role": "system", "content": system_prompt},
                 {"role": "user", "content": task}]
     trace = main.CodingTaskTrace()
     initial_snapshot = (
@@ -28,6 +37,13 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
         with redirect_stdout(sys.stderr):
             reply = main.ask(client, config.model, main.build_model_context(messages))
             main.log_reply(1, reply)
+            loop_options = {"trace": trace}
+            if contract is not None:
+                loop_options["required_test"] = (
+                    contract.test_command.command,
+                    contract.test_command.args,
+                    contract.test_command.cwd,
+                )
             main.run_agent_loop(
                 client,
                 config.model,
@@ -35,7 +51,7 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
                 reply,
                 set(),
                 main.approval_callback_for_mode(get_approval_mode()),
-                trace=trace,
+                **loop_options,
             )
     except KeyboardInterrupt:
         runtime_exception = "KeyboardInterrupt"

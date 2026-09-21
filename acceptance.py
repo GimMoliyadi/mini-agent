@@ -122,6 +122,18 @@ class CodingTaskContract:
         }
 
 
+def coding_task_guidance(contract: CodingTaskContract) -> str:
+    """Return short model guidance derived from the contract, not its verifier."""
+    test = " ".join((contract.test_command.command, *contract.test_command.args))
+    allowed = ", ".join(contract.allowed_paths) or "（无文件修改）"
+    return (
+        "Coding Task 收口规则：目标文件是 "
+        f"{allowed}；必需测试命令是 `{test}`（cwd={contract.test_command.cwd}）。"
+        "当代码改动已完成、该测试成功、没有新错误且没有未满足要求时，"
+        "不要重复读取、写入或测试，直接 Final Answer，简要说明改动和测试结果。"
+    )
+
+
 def load_contract(path: str | Path) -> CodingTaskContract:
     """Load and validate a JSON contract file."""
     contract_path = Path(path)
@@ -206,6 +218,11 @@ def verify_contract(
     except (OSError, TypeError, ValueError) as exc:
         test_error = f"{type(exc).__name__}: {exc}"
 
+    artifact_passed = not unexpected and (
+        not contract.require_test_pass or final_test_passed
+    ) and test_error is None
+    interaction_completed = agent_final_answer_present and not max_steps_reached
+
     reasons = []
     if not agent_final_answer_present:
         reasons.append("agent_final_answer_missing")
@@ -221,7 +238,9 @@ def verify_contract(
 
     return {
         "task_id": contract.task_id,
-        "accepted": not reasons,
+        "artifact_passed": artifact_passed,
+        "interaction_completed": interaction_completed,
+        "accepted": artifact_passed and interaction_completed and not runtime_exception,
         "changed_files": changed,
         "unexpected_changes": unexpected,
         "agent_ran_required_test": agent_ran_required_test,
