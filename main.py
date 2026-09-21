@@ -61,7 +61,8 @@ EXIT_COMMANDS = {"exit", "quit", "q"}
 # 这种合理的验证也一起砍掉。真正拦住重复动作的是重复调用检测。
 SYSTEM_PROMPT = (
     "你是一个运行在命令行里的助手。直接回答用户的问题，尽量简短，不要客套开场。\n"
-    "你有五个工具：list_files 看工作目录里有什么，read_file 读文件内容，"
+    "你有六个工具：list_files 看工作目录里有什么，search_text 按固定字符串递归搜索，"
+    "read_file 读文件内容，"
     "write_file 写入完整文本，apply_patch 对已有文件做唯一的精确局部替换，"
     "run_command 执行受控的本地开发命令。\n"
     "run_command 只能使用 command + args 数组，允许 python -m pytest、"
@@ -162,6 +163,9 @@ class CodingTaskTrace:
     model_calls: int = 0
     tool_calls: int = 0
     executed_tool_calls: int = 0
+    list_files_calls: int = 0
+    search_text_calls: int = 0
+    read_file_calls: int = 0
     write_file_calls: int = 0
     apply_patch_calls: int = 0
     patch_successes: int = 0
@@ -206,6 +210,9 @@ class CodingTaskTrace:
         classification = classification or classify_tool_call(call, result, approval)
         self.tool_calls += 1
         self.executed_tool_calls += int(executed)
+        self.list_files_calls += int(tool_name == "list_files")
+        self.search_text_calls += int(tool_name == "search_text")
+        self.read_file_calls += int(tool_name == "read_file")
         self.write_file_calls += int(tool_name == "write_file")
         self.apply_patch_calls += int(tool_name == "apply_patch")
         if tool_name == "apply_patch":
@@ -244,6 +251,9 @@ class CodingTaskTrace:
             "model_calls": self.model_calls,
             "tool_calls": self.tool_calls,
             "executed_tool_calls": self.executed_tool_calls,
+            "list_files_calls": self.list_files_calls,
+            "search_text_calls": self.search_text_calls,
+            "read_file_calls": self.read_file_calls,
             "write_file_calls": self.write_file_calls,
             "apply_patch_calls": self.apply_patch_calls,
             "patch_successes": self.patch_successes,

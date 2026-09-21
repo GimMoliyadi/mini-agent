@@ -560,6 +560,39 @@ Phase 16 的一次真实样本中，模型选择 `apply_patch` 而非 `write_fil
 统计结论；本 fixture 很小，patch 的 old/new 两段合计字符数反而可能大于完整文件，优势主要在真实
 大文件中避免重新生成未修改内容和降低误覆盖范围。
 
+## Phase 17：Repository Navigation / Code Search
+
+Phase 17 增加一个只读的固定字符串搜索工具：
+
+```text
+search_text(query, path=".", max_results=20)
+```
+
+`list_files` 只回答“这一层有什么”，`search_text` 递归回答“这个字符串出现在哪些文件的哪几行”，
+然后模型再用 `read_file` 精读候选文件。第一版只做 literal search，不引入正则、Embedding、RAG、
+AST、LSP、MCP、Planner 或自动改写 query。0 matches 是正常 Tool Result，模型可以自行换关键词、
+缩小 path 或结束任务。
+
+搜索路径沿用 `resolve_inside_workspace()`，拒绝 `..`、越界绝对路径和搜索根的外部符号链接。默认
+忽略 `.git`、`.venv`、`__pycache__`、`sessions`、`eval/runs` 及常见 cache 目录；不能按 UTF-8
+读取或含 NUL 的文件直接跳过。结果主动限制为最多 100 个匹配、每个匹配一行前后一行上下文，并返回：
+
+```text
+matches_shown
+matches_total
+truncated
+```
+
+`search_text` 注册为 `RiskLevel.READ_ONLY`，复用现有 Registry / Permission / Session / Context 链，
+不增加工具名特判。新增多目录 `repo_fixture`：用户只说“修复 calculate_discount 的错误”，模型即可
+`search_text → read_file → apply_patch → run_command → Final`，Acceptance 只允许修改
+`src/pricing.py`。
+
+本地验证：`python -m unittest discover -s tests -q` 共 104 项通过，1 项 Windows 符号链接能力测试因
+运行环境权限跳过；其余旧的 Patch、Command、Permission、Session、Context、Completion Control 和
+Acceptance 测试均通过。真实 Provider 最小请求成功，真实 Coding Task 也完成并被 Verifier 接受；模型
+本次选择了 `list_files` 而不是 `search_text`，详见 `REAL_RUN_LOG.md` 和 `eval/phase17_real_run.json`。
+
 ## 阶段完成情况
 
 每一步都需要你确认才继续，不会自动往下走。
@@ -607,6 +640,10 @@ Phase 16 的一次真实样本中，模型选择 `apply_patch` 而非 `write_fil
   与 `MAX_AGENT_STEPS = 8`。本地 68 项测试通过；Phase 15.5 真实模型对照已 accepted。
 - **Phase 16 · Patch-based Editing** ✅ —— 增加唯一精确匹配的 `apply_patch`，复用 Permission / Sandbox /
   Duplicate / Session / Contract 链路；Mock A-D、一次真实 calculator Coding Task 和全量 88 项测试通过。
+- **Phase 17 · Repository Navigation / Code Search** ✅ —— 增加只读 literal `search_text`，复用 Registry /
+  Sandbox / Permission / Session / Context；多目录 fixture 的 Search → Locate → Read → Patch → Test →
+  Final → Acceptance Mock 闭环通过，全量 104 项测试通过（1 项 Windows 符号链接测试跳过）。真实模型请求
+  因 Provider 连接错误未进入 Agent，未伪造真实调用或 token 结论。
 
 Phase 16 已收尾；下一阶段只做分析，不在本阶段自动开始。
 

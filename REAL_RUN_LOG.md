@@ -1108,3 +1108,74 @@ Duplicate、Coding Contract、Verifier 和 Completion Control 均无回归；Moc
 
 下一阶段最值得补的是基于较大真实文件的 patch 参数/上下文成本测量，再决定是否需要独立的
 Patch Context Compression 或模型工具偏好实验；本阶段不实现下一阶段。
+
+---
+
+## Phase 17 真实运行：Repository Navigation / Code Search
+
+### 运行目标
+
+本阶段新增多目录 fixture：`tests/fixtures/repo_fixture/`。目标文件是 `src/pricing.py`，其中
+`calculate_discount` 把折扣率当成了最终乘数；测试位于 `tests/test_pricing.py`。Contract 的
+`allowed_paths` 只有 `src/pricing.py`，required test 是：
+
+```text
+python -m unittest discover -s tests -p test_pricing.py -q
+```
+
+给模型的 instruction 只有“修复 calculate_discount 的错误，让对应测试通过”，没有告诉它目录和文件名。
+
+### 有效运行结果
+
+隔离 workspace 已正确复制，运行入口是：
+
+```text
+AGENT_WORKSPACE=<isolated repo_fixture>
+TOOL_APPROVAL_MODE=ALLOW
+.venv\Scripts\python.exe cli.py --contract tests\fixtures\repo_contract.json
+```
+
+先检查到 Windows 用户代理和 `HTTP_PROXY` / `HTTPS_PROXY` 均为纯值 `http://127.0.0.1:9674`，
+`ALL_PROXY` 未设置，WinHTTP 为直连。加载 `.env` 后只确认 `OPENAI_API_KEY` 存在，没有打印值。
+随后发送不带 Tool 的最小请求“回复 OK”，得到 `finish_reason=stop`、content=`OK`，tokens 为
+`84 / 168 / 252`（prompt / completion / total）。
+
+真实 Coding Task 也成功完成。模型没有调用 `search_text`，而是使用 `list_files` 导航，因此本次真实记录是：
+
+| 指标 | 结果 |
+|---|---:|
+| model calls | 6 |
+| tool calls | 8 |
+| search_text calls | 0 |
+| list_files calls | 4 |
+| read_file calls | 2 |
+| apply_patch calls | 1 |
+| run_command calls | 1 |
+| write_file calls | 0 |
+| prompt/completion/total tokens | 14739 / 499 / 15238 |
+| max steps reached | false |
+| Final Answer | 有 |
+| changed_files | ["src/pricing.py"] |
+| unexpected_changes | [] |
+| final_test_exit_code | 0 |
+| artifact_passed | true |
+| interaction_completed | true |
+| accepted | true |
+
+由于模型未使用 `search_text`，真实 search query 和 search result 均为“无”。实际定位候选来自：
+顶层 `list_files` → `src` / `tests` → `src/utils`；随后读取 `src/pricing.py` 和
+`tests/test_pricing.py`。完整 Tool Trace、Final Answer 和 Verifier JSON 证据：
+`eval/phase17_real_run.json`。
+
+### 本地闭环与回归
+
+Mock 已证明完整链路：
+
+```text
+search_text → src/pricing.py → read_file → apply_patch → required test → Final → Verifier PASS
+```
+
+全量本地测试为 104 项通过，1 项 Windows 符号链接能力测试跳过。旧 Phase 16 的 88 项基线行为没有
+回归；真实链路为 `list_files × 4 → read_file × 2 → apply_patch → run_command → Final`，且
+Verifier `accepted=true`。这证明了“不知道文件路径时可完成导航”的闭环，但不证明真实模型本次会选择
+`search_text`。

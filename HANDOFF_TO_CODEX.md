@@ -1035,3 +1035,67 @@ completion `397` / total `10719`。独立 Verifier：`changed_files=["calculator
 patch 的实际价值是避免真实大文件重复生成未修改内容，并把修改边界明确限制在唯一片段。
 下一阶段最值得补的是基于更大真实文件的 patch 参数/上下文成本测量，再决定是否需要独立的
 Patch Context Compression 或模型工具偏好实验；本阶段不实现。
+
+---
+
+## 18. Phase 17：Repository Navigation / Code Search
+
+### 本阶段唯一目标
+
+增加一个只读文本搜索工具，让 Agent 在不知道目标文件名和路径时可以先定位代码：
+
+```text
+search_text(query, path=".", max_results=20)
+```
+
+只做固定字符串匹配。`list_files` 是一层目录浏览，`search_text` 是递归的候选定位，`read_file` 才
+负责精读；0 matches 正常回传给模型，不自动换 query，也不自动决定最相关文件。
+
+### 实现与边界
+
+- `tools.py`：新增 `SEARCH_TEXT_TOOL`、`search_text()` 和 Registry 注册项。
+- `search_text` 沿用 `resolve_inside_workspace()`；搜索根必须在 `WORKSPACE_DIR` 内，外部 `..`、绝对
+  路径和符号链接逃逸均拒绝。
+- 默认跳过 `.git`、`.venv`、`__pycache__`、`sessions`、`eval/runs`、`.pytest_cache`、`.mypy_cache`、
+  `.ruff_cache` 和 `node_modules`。无法按 UTF-8 读取或含 NUL 的文件跳过，不把二进制交给模型。
+- 默认最多返回 20 个匹配行，上限 100；每项给相对路径、命中行号、命中行及前后一行上下文。
+  结果包含 `matches_shown`、`matches_total`、`truncated`，并主动遵守 `MAX_TOOL_RESULT_CHARS`。
+- `RiskLevel.READ_ONLY` 直接复用 Registry → Permission → Handler；没有 `if tool_name ==
+  "search_text"` 特判。Trace 另计 `list_files_calls`、`search_text_calls`、`read_file_calls`。
+
+### Fixture 与 Mock 闭环
+
+新增 `tests/fixtures/repo_fixture/`：`src/pricing.py` 含 `calculate_discount` bug，另外有 app、formatting、
+utils 和测试文件。Contract 只允许改 `src/pricing.py`，给模型的 instruction 只描述 bug，不给路径。
+
+Mock 链已验证：
+
+```text
+search_text(calculate_discount)
+→ read_file(src/pricing.py)
+→ apply_patch
+→ run_command(required test)
+→ Final Answer
+→ Acceptance accepted=true
+```
+
+本地新增 16 项搜索/导航测试；全量 `python -m unittest discover -s tests -q` 为 104 项通过，1 项
+符号链接测试因当前 Windows 运行环境不允许创建链接而跳过。旧的 Patch、Command、Permission、
+Session、Context、Completion Control 和 Acceptance 回归均通过。
+
+### 真实运行
+
+有效隔离运行使用 `tests/fixtures/repo_fixture` 和 `tests/fixtures/repo_contract.json`，用户任务未提供
+目标路径。先用当前可用代理 `http://127.0.0.1:9674` 发送无 Tool 的最小请求并收到 `OK`；随后真实
+Coding Task 成功完成。模型本次没有调用 `search_text`，而是通过 `list_files` 浏览工作区、`src`、
+`tests` 和 `src/utils`，直接定位并读取 `src/pricing.py` 与 `tests/test_pricing.py`。
+
+真实统计：`model_calls=6`、`tool_calls=8`、`list_files_calls=4`、`search_text_calls=0`、
+`read_file_calls=2`、`write_file_calls=0`、`apply_patch_calls=1`、`run_command_calls=1`；tokens 为
+`prompt=14739`、`completion=499`、`total=15238`；`max_steps_reached=false`。唯一修改是
+`src/pricing.py`，required test exit code 为 0，Verifier `artifact_passed=true`、
+`interaction_completed=true`、`accepted=true`。完整 Final Answer、Trace、候选路径和验收证据保存于
+`eval/phase17_real_run.json`。
+
+这是一次行为观察：真实模型可以在不知道目标路径时靠 `list_files` 完成导航，但本次没有证明它会主动
+选择 `search_text`。下一阶段若继续，最值得做的是在可用 Provider 下重复观察工具偏好；本阶段不实现。

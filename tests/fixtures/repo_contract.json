@@ -1,0 +1,22 @@
+{
+  "task_id": "discount_fix",
+  "instruction": "修复 calculate_discount 的错误，让对应测试通过。",
+  "allowed_paths": [
+    "src/pricing.py"
+  ],
+  "test_command": {
+    "command": "python",
+    "args": [
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests",
+      "-p",
+      "test_pricing.py",
+      "-q"
+    ],
+    "cwd": "."
+  },
+  "require_test_pass": true
+}

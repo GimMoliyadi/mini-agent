@@ -107,6 +107,43 @@ LIST_FILES_TOOL = {
     },
 }
 
+SEARCH_TEXT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_text",
+        "description": (
+            "在工作目录内递归搜索固定字符串，返回匹配文件、行号和少量上下文。"
+            "默认搜索整个工作目录；可以用 path 限定子目录。"
+            "只处理可按 UTF-8 读取的文本文件，自动忽略 .git、.venv、__pycache__、"
+            "sessions、eval/runs 等临时目录。query 按字面量匹配，不支持正则。"
+            "没有匹配时返回正常结果，不要把它当成运行时错误。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "要查找的固定字符串，例如 calculate_total",
+                },
+                "path": {
+                    "type": "string",
+                    "default": ".",
+                    "description": "限定搜索的目录，相对工作目录；省略表示整个工作目录",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20,
+                    "description": "最多返回多少个匹配行，默认 20，最大 100",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 # 把内容写回工作目录。
 # 允许覆盖已有文件——这是刻意选择，README 里有说明：
 # 沙盒已经把破坏范围锁死在一个专用目录里，而拒绝覆盖会让「重跑同一个任务」
@@ -344,6 +381,161 @@ def list_files(path: str | None = None) -> str:
         lines.append(f"[{kind}] {entry.name}{size}")
 
     return f"工作目录 {path or '.'} 的内容：\n" + "\n".join(lines)
+
+
+_SEARCH_MAX_RESULTS = 100
+_SEARCH_CONTEXT_LINES = 1
+_SEARCH_SNIPPET_CHARS = 240
+_SEARCH_IGNORED_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "__pycache__",
+        "sessions",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+    }
+)
+_SEARCH_IGNORED_PATHS = (("eval", "runs"),)
+
+
+def _search_path_is_ignored(relative_path: Path) -> bool:
+    parts = relative_path.parts
+    if any(part in _SEARCH_IGNORED_DIRS for part in parts):
+        return True
+    return any(parts[: len(prefix)] == prefix for prefix in _SEARCH_IGNORED_PATHS)
+
+
+def _shorten_search_line(line: str, query: str) -> str:
+    if len(line) <= _SEARCH_SNIPPET_CHARS:
+        return line
+
+    match_start = line.find(query)
+    if match_start < 0:
+        return line[: _SEARCH_SNIPPET_CHARS - 3] + "..."
+
+    half_window = (_SEARCH_SNIPPET_CHARS - len(query) - 6) // 2
+    start = max(0, match_start - max(half_window, 0))
+    end = min(len(line), start + _SEARCH_SNIPPET_CHARS - 6)
+    start = max(0, end - (_SEARCH_SNIPPET_CHARS - 6))
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(line) else ""
+    return prefix + line[start:end] + suffix
+
+
+def _format_search_result(
+    query: str,
+    path: str,
+    matches: list[tuple[str, int, list[tuple[int, str]]]],
+    total_matches: int,
+    truncated: bool,
+) -> str:
+    header = [
+        f'query: "{query}"',
+        f"path: {path}",
+        f"matches_shown: {len(matches)}",
+        f"matches_total: {total_matches}",
+        f"truncated: {'true' if truncated else 'false'}",
+    ]
+    if not matches:
+        return "\n".join(header)
+
+    blocks = []
+    for relative_path, match_line_number, context in matches:
+        lines = [f"\n{relative_path}:{match_line_number}"]
+        lines.extend(f"{number} | {line}" for number, line in context)
+        blocks.append("\n".join(lines))
+    return "\n".join(header + blocks)
+
+
+def _search_match_context(lines: list[str], line_number: int, query: str) -> list[tuple[int, str]]:
+    start = max(1, line_number - _SEARCH_CONTEXT_LINES)
+    end = min(len(lines), line_number + _SEARCH_CONTEXT_LINES)
+    return [
+        (number, _shorten_search_line(lines[number - 1].rstrip("\r\n"), query))
+        for number in range(start, end + 1)
+    ]
+
+
+def search_text(query: str, path: str = ".", max_results: int = 20) -> str:
+    """Recursively search UTF-8 text files for a literal string."""
+    if not isinstance(query, str) or not query:
+        raise ValueError("query 不能为空字符串")
+    if (
+        isinstance(max_results, bool)
+        or not isinstance(max_results, int)
+        or max_results < 1
+        or max_results > _SEARCH_MAX_RESULTS
+    ):
+        raise ValueError(
+            f"max_results 必须是 1 到 {_SEARCH_MAX_RESULTS} 之间的整数，当前是：{max_results!r}"
+        )
+
+    root = resolve_inside_workspace(path or ".")
+    if not root.is_dir():
+        raise NotADirectoryError(f"搜索路径不是目录：{path}")
+
+    found: list[tuple[str, int, list[tuple[int, str]]]] = []
+    total_matches = 0
+    for current, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        relative_current = current_path.relative_to(WORKSPACE_DIR.resolve())
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if not _search_path_is_ignored(relative_current / name)
+            and (current_path / name).resolve().is_relative_to(WORKSPACE_DIR.resolve())
+        ]
+
+        for file_name in file_names:
+            candidate = current_path / file_name
+            relative_candidate = candidate.relative_to(WORKSPACE_DIR.resolve())
+            if _search_path_is_ignored(relative_candidate):
+                continue
+            try:
+                if not candidate.resolve().is_relative_to(WORKSPACE_DIR.resolve()):
+                    continue
+                with candidate.open("r", encoding="utf-8") as handle:
+                    lines = handle.readlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if any("\x00" in line for line in lines):
+                continue
+
+            for line_number, line in enumerate(lines, start=1):
+                if query not in line:
+                    continue
+                total_matches += 1
+                if len(found) < max_results:
+                    found.append(
+                        (
+                            relative_candidate.as_posix(),
+                            line_number,
+                            _search_match_context(lines, line_number, query),
+                        )
+                    )
+
+    # Build the complete metadata first, then fit whole match blocks into the
+    # shared result budget. This keeps matches_shown/truncated truthful.
+    selected = []
+    for match in found:
+        candidate = selected + [match]
+        rendered = _format_search_result(
+            query, path or ".", candidate, total_matches, len(candidate) < total_matches
+        )
+        if len(rendered) > MAX_TOOL_RESULT_CHARS:
+            break
+        selected.append(match)
+
+    truncated = len(selected) < total_matches
+    result = _format_search_result(query, path or ".", selected, total_matches, truncated)
+    if len(result) > MAX_TOOL_RESULT_CHARS:
+        raise ValueError("搜索结果元数据超过单次工具结果上限，无法返回")
+    if total_matches == 0:
+        return f'No matches found for "{query}"\n{result}'
+    return result
 
 
 def write_file(path: str, content: str) -> str:
@@ -617,6 +809,12 @@ TOOL_REGISTRY = {
         name="read_file",
         schema=READ_FILE_TOOL,
         handler=read_file,
+        risk_level=RiskLevel.READ_ONLY,
+    ),
+    "search_text": ToolDefinition(
+        name="search_text",
+        schema=SEARCH_TEXT_TOOL,
+        handler=search_text,
         risk_level=RiskLevel.READ_ONLY,
     ),
     "write_file": ToolDefinition(
