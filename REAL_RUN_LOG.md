@@ -828,3 +828,151 @@ model_calls=0, tool_calls=0
 Phase 15 已完成代码与本地验证，证明了 Completion Hint、双状态 Acceptance、Trace 分类和
 8 步保险丝的行为。尚未证明真实模型在同一 fixture 上比 Phase 14 更早收口；下一步最值得做的
 是恢复可用的模型/代理后，仅重跑这一项对照实验，不扩展系统架构。
+
+---
+
+# Phase 15.5：Phase 14 vs Phase 15 真实对照验证
+
+日期：2026-09-21
+Runtime 基线：`0bb18dc Phase 15: improve coding task completion control`
+
+本次只做验证，没有修改 Runtime、Prompt、Completion Hint、Contract、fixture 或
+`MAX_AGENT_STEPS`。使用了新的临时 workspace，但内容逐字复制自同一个
+`tests/fixtures/coding_workspace/`；Contract 仍是 `tests/fixtures/coding_contract.json`。
+
+## Provider / Proxy 检查
+
+三个 Provider 配置字段均存在，未打印任何值：
+
+```text
+OPENAI_API_KEY=present
+OPENAI_BASE_URL=present
+OPENAI_MODEL=present
+```
+
+当前代理状态：
+
+```text
+HTTP_PROXY=http://127.0.0.1:9674
+HTTPS_PROXY=http://127.0.0.1:9674
+ALL_PROXY=absent
+NO_PROXY=absent
+WinHTTP=Direct access
+WinINET ProxyEnable=1, ProxyServer=127.0.0.1:9674
+```
+
+OpenAI SDK 当前使用 `httpx2 2.13.0`；`Client.trust_env` 默认值和实际 Client 值均为
+`True`，因此本次请求确实读取了当前环境代理。
+
+## 最小 Provider 请求
+
+请求内容为 `回复 OK`，不带 Tool，单次成功：
+
+```text
+provider_request=success
+finish_reason=stop
+response_is_ok=True
+prompt_tokens=84
+completion_tokens=88
+total_tokens=172
+```
+
+## Phase 15 真实 Coding Task 链
+
+任务仍为：`修复 calculator.py，让对应测试通过。完成后告诉我改了什么。`
+
+| Turn | Tool / 状态 | Classification | Approval | required test | Completion Hint |
+|---:|---|---|---|---|---|
+| 1 | `list_files({})`，列出两个 fixture 文件 | `PRODUCTIVE` | `AUTO` | 否 | 否 |
+| 2 | `read_file(calculator.py)` + `read_file(test_calculator.py)` | `PRODUCTIVE ×2` | `AUTO` | 否 | 否 |
+| 3 | `write_file(calculator.py)`，修正 `add/subtract` | `PRODUCTIVE` | `ALLOW` | 否 | 否 |
+| 4 | 完全相同的 `write_file(calculator.py)`，未执行 | `BLOCKED_DUPLICATE` | `DUPLICATE_BLOCKED` | 否 | 否 |
+| 5 | 完全相同的 `read_file(calculator.py)`，未执行 | `BLOCKED_DUPLICATE` | `DUPLICATE_BLOCKED` | 否 | 否 |
+| 6 | `python -m unittest test_calculator -q`，exit 0 | `SUCCESSFUL_COMMAND` | `ALLOW` | **是** | **是** |
+| 7 | 模型返回 Final Answer | — | — | — | — |
+
+Turn 6 的 Tool Result 包含完整测试成功信息：`Ran 2 tests ... OK`，并附加 Completion
+Hint。模型随后没有继续 read/write/test，而是在 Turn 7 直接给出 Final Answer。
+
+### Agent 统计
+
+```text
+model_calls=7
+tool_calls=7
+executed_tools=5
+duplicate_blocked=2
+policy_rejected=0
+failed_commands=0
+successful_commands=1
+productive_calls=4
+agent_ran_required_test=true
+completion_hint_triggered=true (Turn 6)
+max_steps_reached=false
+agent_final_answer_present=true
+prompt_tokens=12982
+completion_tokens=613
+total_tokens=13595
+```
+
+Final Answer 说明 `calculator.py` 中 `add` 和 `subtract` 的实现原先写反，已修正，
+并报告 `python -m unittest test_calculator -q` 通过。
+
+## 独立 Verifier
+
+Agent 结束后照常执行 Contract Verifier，没有使用 Agent 自己的测试结果替代最终验收：
+
+```json
+{
+  "artifact_passed": true,
+  "interaction_completed": true,
+  "accepted": true,
+  "changed_files": ["calculator.py"],
+  "unexpected_changes": [],
+  "agent_ran_required_test": true,
+  "final_test_exit_code": 0,
+  "final_test_passed": true,
+  "agent_final_answer_present": true,
+  "max_steps_reached": false,
+  "runtime_exception": null,
+  "reasons": []
+}
+```
+
+## 与 Phase 14 对比
+
+| 指标 | Phase 14 | Phase 15.5 |
+|---|---:|---:|
+| model calls | 8 | **7** |
+| tool calls | 8 | **7** |
+| executed tools | 5 | 5 |
+| productive | 4 | 4 |
+| duplicate blocked | 2 | 2 |
+| policy rejected | 1 | **0** |
+| failed commands | 0 | 0 |
+| successful commands | 1 | 1 |
+| required test 实际执行 | false | **true** |
+| Completion Hint | 无 | **Turn 6** |
+| MAX_AGENT_STEPS | true | **false** |
+| Final Answer | false | **true** |
+| prompt tokens | 14637 | **12982** |
+| completion tokens | 575 | 613 |
+| total tokens | 15212 | **13595** |
+
+本次模型调用少 1 次、工具调用少 1 次；总 token 少 1617，但本阶段成功标准不是最低
+token。关键变化是：模型执行了 Contract 完全匹配的 required test，收到 Hint 后没有重复
+动作，及时产生 Final Answer。
+
+## 结论
+
+本次真实结果支持 Phase 15 的核心假设：
+
+```text
+required test 成功 + Completion Guidance / Hint
+→ 模型在完成后及时停止
+→ artifact_passed=true
+→ interaction_completed=true
+→ accepted=true
+```
+
+与 Phase 14 相比，本次没有撞 `MAX_AGENT_STEPS`，产生了 Final Answer，独立 Verifier
+最终接受任务。Phase 15.5 验证完成；不进入 Phase 16。
