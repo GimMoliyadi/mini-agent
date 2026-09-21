@@ -1243,3 +1243,47 @@ LARGE 搜索稳定但 tool chain 多路径”的结论；当前不新增 Navigat
 
 原始机器结果：`eval/navigation_stability_results.json`；完整分析：`eval/NAVIGATION_STABILITY_REPORT.md`。
 离线全量回归：`113` 项通过、`1` 项跳过。
+
+---
+
+### Phase 19 真实运行：Required-Test Visibility Experiment
+
+本阶段只修改 eval harness，不修改 Agent Runtime、Tool Schema、Completion Hint、Acceptance、MAX_AGENT_STEPS、
+Permission、Sandbox 或 Context。baseline 为 `8c0620d`。Control 直接复用 Phase 18.5 的 MEDIUM 三次真实记录；
+Treatment 为相同 MEDIUM fixture 和相同用户任务，只在模型上下文中加入一条事实：
+
+```text
+Required test command: python -m unittest discover -s tests -p test_discount.py -q
+```
+
+没有加入“必须 Final”“优先执行该命令”或其它 Completion Guidance。每次 Treatment 从全新临时 workspace 开始，
+总共执行 3 次，没有启动 replacement，因此没有超过本阶段真实模型调用上限。
+
+#### 结果
+
+| condition | run | exact test | hint | final | max steps | accepted | model calls | tokens |
+|---|---:|---|---|---|---|---|---:|---:|
+| control | 1 | false | false | true | false | true | 6 | 14,757 |
+| control | 2 | false | false | false | true | false | 8 | 20,892 |
+| control | 3 | false | false | true | false | true | 7 | 17,660 |
+| treatment | 1 | true | true | true | false | true | 7 | 17,952 |
+| treatment | 2 | true | true | true | false | true | 7 | 17,920 |
+| treatment | 3 | provider failure | provider failure | false | false | false | 1 | 2,045 |
+
+Control 聚合为 exact test `0/3`、Hint `0/3`、Final `2/3`、accepted `2/3`、MAX `1/3`，有 1 次 zero-test attempt。
+Treatment 有 2 次有效运行，Provider failure `1`；有效分母下 exact test、Hint、Final、accepted 均为 `2/2`，MAX `0/2`，
+zero-test `0`。两次有效 Treatment 的 exact command 都在 Turn 6 执行、exit code `0`、实际运行 1 个测试，随后 Turn 7
+产生 Final Answer。失败 Treatment 在 Turn 1 后发生 `APIConnectionError: Connection error.`，不计入模型行为统计。
+
+有效 Treatment Tool Chain：
+
+```text
+run 1: list_files ×3 → search_text → read_file ×2 → apply_patch → run_command → Final
+run 2: list_files ×3 → read_file → search_text → read_file → apply_patch → run_command → Final
+```
+
+结果文件：`eval/required_test_visibility_results.json`；完整报告：`eval/REQUIRED_TEST_VISIBILITY_REPORT.md`。
+结论仅为本实验中 required-test 可见性与更稳定收口行为一致，不声称已证明因果关系。
+
+离线验证：Phase 19 专项测试、Navigation Eval、Navigation Stability 和全量回归均通过；
+`python -m unittest discover -s tests -p "test_*.py" -q` 为 `117` 项通过、`1` 项 Windows 符号链接测试跳过。

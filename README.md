@@ -705,3 +705,19 @@ Phase 18.5 在 Phase 18 的 `0aaae56` 基线之上，仅重复 SMALL / MEDIUM / 
 
 综合结论：SMALL 的搜索路径稳定；MEDIUM 的仓库导航稳定但 Coding 收尾存在路径/步数波动；LARGE 的搜索使用稳定，
 具体 tool chain 仍是多路径。当前没有足够证据新增 Navigation Guidance，下一步继续做受控重复观察即可。
+
+## Phase 19 · Required-Test Visibility Experiment
+
+Phase 19 只修改评测层，Runtime、Tool Schema、Completion Hint、Acceptance、MAX_AGENT_STEPS、Permission、
+Sandbox 和 Context 均保持不变。Control 直接复用 Phase 18.5 的 MEDIUM 三次结果；Treatment 使用相同的
+MEDIUM fixture 和任务，只在模型上下文中增加事实性的 `Required test command: python -m unittest discover -s tests -p test_discount.py -q`，
+没有增加“必须 Final”或“优先执行”等指导。
+
+Treatment 计划运行 3 次，实际有 2 次有效运行和 1 次 `APIConnectionError` provider failure；有效两次均执行
+exact required test、触发 Completion Hint、给出 Final Answer 并被接受。Control 为 exact test `0/3`、Hint `0/3`、
+Final `2/3`、accepted `2/3`、MAX_AGENT_STEPS `1/3`；Treatment 有效分母为 `2`，对应指标均为 `2/2`。
+该 n=3 实验只说明可见性与更稳定的收口行为一致，不单独证明因果关系。
+
+评测入口为 `python eval/required_test_visibility.py`；结果为 `eval/required_test_visibility_results.json`，报告为
+`eval/REQUIRED_TEST_VISIBILITY_REPORT.md`。完整 raw result、实际 run_command、zero-test 和 provider failure 记录均保留在结果文件中。
+Phase 19 专项测试与 Navigation/稳定性测试通过；全量回归为 `117` 项通过、`1` 项 Windows 符号链接测试跳过。

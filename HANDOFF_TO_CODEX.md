@@ -1138,3 +1138,20 @@ required test 按 contract 在三次中均未运行。MEDIUM/LARGE 的 `first_co
 报告和机器结果：`eval/NAVIGATION_STABILITY_REPORT.md`、`eval/navigation_stability_results.json`。当前结论是
 导航观察已足够支持“SMALL 稳定、MEDIUM 收尾有波动、LARGE 搜索稳定但多路径”；暂不实现 Navigation Guidance。
 本阶段全量回归为 `113` 项通过、`1` 项跳过。
+
+---
+
+## 20. Phase 19：Required-Test Visibility Experiment（已完成）
+
+Phase 19 以 `8c0620d` 为 baseline。Control 直接复用 Phase 18.5 MEDIUM 三次记录，不重新调用模型；Treatment
+使用相同 MEDIUM fixture、任务、Provider、Tool Schema、Runtime、Acceptance 和 `MAX_AGENT_STEPS`，唯一变化是
+在模型上下文中增加事实性的 exact required test：`python -m unittest discover -s tests -p test_discount.py -q`。
+没有增加 Final/优先执行指导，也没有修改 Runtime。
+
+Treatment 共执行 3 次：2 次有效，1 次 `APIConnectionError` provider failure。有效 Treatment 两次均为
+`exact required test → Completion Hint → Final`，均 `accepted=true`；有效分母为 2。Control 为 exact test `0/3`、
+Hint `0/3`、Final `2/3`、accepted `2/3`、MAX `1/3`。有效 Treatment 对应指标均为 `2/2`，并出现 `zero-test=0`。
+
+评测代码、结果和报告：`eval/required_test_visibility.py`、`eval/required_test_visibility_results.json`、
+`eval/REQUIRED_TEST_VISIBILITY_REPORT.md`。该 n=3 结果只能支持“required-test 可见性与更稳定收口一致”，不作因果证明。
+Phase 19 专项测试与全量回归通过：全量 `117` 项通过、`1` 项 Windows 符号链接能力测试跳过。
