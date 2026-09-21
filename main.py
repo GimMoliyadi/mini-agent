@@ -61,12 +61,15 @@ EXIT_COMMANDS = {"exit", "quit", "q"}
 # 这种合理的验证也一起砍掉。真正拦住重复动作的是重复调用检测。
 SYSTEM_PROMPT = (
     "你是一个运行在命令行里的助手。直接回答用户的问题，尽量简短，不要客套开场。\n"
-    "你有四个工具：list_files 看工作目录里有什么，read_file 读文件内容，"
-    "write_file 把内容写进工作目录，run_command 执行受控的本地开发命令。\n"
+    "你有五个工具：list_files 看工作目录里有什么，read_file 读文件内容，"
+    "write_file 写入完整文本，apply_patch 对已有文件做唯一的精确局部替换，"
+    "run_command 执行受控的本地开发命令。\n"
     "run_command 只能使用 command + args 数组，允许 python -m pytest、"
     "python -m unittest、git status、git diff、git log；不要使用 shell 语法、"
     "python -c、pip、PowerShell、cmd 或网络命令。cwd 必须在工作目录内。\n"
-    "需要文件内容时去读，不要凭记忆编造；用户希望结果被保存下来时用 write_file。\n"
+    "需要文件内容时去读，不要凭记忆编造；新建文件或确实需要整文件覆盖时用 write_file，"
+    "修改已有文件的一小段时可以用 apply_patch。apply_patch 的 old_text 必须恰好匹配一次，"
+    "失败时先重新 read_file，不要猜测或模糊修改。\n"
     "用户要求列出工作目录中的文件时，应包含子目录中的文件；list_files 只列一层，"
     "遇到子目录需继续查看，最终列出相对路径。\n"
     "没有读取的文件只能根据名称介绍，不能断言其具体内容、与其他文件相同或哪个版本更精简。\n"
@@ -160,6 +163,9 @@ class CodingTaskTrace:
     tool_calls: int = 0
     executed_tool_calls: int = 0
     write_file_calls: int = 0
+    apply_patch_calls: int = 0
+    patch_successes: int = 0
+    patch_failures: int = 0
     run_command_calls: int = 0
     productive_calls: int = 0
     duplicate_blocked: int = 0
@@ -201,6 +207,14 @@ class CodingTaskTrace:
         self.tool_calls += 1
         self.executed_tool_calls += int(executed)
         self.write_file_calls += int(tool_name == "write_file")
+        self.apply_patch_calls += int(tool_name == "apply_patch")
+        if tool_name == "apply_patch":
+            self.patch_successes += int(
+                executed and not result.startswith(TOOL_FAILURE_PREFIX)
+            )
+            self.patch_failures += int(
+                result.startswith(TOOL_FAILURE_PREFIX)
+            )
         self.run_command_calls += int(tool_name == "run_command")
         self.productive_calls += int(classification == "PRODUCTIVE")
         self.duplicate_blocked += int(classification == "BLOCKED_DUPLICATE")
@@ -231,6 +245,9 @@ class CodingTaskTrace:
             "tool_calls": self.tool_calls,
             "executed_tool_calls": self.executed_tool_calls,
             "write_file_calls": self.write_file_calls,
+            "apply_patch_calls": self.apply_patch_calls,
+            "patch_successes": self.patch_successes,
+            "patch_failures": self.patch_failures,
             "run_command_calls": self.run_command_calls,
             "productive_calls": self.productive_calls,
             "executed_tools": self.executed_tool_calls,
@@ -259,10 +276,15 @@ def trace_arguments(call) -> tuple[str, str | None]:
         return str(arguments)[:240], None
 
     summarized = dict(arguments)
-    write_target = summarized.get("path") if call.function.name == "write_file" else None
-    content = summarized.get("content")
-    if isinstance(content, str):
-        summarized["content"] = f"<{len(content)} characters>"
+    write_target = (
+        summarized.get("path")
+        if call.function.name in {"write_file", "apply_patch"}
+        else None
+    )
+    for key in ("content", "old_text", "new_text"):
+        value = summarized.get(key)
+        if isinstance(value, str):
+            summarized[key] = f"<{len(value)} characters>"
     return json.dumps(summarized, ensure_ascii=False, sort_keys=True)[:240], write_target
 
 

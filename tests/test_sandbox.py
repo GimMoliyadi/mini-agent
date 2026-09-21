@@ -57,6 +57,7 @@ def check_registry() -> None:
         "list_files": tools.RiskLevel.READ_ONLY,
         "read_file": tools.RiskLevel.READ_ONLY,
         "write_file": tools.RiskLevel.SIDE_EFFECT,
+        "apply_patch": tools.RiskLevel.SIDE_EFFECT,
         "run_command": tools.RiskLevel.EXECUTION,
     }
     assert schema_names == registry_names, (

@@ -139,6 +139,38 @@ WRITE_FILE_TOOL = {
     },
 }
 
+APPLY_PATCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "apply_patch",
+        "description": (
+            "修改工作目录内已有的 UTF-8 文本文件。用 old_text 精确匹配一段文本，"
+            "且 old_text 必须在文件中恰好出现一次；匹配 0 次或多次都会失败，"
+            "不会猜测位置、模糊匹配或自动修正空白。new_text 可以为空，用于删除局部文本。"
+            "这是有副作用的操作，执行前可能需要用户批准。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "相对工作目录的已有文本文件路径，例如 \"calculator.py\"",
+                },
+                "old_text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "文件中必须唯一出现的原始文本，区分空白和换行",
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "替换后的文本；传空字符串表示删除 old_text",
+                },
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+}
+
 RUN_COMMAND_TOOL = {
     "type": "function",
     "function": {
@@ -335,6 +367,44 @@ def write_file(path: str, content: str) -> str:
     size = len(content.encode("utf-8"))
     state = "已覆盖已有文件" if existed else "已写入新文件"
     return f"已写入 {target.name}（{size} 字节，{state}）"
+
+
+def apply_patch(path: str, old_text: str, new_text: str) -> str:
+    """Replace exactly one literal text fragment in an existing UTF-8 file."""
+    if not isinstance(old_text, str) or not old_text:
+        raise ValueError("old_text 不能为空")
+    if not isinstance(new_text, str):
+        raise ValueError("new_text 必须是字符串")
+    old_text_length = len(old_text)
+    new_text_length = len(new_text)
+
+    target = resolve_inside_workspace(path)
+    with target.open("r", encoding="utf-8", newline="") as handle:
+        raw_content = handle.read()
+
+    newline = "\r\n" if "\r\n" in raw_content else "\r" if "\r" in raw_content else "\n"
+    content = raw_content.replace("\r\n", "\n").replace("\r", "\n")
+    old_text = old_text.replace("\r\n", "\n").replace("\r", "\n")
+    new_text = new_text.replace("\r\n", "\n").replace("\r", "\n")
+
+    occurrences = content.count(old_text)
+    if occurrences == 0:
+        raise ValueError("目标文本不存在，文件没有修改")
+    if occurrences > 1:
+        raise ValueError(
+            f"目标文本不唯一，请提供更多上下文（匹配 {occurrences} 次）"
+        )
+
+    updated = content.replace(old_text, new_text, 1)
+    if newline != "\n":
+        updated = updated.replace("\n", newline)
+    with target.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(updated)
+
+    return (
+        f"已应用 patch 到 {path}（replaced occurrence count = 1；"
+        f"old_text length = {old_text_length}；new_text length = {new_text_length}）"
+    )
 
 
 # 一个工具的 Schema、Handler 和风险等级在这里一起注册。
@@ -553,6 +623,12 @@ TOOL_REGISTRY = {
         name="write_file",
         schema=WRITE_FILE_TOOL,
         handler=write_file,
+        risk_level=RiskLevel.SIDE_EFFECT,
+    ),
+    "apply_patch": ToolDefinition(
+        name="apply_patch",
+        schema=APPLY_PATCH_TOOL,
+        handler=apply_patch,
         risk_level=RiskLevel.SIDE_EFFECT,
     ),
     "run_command": ToolDefinition(

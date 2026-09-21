@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-21　**状态**：Phase 15 已实现并完成本地验证（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution、Phase 12.5 真实闭环、Phase 13 Bounded Coding Loop、Phase 14 Coding Task Acceptance 及 Phase 15 Coding Completion & Budget Control 均已收尾）
+**写于**：2026-09-21　**状态**：Phase 16 已实现并完成本地与真实闭环验证（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution、Phase 12.5 真实闭环、Phase 13 Bounded Coding Loop、Phase 14 Coding Task Acceptance、Phase 15 Coding Completion & Budget Control 及 Phase 16 Patch-based Editing 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -30,9 +30,10 @@ LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
     → Generalized Tool Capability / Permission Policy
     → Controlled Command Execution
     → Bounded Coding Loop
+    → Patch-based Editing
 ```
 
-当前已完成 Phase 13 Runtime。本次 Phase 13 真实验证中，模型主动完成了隔离 calculator fixture 的
+当前已完成 Phase 16 Runtime。本次 Phase 16 真实验证中，模型主动完成了隔离 calculator fixture 的
 读取、修改、测试和最终回答；
 此前 Phase 12.5 真实验证中，模型主动调用 `run_command`，
 执行 Phase 9 长文件测试并通过 10 项；随后修复 `cli.py` 的 Windows GBK Unicode 输出，
@@ -340,6 +341,22 @@ messages  ──►  ask()  ──►  LLM
 
 > **不要重新设计现有 Tool。** 现有工具的边界、参数名、覆盖策略、失败语义都已实测固化。
 > `run_command` 的边界见上表；它不是 unrestricted shell。
+
+### `apply_patch`
+
+| | |
+|---|---|
+| 参数 | `path`、`old_text`、`new_text`（均为 string；`old_text` 非空） |
+| 用途 | 对已有 UTF-8 文本做一次精确的 `old_text → new_text` 替换 |
+| 唯一匹配 | 0 次：`目标文本不存在`；超过 1 次：`目标文本不唯一`；只有 1 次才写入 |
+| 沙盒限制 | 复用 `resolve_inside_workspace`；审批前校验，不能访问 workspace 外 |
+| 换行 | 匹配逻辑按统一换行处理，写回时保留原文件的 LF/CRLF 风格 |
+| 返回值 | path、`replaced occurrence count = 1`、old/new 字符长度 |
+| 风险 | `SIDE_EFFECT`，复用 `ASK` / `ALLOW` / `DENY` |
+
+不做 fuzzy matching、正则、AST 猜测、自动空白修正或完整 Git patch parser。失败是正常
+`role="tool"` 结果，文件保持不变；模型应重新 `read_file` 后构造更具体的 patch。
+`write_file` 保留给新建文件或必要的整文件覆盖。
 
 ### `run_command`
 
@@ -955,3 +972,66 @@ HTTP/HTTPS 代理后，连通性检查确认 `127.0.0.1:7897` 不可连接，客
 
 下一阶段最值得补的是在可用模型/代理环境下重复同一 fixture 的真实对照实验，并比较
 Completion Hint 对 model/tool calls、Final Answer、MAX_AGENT_STEPS 和 token 的影响；本阶段不实现。
+
+---
+
+## 17. Phase 16：Patch-based Editing
+
+### 本阶段唯一目标
+
+为已有文本文件增加最小的局部修改能力：
+
+```text
+apply_patch(path, old_text, new_text)
+```
+
+不做 Git apply、unified diff parser、AST rewrite、fuzzy patch、Patch Context Compression、
+自动 Code Review、MCP、RAG、Memory、Planner、Parallel Tool 或 Git 自动 commit。
+
+### 实现与数据流
+
+- `tools.py`：新增 `APPLY_PATCH_TOOL`、`apply_patch()` 和 Registry 注册项。
+- `main.py`：系统提示词公开新工具；`CodingTaskTrace` 新增
+  `apply_patch_calls`、`patch_successes`、`patch_failures`；Trace 参数只记录长度摘要。
+- Permission：`apply_patch` 声明 `RiskLevel.SIDE_EFFECT`，直接复用 Registry → Sandbox →
+  Approval → Handler 链，不增加工具名特判。
+- Duplicate：成功 patch 的完整 `path + old_text + new_text` 指纹进入现有集合；再次相同调用
+  返回重复 Tool Result，不重复写盘；失败和 DENY 不锁定，允许模型恢复。
+- Contract：Acceptance 只看最终 changed_files 和固定测试，不依赖使用 `write_file` 还是
+  `apply_patch`。
+
+### Mock A-D 与本地验证
+
+| Case | 结论 |
+|---|---|
+| A：一次唯一 patch → test → Final | 成功；Completion Hint 出现；Acceptance accepted |
+| B：old_text 不唯一 → 重新 read/增加上下文 → patch | 第一次失败且文件不变，Runtime 不猜位置，第二次成功 |
+| C：目标已变化 → old_text not found → 重新 read → 新 patch | 失败是正常 Tool Result，失败调用不进入 duplicate guard，后续可恢复 |
+| D：DENY | 文件完全不变，合法 `role="tool"` 结果，模型可正常收口 |
+
+`tests/test_apply_patch.py` 新增 20 项覆盖：Registry/Risk、唯一/0/多匹配、局部删除、中文、
+多行、CRLF、Sandbox、ALLOW/DENY、Duplicate、失败重试、Session、Context、Mock A-D 和
+`patch → test → Final → Acceptance`；全量 `python -m unittest discover -s tests -v` 共 88 项通过。
+
+### Phase 15.5 baseline 与真实 Phase 16
+
+Phase 15.5 baseline：`write_file` 1 次、`run_command` 1 次、重复拦截 2 次，
+7 model calls / 7 tool calls，tokens 为 prompt `12982` / completion `613` / total `13595`，
+Verifier `accepted=true`。
+
+Phase 16 隔离 calculator fixture 的真实链：
+
+```text
+list_files → read_file × 2 → apply_patch → run_command(required test) → Final Answer
+```
+
+Trace：5 model calls、5 tool calls、`write_file=0`、`apply_patch=1`、patch success `1`、
+patch failure `0`、`run_command=1`、required test exit `0`；tokens 为 prompt `10322` /
+completion `397` / total `10719`。独立 Verifier：`changed_files=["calculator.py"]`、
+`unexpected_changes=[]`、`artifact_passed=true`、`interaction_completed=true`、
+`accepted=true`。
+
+这是单次观察，不做统计性结论。小 fixture 的 old/new 两段合计字符数可能大于完整文件；
+patch 的实际价值是避免真实大文件重复生成未修改内容，并把修改边界明确限制在唯一片段。
+下一阶段最值得补的是基于更大真实文件的 patch 参数/上下文成本测量，再决定是否需要独立的
+Patch Context Compression 或模型工具偏好实验；本阶段不实现。

@@ -975,4 +975,136 @@ required test 成功 + Completion Guidance / Hint
 ```
 
 与 Phase 14 相比，本次没有撞 `MAX_AGENT_STEPS`，产生了 Final Answer，独立 Verifier
-最终接受任务。Phase 15.5 验证完成；不进入 Phase 16。
+最终接受任务。Phase 15.5 baseline 验证完成；随后进入 Phase 16。
+
+---
+
+# Phase 16：Patch-based Editing 真实验证
+
+## 1. 目标与 baseline
+
+本阶段在 `428ba5a Phase 15.5: record real completion comparison` 之上增加唯一精确匹配的
+`apply_patch(path, old_text, new_text)`，不删除 `write_file`，也不实现完整 Git patch parser。
+
+Phase 15.5 baseline：
+
+| 指标 | Phase 15.5 |
+|---|---:|
+| model calls | 7 |
+| tool calls | 7 |
+| executed tools | 5 |
+| `write_file` | 1 |
+| `run_command` | 1 |
+| duplicate blocked | 2 |
+| prompt / completion / total | 12982 / 613 / 13595 |
+| Verifier accepted | `true` |
+
+## 2. 本地实现与测试
+
+修改文件：
+
+- `tools.py`：新增 `APPLY_PATCH_TOOL`、`apply_patch()`，注册为 `SIDE_EFFECT`。
+- `main.py`：公开第五个工具；Trace 增加 `apply_patch_calls`、`patch_successes`、
+  `patch_failures`；参数摘要记录 old/new 长度，不把完整 patch 内容塞进 Trace。
+- `tests/test_sandbox.py`：Registry 风险期望加入 `apply_patch`。
+- `tests/test_apply_patch.py`：新增 20 项 Phase 16 测试。
+- `README.md`、`HANDOFF_TO_CODEX.md`：补充接口、边界、验证和真实结果。
+
+接口语义：
+
+```text
+apply_patch(path, old_text, new_text)
+```
+
+`old_text` 必须是非空字符串并且在文件中恰好出现一次：0 次返回
+`目标文本不存在`，超过 1 次返回 `目标文本不唯一，请提供更多上下文`；两种失败都在
+真正写盘前结束，文件保持不变。`new_text` 可以为空。匹配不做 fuzzy、正则、AST 或
+自动空白修正；仅对 LF/CRLF 做跨平台换行归一化，并按原文件风格写回，避免整文件换行漂移。
+
+Tool Result 成功时至少包含 path、`replaced occurrence count = 1`、old/new 字符长度；
+失败通过普通 `role="tool"` 返回。Permission/Sandbox 链保持为：
+
+```text
+Tool Registry → resolve_inside_workspace → Permission / Approval → apply_patch handler
+```
+
+没有增加 `if tool_name == "apply_patch"` 特判。Duplicate guard 使用完整
+`path + old_text + new_text` 指纹；成功 patch 再次调用被拦截，失败和 DENY 不进入成功集合。
+Acceptance 仍只依据最终 changed_files 与固定测试。
+
+`python -m unittest discover -s tests -v`：**88 项通过**。
+
+## 3. Mock A-D
+
+| Case | 结果 |
+|---|---|
+| A：一次 patch 成功 → required test → Final | 通过；`patch_successes=1`，Acceptance accepted |
+| B：old_text 多次匹配 → 提供更多上下文 → patch | 首次失败且文件不变，第二次成功；Runtime 不猜位置 |
+| C：目标内容已变化 → not found → 重新读取后 patch | 首次失败是正常 Tool Result，失败调用可重试 |
+| D：用户 DENY | 文件完全不变；合法拒绝结果回喂模型 |
+
+## 4. 真实 Coding Task
+
+任务仍为：`修复 calculator.py，让对应测试通过。完成后告诉我改了什么。`
+
+隔离运行目录：
+
+```text
+C:\Users\30858\AppData\Local\Temp\mini-agent-phase16-real-f5a5a063059646f0a11c63f1d8ef9086
+```
+
+Provider 请求前先按交接环境检查发现 `127.0.0.1:7897` 无监听；第一次尝试停在 SDK 初始化，
+0 model calls / 0 tool calls，fixture 未改变。随后发现交接日志记录的 `127.0.0.1:9674`
+正在监听，在 9674 HTTP/HTTPS 代理下补齐当前虚拟环境缺失的 `socksio` 后，唯一一次真正
+进入模型的 Coding Task 成功完成。该环境补依赖未写入仓库 requirements。
+
+真实工具链：
+
+```text
+list_files → read_file(calculator.py) → read_file(test_calculator.py)
+→ apply_patch(calculator.py) → run_command(python -m unittest test_calculator -q)
+→ Final Answer
+```
+
+| 指标 | Phase 16 真实结果 |
+|---|---:|
+| model calls | 5 |
+| tool calls | 5 |
+| executed tools | 5 |
+| `write_file` | 0 |
+| `apply_patch` | 1 |
+| patch success / failure | 1 / 0 |
+| `run_command` | 1 |
+| required test exit code | 0 |
+| prompt / completion / total | 10322 / 397 / 10719 |
+| max steps reached | `false` |
+| Final Answer | 有 |
+| `changed_files` | `["calculator.py"]` |
+| `unexpected_changes` | `[]` |
+| `artifact_passed` | `true` |
+| `interaction_completed` | `true` |
+| Verifier `accepted` | `true` |
+
+模型自然选择了 `apply_patch`，没有被 Prompt 强制。Patch 的 old/new 均为 70 字符，
+精确替换了两个错误运算符组成的唯一多行片段；之后执行 required test，收到 Completion Hint，
+直接给出 Final Answer。
+
+## 5. 与整文件 write 的观察性差异
+
+相对 Phase 15.5：model calls `7 → 5`，tool calls `7 → 5`，duplicate blocked `2 → 0`，
+prompt tokens `12982 → 10322`，completion `613 → 397`，total `13595 → 10719`；编辑工具
+从 `write_file=1` 变成 `apply_patch=1`，两次都被 Verifier 接受。
+
+这只是一次真实样本，不具有统计意义。由于 calculator fixture 很小，patch 的 old/new 两段
+合计字符数（140）并不比完整文件（71）更短；本阶段证明的是局部修改能力、唯一匹配安全规则、
+Permission/Sandbox/Contract 解耦和模型可以自然使用 patch。对真实大文件的 token/上下文收益
+仍应在后续用更大 fixture 测量。
+
+## 6. 结论与下一步
+
+Phase 16 完成标准全部满足：局部修改可用；0/多匹配不会瞎改；Permission、Sandbox、Session、
+Duplicate、Coding Contract、Verifier 和 Completion Control 均无回归；Mock A-D 和一次真实
+`patch → test → Final` 链均通过。
+
+下一阶段最值得补的是基于较大真实文件的 patch 参数/上下文成本测量，再决定是否需要独立的
+Patch Context Compression 或模型工具偏好实验；本阶段不实现下一阶段。

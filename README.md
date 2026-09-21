@@ -21,13 +21,13 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 15
+## 当前状态：Phase 16
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
 
 ```
-用户任务 → list_files（探索）→ read_file（读取）→ write_file / run_command（受控执行）→ 最终回答
+用户任务 → list_files（探索）→ read_file（读取）→ write_file / apply_patch / run_command（受控执行）→ 最终回答
 ```
 
 Phase 7 已完成 Context Management：默认模式为 `WRITE_ONLY`，只压缩发给模型的历史
@@ -46,7 +46,7 @@ Phase 9 真实验证已通过：模型实际读取 `1-100 → 101-200 → 201-30
 在第 377 行找到 `TARGET_FACT = "phase9-secret-value"`，随后正常给出 Final Answer，未撞步数上限。
 
 Phase 10 已完成 Tool Permission / Side-effect Approval：`list_files` / `read_file` 属于
-`READ_ONLY`，自动执行；`write_file` 属于 `SIDE_EFFECT`，必须先通过 Runtime 审批。
+`READ_ONLY`，自动执行；`write_file` / `apply_patch` 属于 `SIDE_EFFECT`，必须先通过 Runtime 审批。
 交互式 CLI 默认 `ASK`，自动入口和测试显式使用 `ALLOW` 或 `DENY`。拒绝也会生成合法的
 `role="tool"` 结果，但不会写文件、不会进入成功重复调用集合，也不会被当作成功写入压缩。
 
@@ -63,6 +63,7 @@ Runtime 只读取 `risk_level`，不再按 `write_file` 这样的具体工具名
 |---|---|
 | `list_files` | 列工作目录一层内容，标 `[f]`/`[d]` 和字节数。`path` 可选，省略就是列根目录 |
 | `write_file` | 写 UTF-8 文本，父目录不存在会自动创建，但只能创建在沙盒内 |
+| `apply_patch` | 对已有 UTF-8 文本做 `old_text → new_text` 精确替换，`old_text` 必须唯一匹配 |
 | `run_command` | 以 `shell=False` 执行白名单内的 Python 测试或 Git 只读命令 |
 | `TOOL_REGISTRY` | 工具名 → `ToolDefinition(name, schema, handler, risk_level)`。新增正式工具只在这里注册 |
 
@@ -235,6 +236,13 @@ cmd /c '.venv\Scripts\python.exe main.py < tests\inputs\real_retest_v2.txt'
 `已写入 xxx.md（304 字节，已覆盖已有文件）` 或 `（304 字节，已写入新文件）`。
 本项目不做版本控制，覆盖前不自动备份。
 
+`apply_patch(path, old_text, new_text)` 是已有文件的小范围修改入口。它先通过同一条
+`resolve_inside_workspace` 沙盒校验和 `SIDE_EFFECT` 审批，再以 UTF-8 文本做字面匹配：
+匹配 0 次或超过 1 次都返回 `[工具失败]` 且保持文件不变，只有恰好 1 次才写入。
+不做 fuzzy matching、正则、AST 猜测或自动空白修正；`new_text` 为空可用于局部删除。
+读取和写入会保留文件的 LF/CRLF 换行风格。返回值只报告路径、替换次数和 old/new 字符长度，
+不会把整份新文件重新塞回上下文。`write_file` 仍保留给新建文件或必要的整文件覆盖。
+
 ## Phase 11：Tool Registry 与统一 Permission Policy
 
 ### 1. 什么是 Tool Registry
@@ -302,7 +310,7 @@ ASCII、中文、emoji 及中文+emoji+JSON 回归验证输出内容完整保留
 Phase 13 用一个隔离的 `tests/fixtures/coding_workspace/` 小项目验证有限 Coding Loop：
 
 ```
-read_file → write_file → run_command（测试）→ Tool Result → 再决定 → Final Answer
+read_file → write_file / apply_patch → run_command（测试）→ Tool Result → 再决定 → Final Answer
 ```
 
 Runtime 没有新增 Planner、Coding 状态机或自动修复分支。测试进程退出码 `1` 仍是正常
@@ -312,7 +320,7 @@ Runtime 没有新增 Planner、Coding 状态机或自动修复分支。测试进
 
 本阶段增加了任务级内存 Trace（模型轮次、工具参数摘要、审批、结果摘要、退出码、写入目标、
 调用计数和 token 汇总），并继续使用已有 `MAX_AGENT_STEPS` 作为上限保险丝。`write_file`
-仍是 `SIDE_EFFECT`，`run_command` 仍是 `EXECUTION`，两者都必须经过现有 Permission Runtime；
+仍是 `SIDE_EFFECT`，`run_command` 仍是 `EXECUTION`，三者都必须经过现有 Permission Runtime；
 fixture 仍只能位于 `WORKSPACE_DIR` 内。Mock A 验证一次修复，Mock B 验证失败后第二次修复，
 Mock C 验证撞上限时停止；一次真实小任务也已读、写、测试并给出 Final Answer。
 
@@ -356,6 +364,7 @@ mini-agent-lab/
 │   ├── test_long_file.py # Phase 9 分段读取、完整行和 mock 分页测试
 │   ├── test_permissions.py # Phase 10 审批、拒绝、协议和 Mock Agent 测试
 │   ├── test_coding_loop.py # Phase 13 fixture、Mock A/B/C 和边界测试
+│   ├── test_apply_patch.py # Phase 16 精确 patch、权限、重复和 Coding 闭环测试
 │   ├── fixtures/coding_workspace/ # 隔离的 calculator.py + test_calculator.py fixture
 │   └── inputs/           # 喂给 main.py 的 stdin 输入，用来复现某次实测
 ├── sessions/             # 本地 Session JSON（已加入 .gitignore，不提交实际会话）
@@ -520,9 +529,36 @@ Contract 的 `command + args + cwd` 且 exit code 为 0 时，Tool Result 才附
 普通成功命令不会被误报为任务完成。Verifier 仍然独立拍快照并重跑固定测试。
 
 Mock A（成功测试后 Final）、Mock B（失败测试后修复再测）、Mock C（重复调用）、Mock D（策略
-拒绝后恢复）均按预期工作；Mock E（顽固模型）仍由 8 步保险丝停止。Phase 15 本地全量共 68 项
-测试通过。真实模型复跑因当前代理端口 `127.0.0.1:7897` 不可连接而未进入模型，详见
-`REAL_RUN_LOG.md`，不把它伪装成成功样本。
+拒绝后恢复）均按预期工作；Mock E（顽固模型）仍由 8 步保险丝停止。Phase 15.5 baseline
+本地全量为 68 项测试；Phase 16 增加 20 项 patch 测试后，全量为 88 项并通过。Phase 16
+真实模型使用 `apply_patch` 完成 calculator fixture，详见 `REAL_RUN_LOG.md`。
+
+## Phase 16：Patch-based Editing
+
+Phase 16 增加最小的局部编辑能力，不改变现有 `write_file` 职责，也没有实现 Git unified diff、
+AST rewrite、fuzzy matching、Planner、MCP 或 Patch Context Compression。
+
+```text
+apply_patch(path, old_text, new_text)
+```
+
+唯一匹配规则：`old_text` 出现 0 次时返回“目标文本不存在”；出现超过 1 次时返回“目标文本不唯一”；
+只有恰好 1 次才替换。两种失败都是正常 `role="tool"` 结果，文件保持不变，模型可以重新
+`read_file → apply_patch`。成功结果包含 path、`replaced occurrence count = 1`、old/new 字符长度。
+
+`apply_patch` 注册为 `RiskLevel.SIDE_EFFECT`，沿用 `TOOL_REGISTRY`、`resolve_inside_workspace`、
+`ASK/ALLOW/DENY`、重复调用保护、Session canonical history 和 Acceptance 的 changed_files 逻辑。
+Verifier 不依赖具体编辑工具。Trace 额外记录 `apply_patch_calls`、`patch_successes` 和
+`patch_failures`；patch 参数暂不做专门压缩，先记录真实大小。
+
+本地验证覆盖：唯一/0/多匹配、局部删除、中文、多行、CRLF、沙盒越界、ALLOW/DENY、重复调用、
+失败重试、Session、Context、Mock A-D、`patch → test → Final → Acceptance`，以及既有长文件、
+Command、Completion Control 和 Verifier 回归；全量 `87` 项测试通过。
+
+Phase 16 的一次真实样本中，模型选择 `apply_patch` 而非 `write_file`，最终
+`artifact_passed=true`、`interaction_completed=true`、`accepted=true`。这是单次观察，不能推出
+统计结论；本 fixture 很小，patch 的 old/new 两段合计字符数反而可能大于完整文件，优势主要在真实
+大文件中避免重新生成未修改内容和降低误覆盖范围。
 
 ## 阶段完成情况
 
@@ -568,9 +604,11 @@ Mock A（成功测试后 Final）、Mock B（失败测试后修复再测）、Mo
   全量 66 项本地测试通过。真实模型样本被正确判为未接受，暴露出当前 Agent 收口仍受步数上限影响。
 - **Phase 15 · Coding Completion & Budget Control** ✅ —— 增加 Tool Call 分类、产物/交互双状态、
   Contract 收口 Guidance、严格 required-test Completion Hint 和 Mock A-E 回归；保持独立 Verifier
-  与 `MAX_AGENT_STEPS = 8`。本地 68 项测试通过；真实模型实验因代理不可达未完成。
+  与 `MAX_AGENT_STEPS = 8`。本地 68 项测试通过；Phase 15.5 真实模型对照已 accepted。
+- **Phase 16 · Patch-based Editing** ✅ —— 增加唯一精确匹配的 `apply_patch`，复用 Permission / Sandbox /
+  Duplicate / Session / Contract 链路；Mock A-D、一次真实 calculator Coding Task 和全量 88 项测试通过。
 
-Phase 15 已收尾；下一阶段只做分析，不在本阶段自动开始。
+Phase 16 已收尾；下一阶段只做分析，不在本阶段自动开始。
 
 > **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
 > 实际在 Phase 2 就和 `read_file` 一起做掉了。
