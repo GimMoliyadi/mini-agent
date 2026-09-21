@@ -1099,3 +1099,23 @@ Coding Task 成功完成。模型本次没有调用 `search_text`，而是通过
 
 这是一次行为观察：真实模型可以在不知道目标路径时靠 `list_files` 完成导航，但本次没有证明它会主动
 选择 `search_text`。下一阶段若继续，最值得做的是在可用 Provider 下重复观察工具偏好；本阶段不实现。
+
+---
+
+## 18. Phase 18：Repository Navigation Eval（当前收尾）
+
+本阶段新增三个评测模块：
+
+- `eval/navigation_fixtures.py`：确定性生成 7 / 25 / 75 文件的安全 fixture，symbol 与 error-string ground truth 固定。
+- `eval/navigation_metrics.py`：从 canonical message history 计算 list/search/read、candidate files、首个正确文件 turn 和 token 成本。
+- `eval/navigation_eval.py`：每个场景独立临时 workspace、最多一次真实 Agent Task；Coding 场景接入现有独立 Acceptance。
+
+离线测试验证了 fixture 数量、唯一 symbol definition、唯一错误字符串、search 命中、未修复测试失败、修复后测试通过、
+navigation metric 和 Coding contract。全量回归为 `110` 项通过，`1` 项 Windows 符号链接能力测试跳过。
+
+四个有效真实场景均已各运行一次并被接受。首次使用未监听的 `127.0.0.1:7897` 未进入 Agent loop，随后使用
+Phase 17 已验证的 `127.0.0.1:9674` relay 完成有效运行；原始记录：`eval/navigation_results.json`；报告：
+`eval/NAVIGATION_REPORT.md`。没有把传输配置失败混入模型行为数据。
+
+Phase 18 的下一步只应是 Provider 可用时重新运行这四个一次性场景并填充对照数据；不要提前新增 Navigation Guidance，
+也不要修改 `search_text` 描述或系统提示词。

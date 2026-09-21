@@ -1179,3 +1179,38 @@ search_text → src/pricing.py → read_file → apply_patch → required test �
 回归；真实链路为 `list_files × 4 → read_file × 2 → apply_patch → run_command → Final`，且
 Verifier `accepted=true`。这证明了“不知道文件路径时可完成导航”的闭环，但不证明真实模型本次会选择
 `search_text`。
+
+### Phase 18 真实运行：Repository Navigation Eval
+
+Phase 18 的目标是观察真实模型在 SMALL / MEDIUM / LARGE-SYNTHETIC 仓库和 symbol / error-string 任务中的
+`list_files`、`search_text`、`read_file` 选择，不改变 Tool Description，不强迫 `search_text`。
+
+评测入口为 `eval/navigation_eval.py`。它为每个场景生成独立临时 fixture：7、25、75 个文本源码文件；
+symbol target 和 error-string target 由 fixture ground truth 固定，Coding contract 只允许修改 symbol 文件。
+指标从历史消息确定性回放：`model_calls`、总 tool calls、三类导航工具次数、candidate files、
+`first_correct_file_turn`、导航前工具次数和 prompt/completion/total tokens；Coding 场景额外记录 patch、test、
+Final Answer 和 Acceptance。
+
+四个场景各执行一次，结果如下：
+
+| scenario | status | model/tool calls | list/search/read | tokens |
+|---|---|---:|---:|---:|
+| small_symbol_navigation | accepted | 3 / 2 | 0 / 1 / 1 | 6,960 |
+| medium_symbol_coding | accepted | 6 / 7 | 3 / 1 / 2 | 14,757 |
+| large_symbol_coding | accepted | 8 / 9 | 3 / 1 / 2 | 21,028 |
+| medium_error_string_navigation | accepted | 2 / 1 | 0 / 1 / 0 | 4,296 |
+
+有效运行的工具链为：SMALL symbol `search_text → read_file → Final`；MEDIUM symbol coding
+`list_files ×3 → read_file → search_text → read_file → apply_patch → Final`；LARGE-SYNTHETIC symbol coding
+`list_files ×3 → search_text → read_file ×2 → apply_patch → run_command ×2 → Final`；MEDIUM error-string
+`search_text → Final`。四个场景均 `accepted=true`。Medium coding 没有执行 contract 指定的 required test，
+Large coding 第一次测试失败后第二次通过；独立 Verifier 两者都接受。原始结构化结果是
+`eval/navigation_results.json`，完整分析是 `eval/NAVIGATION_REPORT.md`。
+
+第一次使用仓库指令中的 `127.0.0.1:7897` 时端口没有监听，未进入 Agent loop；随后使用 Phase 17 已验证的
+`127.0.0.1:9674` relay 完成四个有效场景。没有把传输配置失败混入模型行为数据，也没有修改
+`search_text`、Prompt 或 Phase 17 核心代码。
+
+离线验证：全量 `python -m unittest discover -s tests -p "test_*.py" -q` 为 `110` 项通过，`1` 项 Windows
+符号链接测试跳过。下一阶段最值得做的是在同一 Provider 下重复 A/B/C，区分稳定偏好与单次路径差异，
+再判断是否需要 Navigation Guidance。

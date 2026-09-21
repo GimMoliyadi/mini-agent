@@ -678,3 +678,15 @@ Phase 16 已收尾；下一阶段只做分析，不在本阶段自动开始。
 - Agent 只能读写配置的工作目录（默认 `demo_workspace/`）内的文件，路径边界由代码强制执行。
 - `.env` 永不进版本库。
 - 每个阶段先跑通，再进下一阶段。
+
+## Phase 18 · Repository Navigation Eval
+
+Phase 18 新增独立评测 harness，不新增 Agent Tool，也不修改 `search_text` 的 Prompt 或描述。
+`eval/navigation_fixtures.py` 确定性生成 SMALL（7 文件）、MEDIUM（25 文件）和
+LARGE-SYNTHETIC（75 文件）fixture；`eval/navigation_metrics.py` 从真实历史中的 tool call/result
+计算 `first_correct_file_turn`、目录/搜索/读取次数、candidate files 和 token 成本，不使用 LLM Judge。
+
+真实入口是 `python eval/navigation_eval.py`，结构化结果为 `eval/navigation_results.json`，报告为
+`eval/NAVIGATION_REPORT.md`。四个有效场景各运行一次并被接受；首次使用未监听的 `127.0.0.1:7897`
+未进入 Agent loop，随后使用 Phase 17 已验证的 `127.0.0.1:9674` relay 完成有效运行。离线 fixture、
+ground truth、search/read、Coding Contract 和全量回归通过；完整记录见 `REAL_RUN_LOG.md`。
