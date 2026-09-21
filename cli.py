@@ -41,6 +41,13 @@ def run_task(task: str) -> dict:
             client.close()
 
 
+def configure_stdout_utf8() -> None:
+    """Keep machine-readable CLI output Unicode-safe on Windows and pipes."""
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8")
+
+
 def cli() -> int:
     parser = argparse.ArgumentParser(description="Run a single workspace task; logs go to stderr, JSON to stdout")
     parser.add_argument("--task", required=True)
@@ -48,6 +55,7 @@ def cli() -> int:
     if not args.task.strip():
         parser.error("--task must not be empty")
     result = run_task(args.task)
+    configure_stdout_utf8()
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result["status"] == "completed" else 130 if result["status"] == "cancelled" else 1
 

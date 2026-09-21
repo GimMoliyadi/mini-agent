@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-20　**状态**：Phase 12 完成（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution 均已收尾）
+**写于**：2026-09-21　**状态**：Phase 12 正式关闭（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution 及 Phase 12.5 真实闭环均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -31,7 +31,10 @@ LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
     → Controlled Command Execution
 ```
 
-当前已完成 Phase 12。本项目暂不自动进入 unrestricted shell、Memory、RAG、MCP 或其它后续能力。
+当前已完成 Phase 12 Runtime。本次 Phase 12.5 真实验证中，模型主动调用 `run_command`，
+执行 Phase 9 长文件测试并通过 10 项；随后修复 `cli.py` 的 Windows GBK Unicode 输出，
+并通过 ASCII、中文、emoji 及中文+emoji+JSON 回归测试，真实闭环正式关闭。本项目暂不
+自动进入 unrestricted shell、Memory、RAG、MCP 或其它后续能力。
 
 ---
 
@@ -215,7 +218,7 @@ eval/             轻量 Eval（Phase 6.5）
   .workspace_snapshot/  跑 Eval 前备份的 demo_workspace（已 gitignore，重跑前必须删）
 demo_workspace/   Agent 唯一允许读写的工作目录（沙盒），当前 5 个文件
 README.md         项目说明 + 每个阶段的解释
-REAL_RUN_LOG.md   真模型实测记录（Phase 5.5 首轮 + Phase 6 复测）
+REAL_RUN_LOG.md   真模型实测记录（Phase 5.5 首轮 + Phase 6 复测 + Phase 12.5）
 HANDOFF_TO_CODEX.md  本文件
 ```
 

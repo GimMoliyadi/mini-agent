@@ -305,3 +305,155 @@ Session：`20260920-202930-fabf1d`
 ```text
 demo_workspace/notes/approval_test.md = ORIGINAL
 ```
+
+---
+
+# Phase 12.5 真实模型链路验证
+
+日期：2026-09-20
+基线：`0b07594 Phase 12: add controlled command execution`
+模型配置：`.env` 中 `OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_API_KEY` 均存在；未记录值。
+Windows 用户代理：`127.0.0.1:9674`；WinHTTP：直连。
+请求进程使用 HTTP/HTTPS/ALL 代理 `http://127.0.0.1:9674`，未输出 API Key、Authorization
+或敏感 Header。`.venv` 中无法直接导入 `httpx`，因此没有独立读取 `httpx trust_env`；
+OpenAI SDK 请求本身已到达 Provider。
+
+## 最小 Provider 请求
+
+请求内容：`回复 OK`，不带 Tool。
+
+结果：**失败**。Provider 返回 HTTP 429：
+
+```text
+inference exceeds tpm/rpm limit
+```
+
+归类：Provider 限流，不是 Runtime、Sandbox、Permission 或 `run_command` 错误。
+按要求未重试，也未进入真实 Agent 测试。
+
+## Phase 12.5 Agent 闭环
+
+未执行。由于最小 Provider 请求未成功：
+
+- 实际 Tool：无
+- `run_command`：未请求
+- approval decision：无
+- subprocess：未启动
+- model calls / tool calls：无可用 Agent 数据
+- token usage：无
+- Final Answer：无
+
+---
+
+# Phase 12.5 真实模型链路验证（第二次）
+
+日期：2026-09-21
+基线：`0b07594 Phase 12: add controlled command execution`
+本次未修改 Runtime，未运行完整本地测试，未进入 Phase 13。
+
+## 预检与最小 Provider 请求
+
+- `OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_API_KEY`：均存在；只记录存在性，未记录值。
+- Windows 用户代理：`127.0.0.1:9674`，TCP 可达；本次未使用 `127.0.0.1:7897`。
+- 最小请求：`回复 OK`，不带 Tool。
+- Provider 结果：成功，响应内容为 `OK`。
+- 最小请求 token：prompt `84`，completion `73`，total `157`。
+
+## 真实 Agent 链路
+
+任务原文：`运行 Phase 9 的长文件相关测试，告诉我测试是否通过。`
+
+模型主动请求了 `run_command`。`TOOL_APPROVAL_MODE=ALLOW`，允许的
+`run_command` 经过 Phase 11 Permission Runtime；风险等级均为 `EXECUTION`。
+命令策略拒绝发生在 Permission callback 之前，因此被拒绝的 `git show` 没有启动
+subprocess。
+
+| Agent Turn | Tool Call | command / args | cwd | risk | approval | subprocess | exit | timed_out |
+|---|---|---|---|---|---|---|---:|---|
+| 2 | `run_command` | `git` / `["log", "--oneline", "-20"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | `ALLOW` | 是 | 0 | false |
+| 3 | `run_command` | `git` / `["show", "--stat", "2a0ac8e"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | 未到达（Command Policy 拒绝） | 否 | N/A | false |
+| 4 | `run_command` | `python` / `["-m", "pytest", "tests/test_long_file.py", "-v"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | `ALLOW` | 是 | 1 | false |
+| 5 | `run_command` | `python` / `["-m", "unittest", "tests.test_long_file", "-v"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | `ALLOW` | 是 | 0 | false |
+
+### Tool Result 摘要
+
+- `git log`：返回当前 Phase 12 提交历史，正常完成。
+- `git show`：返回 `CommandPolicyError`，原因是第一版策略只允许 `git status`、`git diff`、`git log`；未启动进程。
+- `python -m pytest tests/test_long_file.py -v`：非零退出，stderr 为 `.venv` 未安装 `pytest`。
+- `python -m unittest tests.test_long_file -v`：退出码 `0`，timed out 为 `false`；`Ran 10 tests in 3.219s`，`OK`。stdout 为空，测试明细位于 stderr。
+
+Final Answer 原文：
+
+```text
+Phase 9 的长文件相关测试全部通过 ✅
+
+python -m unittest tests.test_long_file -v
+
+Ran 10 tests in 3.219s，OK
+
+通过的具体测试包括：
+- test_default_read_returns_first_segment_and_metadata
+- test_start_line_and_max_lines_select_exact_range
+- test_metadata_marks_last_segment
+- test_large_ranges_return_complete_lines_with_consistent_metadata
+- test_empty_and_utf8_files
+- test_invalid_ranges_are_model_readable_errors
+- test_past_end_is_clear
+- test_single_line_over_safe_budget_is_an_explicit_tool_error
+- test_result_length_guard_remains_active
+- test_mock_agent_reads_until_fact
+
+注意：`python -m pytest` 先执行失败，因为 `.venv` 中没有安装 pytest；随后改用
+仓库已有的 `python -m unittest` 执行并全部通过。
+```
+
+## 调用与闭环判定
+
+- Agent model calls：`6`
+- Agent tool calls：`6`，其中 `run_command` `4` 次
+- Agent token usage：prompt `14635`，completion `634`，total `15269`
+- 加上最小 Provider 请求：model calls `7`，tool calls `6`，tokens `14719 / 707 / 15426`
+- 未撞 `MAX_AGENT_STEPS`；模型收到 Tool Result 后给出 Final Answer。
+- `shell=False` 由既有 `run_command` 实现实际执行；本次未修改该实现。
+
+核心链路已实际发生：
+`LLM → run_command → EXECUTION → ALLOW → subprocess(shell=False) → Tool Result → LLM → Final Answer`。
+
+但 `cli.py` 在打印最终 JSON 结果时，因 Windows 默认 GBK 无法编码 Final Answer 中的
+`✅`，额外抛出 `UnicodeEncodeError`。这发生在 Agent 已生成 Final Answer 之后，仍属于
+本次运行的 Runtime/CLI 异常。按照本阶段“无 Runtime exception”的严格成功标准，
+Phase 12.5 已证明核心受控执行链路，但 Phase 12 目前**不正式关闭**；本次不修改 Runtime，
+也不重跑 Agent。
+
+---
+
+# Phase 12 CLI Unicode 输出修复
+
+日期：2026-09-21
+
+问题根因：`cli.py` 使用 `print(json.dumps(result, ensure_ascii=False))` 直接写入
+Windows 默认 GBK stdout；模型 Final Answer 中的 `✅` 无法编码，导致最终 JSON 输出
+抛出 `UnicodeEncodeError`。问题位于 CLI Output / Encoding，不涉及 LLM、Agent Loop、
+`run_command`、subprocess、Permission 或 Command Policy。
+
+修复：在最终 JSON 输出前仅调用 `sys.stdout.reconfigure(encoding="utf-8")`（当 stdout
+支持 `reconfigure` 时），不修改 stdin、模型输出或 Agent Runtime。
+
+新增 `tests/test_cli.py` Unicode 回归，使用模拟 `cp936` stdout 验证以下内容均以 UTF-8
+输出且没有静默删除：
+
+- `OK`
+- `测试全部通过`
+- `测试全部通过 ✅`
+- `{"message": "测试全部通过 ✅", "ok": true}`
+
+## Phase 12 回归结果
+
+```text
+Ran 49 tests in 5.323s
+OK
+```
+
+覆盖 CLI、Command、Permission、Session、Context/Loop、Long-file、Sandbox；未运行完整
+Eval，未调用真实模型。Phase 12 真实链路此前已完成，本次补齐 Final Answer → CLI 输出
+边界验证，现正式关闭。

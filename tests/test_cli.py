@@ -1,3 +1,5 @@
+import io
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +34,37 @@ class CliTests(unittest.TestCase):
 
     def test_cancel(self):
         self.assertEqual(self.invoke(KeyboardInterrupt())["status"], "cancelled")
+
+    def capture_cli_result(self, answer):
+        buffer = io.BytesIO()
+        stdout = io.TextIOWrapper(buffer, encoding="cp936")
+        try:
+            with patch.object(cli, "run_task", return_value={
+                "status": "completed",
+                "answer": answer,
+                "error": None,
+            }), patch.object(cli.sys, "stdout", stdout), patch.object(
+                cli.sys, "argv", ["cli.py", "--task", "test"]
+            ):
+                exit_code = cli.cli()
+            stdout.flush()
+            payload = json.loads(buffer.getvalue().decode("utf-8"))
+        finally:
+            stdout.detach()
+        return exit_code, payload
+
+    def test_unicode_json_output_preserves_content(self):
+        cases = [
+            "OK",
+            "测试全部通过",
+            "测试全部通过 ✅",
+            '{"message": "测试全部通过 ✅", "ok": true}',
+        ]
+        for answer in cases:
+            with self.subTest(answer=answer):
+                exit_code, payload = self.capture_cli_result(answer)
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(payload["answer"], answer)
 
 
 if __name__ == "__main__":

@@ -291,6 +291,12 @@ Sandbox 预检发生在 Permission callback 之前。
 默认超时为 30 秒，stdout/stderr 各有独立输出上限，超时和非零退出都会作为正常 Tool
 Result 返回给模型。
 
+2026-09-21 的 Phase 12.5 真实验证已证明完整核心链路：模型主动请求 `run_command`，
+`EXECUTION` 获 `ALLOW`，`python -m unittest tests.test_long_file -v` 实际运行并通过 10 项
+测试，模型随后给出 Final Answer。后续已修复 `cli.py` 的 Windows GBK stdout 问题，并用
+ASCII、中文、emoji 及中文+emoji+JSON 回归验证输出内容完整保留，Phase 12 真实闭环正式关闭。
+详见 `REAL_RUN_LOG.md`。
+
 ## 工具结果长度保护
 
 `config.py` 里 `MAX_TOOL_RESULT_CHARS = 4000`。超过就截断，并明确告诉模型
@@ -312,7 +318,7 @@ mini-agent-lab/
 ├── tools.py              # 工具层：工具 Schema/Handler/Policy + 沙盒校验 + Registry
 ├── requirements.txt      # 唯一第三方依赖：openai
 ├── README.md             # 本文件
-├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9、Phase 10）
+├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9、Phase 10、Phase 12.5）
 ├── .env.example          # 环境变量模板，复制成 .env 再填 Key
 ├── .gitignore            # 保证 .env 和 __pycache__ 不进版本库
 ├── eval/                 # Phase 6.5：轻量 Eval（不新增 Agent 能力，只测稳定性）
