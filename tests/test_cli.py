@@ -22,12 +22,12 @@ class CliTests(unittest.TestCase):
         return result
 
     def test_completed(self):
-        def loop(client, model, messages, reply, executed, approval_callback):
+        def loop(client, model, messages, reply, executed, approval_callback, trace=None):
             messages.append({"role": "assistant", "content": "done"})
         self.assertEqual(self.invoke(loop)["answer"], "done")
 
     def test_incomplete(self):
-        self.assertEqual(self.invoke(lambda *args: None)["status"], "incomplete")
+        self.assertEqual(self.invoke(lambda *args, **kwargs: None)["status"], "incomplete")
 
     def test_provider_error(self):
         self.assertEqual(self.invoke(TimeoutError("timeout"))["status"], "failed")

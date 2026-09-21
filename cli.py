@@ -13,6 +13,7 @@ from config import get_approval_mode, load_config
 def run_task(task: str) -> dict:
     messages = [{"role": "system", "content": main.SYSTEM_PROMPT},
                 {"role": "user", "content": task}]
+    trace = main.CodingTaskTrace()
     config = load_config()
     client = None
     try:
@@ -27,15 +28,21 @@ def run_task(task: str) -> dict:
                 reply,
                 set(),
                 main.approval_callback_for_mode(get_approval_mode()),
+                trace=trace,
             )
         last = messages[-1]
         answer = last.get("content") if last.get("role") == "assistant" and not last.get("tool_calls") else None
         return {"status": "completed" if answer else "incomplete", "answer": answer,
-                "error": None if answer else "Agent stopped without a final answer"}
+                "error": None if answer else "Agent stopped without a final answer",
+                "trace": trace.summary()}
     except KeyboardInterrupt:
-        return {"status": "cancelled", "answer": None, "error": "Cancelled by user; completed file writes remain"}
+        return {"status": "cancelled", "answer": None,
+                "error": "Cancelled by user; completed file writes remain",
+                "trace": trace.summary()}
     except (APIError, ConnectionError, TimeoutError, ImportError, ValueError) as exc:
-        return {"status": "failed", "answer": None, "error": f"{type(exc).__name__}: {exc}"}
+        return {"status": "failed", "answer": None,
+                "error": f"{type(exc).__name__}: {exc}",
+                "trace": trace.summary()}
     finally:
         if client is not None:
             client.close()

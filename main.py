@@ -21,7 +21,7 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from openai import APIError, OpenAI
 from openai.types.chat import ChatCompletionMessage
@@ -130,6 +130,114 @@ class ModelReply:
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
+
+
+@dataclass
+class CodingTaskTrace:
+    """Small per-task trace for bounded coding-loop validation.
+
+    The trace is deliberately in-memory and task-scoped.  It records enough
+    evidence to explain a coding task without adding a second persistence or
+    observability system to the Agent runtime.
+    """
+
+    model_calls: int = 0
+    tool_calls: int = 0
+    executed_tool_calls: int = 0
+    write_file_calls: int = 0
+    run_command_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    max_steps_reached: bool = False
+    final_answer: str | None = None
+    events: list[dict] = field(default_factory=list)
+
+    def record_model_turn(self, turn: int, reply: ModelReply) -> None:
+        self.model_calls += 1
+        self.prompt_tokens += reply.prompt_tokens or 0
+        self.completion_tokens += reply.completion_tokens or 0
+        self.total_tokens += reply.total_tokens or 0
+        action = "tool_calls" if reply.message.tool_calls else "final_answer"
+        event = {"turn": turn, "action": action}
+        if not reply.message.tool_calls:
+            self.final_answer = reply.message.content or ""
+        self.events.append(event)
+
+    def record_tool(
+        self,
+        turn: int,
+        call,
+        result: str,
+        approval: str,
+        executed: bool,
+    ) -> dict:
+        tool_name = call.function.name
+        arguments_summary, write_target = trace_arguments(call)
+        exit_code = trace_exit_code(result)
+        result_summary = result.splitlines()[0][:160] if result else "<empty>"
+        self.tool_calls += 1
+        self.executed_tool_calls += int(executed)
+        self.write_file_calls += int(tool_name == "write_file")
+        self.run_command_calls += int(tool_name == "run_command")
+        event = {
+            "turn": turn,
+            "action": "tool_call",
+            "tool": tool_name,
+            "arguments": arguments_summary,
+            "approval": approval,
+            "result": result_summary,
+            "exit_code": exit_code,
+            "write_target": write_target,
+            "executed": executed,
+        }
+        self.events.append(event)
+        return event
+
+    def mark_max_steps(self) -> None:
+        self.max_steps_reached = True
+
+    def summary(self) -> dict:
+        return {
+            "model_calls": self.model_calls,
+            "tool_calls": self.tool_calls,
+            "executed_tool_calls": self.executed_tool_calls,
+            "write_file_calls": self.write_file_calls,
+            "run_command_calls": self.run_command_calls,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "max_steps_reached": self.max_steps_reached,
+            "final_answer": self.final_answer,
+            "events": list(self.events),
+        }
+
+
+def trace_arguments(call) -> tuple[str, str | None]:
+    """Return bounded argument text and the write target for a task trace."""
+    raw_arguments = call.function.arguments or "{}"
+    try:
+        arguments = json.loads(raw_arguments)
+    except (json.JSONDecodeError, TypeError):
+        return raw_arguments[:240], None
+
+    if not isinstance(arguments, dict):
+        return str(arguments)[:240], None
+
+    summarized = dict(arguments)
+    write_target = summarized.get("path") if call.function.name == "write_file" else None
+    content = summarized.get("content")
+    if isinstance(content, str):
+        summarized["content"] = f"<{len(content)} characters>"
+    return json.dumps(summarized, ensure_ascii=False, sort_keys=True)[:240], write_target
+
+
+def trace_exit_code(result: str) -> str | None:
+    """Extract the command exit code from a formatted run_command result."""
+    for line in result.splitlines():
+        if line.startswith("Exit code: "):
+            return line.removeprefix("Exit code: ")
+    return None
 
 
 def ask(client: OpenAI, model: str, messages: list[dict]) -> ModelReply:
@@ -577,11 +685,31 @@ def call_fingerprint(call) -> tuple[str, str]:
     return (call.function.name, canonical)
 
 
+def counts_as_successful_duplicate(call, result: str) -> bool:
+    """Decide whether a result should lock an identical call for this task.
+
+    A non-zero process exit is a real execution result, but it is not a
+    successful coding action.  Keeping it out of the duplicate set lets the
+    model repair the code and rerun the same test command.
+    """
+    if (
+        result.startswith(TOOL_FAILURE_PREFIX)
+        or result.startswith(APPROVAL_DENIED_PREFIX)
+        or result == DUPLICATE_NOTICE
+    ):
+        return False
+    if call.function.name == "run_command":
+        return trace_exit_code(result) == "0"
+    return True
+
+
 def run_tool_round(
     messages: list[dict],
     message: ChatCompletionMessage,
     executed: set[tuple[str, str]],
     approval_callback: ApprovalCallback,
+    trace: CodingTaskTrace | None = None,
+    turn: int | None = None,
 ) -> None:
     """执行这一批工具调用，把「模型提了调用」和「调用结果」都写进历史。
 
@@ -608,21 +736,57 @@ def run_tool_round(
             print("（重复调用被拦截，未真正执行）")
             print(f"Tool 结果 > {DUPLICATE_NOTICE}")
             messages.append(tool_result_message(call, DUPLICATE_NOTICE))
+            if trace is not None:
+                event = trace.record_tool(
+                    turn or 0, call, DUPLICATE_NOTICE, "DUPLICATE_BLOCKED", False
+                )
+                print(
+                    "Trace > "
+                    f"Turn {event['turn']} | tool={event['tool']} | "
+                    f"args={event['arguments']} | approval={event['approval']} | "
+                    f"result={event['result']} | exit_code={event['exit_code']} | "
+                    f"write_target={event['write_target']}"
+                )
             continue
 
         may_execute, permission_result = check_tool_permission(call, approval_callback)
         result = permission_result if not may_execute else execute_tool_call(call)
-        if (
-            may_execute
-            and not result.startswith(TOOL_FAILURE_PREFIX)
-            and not result.startswith(APPROVAL_DENIED_PREFIX)
-        ):
+        if may_execute and counts_as_successful_duplicate(call, result):
             # 只有成功执行过的调用才记下来。失败的那次不该被锁定——
             # 模型换个参数重试是合理行为，拦它才是帮倒忙。
             executed.add(fingerprint)
 
         print(f"Tool 结果 > {result}")
         messages.append(tool_result_message(call, result))
+        if trace is not None:
+            definition = TOOL_REGISTRY.get(call.function.name)
+            if definition is None:
+                approval = "N/A"
+            elif definition.risk_level is RiskLevel.READ_ONLY:
+                approval = "AUTO"
+            elif not may_execute:
+                approval = (
+                    "DENY"
+                    if result.startswith(APPROVAL_DENIED_PREFIX)
+                    else "BLOCKED"
+                )
+            else:
+                approval = "ALLOW"
+            tool_executed = may_execute and definition is not None
+            event = trace.record_tool(
+                turn or 0,
+                call,
+                result,
+                approval,
+                tool_executed,
+            )
+            print(
+                "Trace > "
+                f"Turn {event['turn']} | tool={event['tool']} | "
+                f"args={event['arguments']} | approval={event['approval']} | "
+                f"result={event['result']} | exit_code={event['exit_code']} | "
+                f"write_target={event['write_target']}"
+            )
 
 
 def finalize(messages: list[dict], message: ChatCompletionMessage) -> None:
@@ -638,6 +802,7 @@ def run_agent_loop(
     first_reply: ModelReply,
     executed: set[tuple[str, str]],
     approval_callback: ApprovalCallback,
+    trace: CodingTaskTrace | None = None,
 ) -> None:
     """把「问模型 → 执行工具 → 回喂 → 再问」装进循环。
 
@@ -662,12 +827,18 @@ def run_agent_loop(
     reply = first_reply
 
     for step in range(1, MAX_AGENT_STEPS + 1):
+        if trace is not None:
+            trace.record_model_turn(step, reply)
         if not reply.message.tool_calls:
             # 模型决定直接回答：当前任务完成
             finalize(messages, reply.message)
+            if trace is not None:
+                print(f"Trace > Turn {step} | action=Final Answer")
             return
 
         if step == MAX_AGENT_STEPS:
+            if trace is not None:
+                trace.mark_max_steps()
             print(
                 f"\n[已达到最大步骤数 {MAX_AGENT_STEPS}，停止当前任务；"
                 "此时模型仍要求调用工具]"
@@ -675,7 +846,14 @@ def run_agent_loop(
             return
 
         # 还有预算，就执行并回喂；下一轮循环再问模型，由它决定继续还是收口
-        run_tool_round(messages, reply.message, executed, approval_callback)
+        run_tool_round(
+            messages,
+            reply.message,
+            executed,
+            approval_callback,
+            trace=trace,
+            turn=step,
+        )
         # Keep canonical history intact; only shrink the outbound model view.
         reply = ask(client, model, build_model_context(messages))
         log_reply(step + 1, reply)
@@ -749,6 +927,7 @@ def main(argv: list[str] | None = None) -> int:
             # 每个任务一份「已成功执行过的调用」指纹表，任务结束就丢。
             # 跨任务不清的话，上一轮的正常调用会被这一轮误判成重复。
             executed: set[tuple[str, str]] = set()
+            trace = CodingTaskTrace()
 
             try:
                 # canonical history remains the source; only the outbound view is compressed.
@@ -761,6 +940,7 @@ def main(argv: list[str] | None = None) -> int:
                     first_reply,
                     executed,
                     approval_callback,
+                    trace=trace,
                 )
             except (APIError, ConnectionError, TimeoutError) as exc:
                 # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通。

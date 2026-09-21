@@ -21,7 +21,7 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 12
+## 当前状态：Phase 13
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -297,6 +297,25 @@ Result 返回给模型。
 ASCII、中文、emoji 及中文+emoji+JSON 回归验证输出内容完整保留，Phase 12 真实闭环正式关闭。
 详见 `REAL_RUN_LOG.md`。
 
+## Phase 13：Bounded Coding Loop
+
+Phase 13 用一个隔离的 `tests/fixtures/coding_workspace/` 小项目验证有限 Coding Loop：
+
+```
+read_file → write_file → run_command（测试）→ Tool Result → 再决定 → Final Answer
+```
+
+Runtime 没有新增 Planner、Coding 状态机或自动修复分支。测试进程退出码 `1` 仍是正常
+`Tool Result`，模型可以读取 stdout/stderr 和 `exit_code` 后决定下一次修改；只有 Runtime
+异常才会被当作工具失败。非零 `run_command` 结果不会进入成功重复调用集合，因此修改后
+可以再次运行同一条测试命令。
+
+本阶段增加了任务级内存 Trace（模型轮次、工具参数摘要、审批、结果摘要、退出码、写入目标、
+调用计数和 token 汇总），并继续使用已有 `MAX_AGENT_STEPS` 作为上限保险丝。`write_file`
+仍是 `SIDE_EFFECT`，`run_command` 仍是 `EXECUTION`，两者都必须经过现有 Permission Runtime；
+fixture 仍只能位于 `WORKSPACE_DIR` 内。Mock A 验证一次修复，Mock B 验证失败后第二次修复，
+Mock C 验证撞上限时停止；一次真实小任务也已读、写、测试并给出 Final Answer。
+
 ## 工具结果长度保护
 
 `config.py` 里 `MAX_TOOL_RESULT_CHARS = 4000`。超过就截断，并明确告诉模型
@@ -318,7 +337,7 @@ mini-agent-lab/
 ├── tools.py              # 工具层：工具 Schema/Handler/Policy + 沙盒校验 + Registry
 ├── requirements.txt      # 唯一第三方依赖：openai
 ├── README.md             # 本文件
-├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9、Phase 10、Phase 12.5）
+├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9、Phase 10、Phase 12.5、Phase 13）
 ├── .env.example          # 环境变量模板，复制成 .env 再填 Key
 ├── .gitignore            # 保证 .env 和 __pycache__ 不进版本库
 ├── eval/                 # Phase 6.5：轻量 Eval（不新增 Agent 能力，只测稳定性）
@@ -336,6 +355,8 @@ mini-agent-lab/
 │   ├── test_session.py   # Session 保存/恢复、密钥排除和上下文视图测试
 │   ├── test_long_file.py # Phase 9 分段读取、完整行和 mock 分页测试
 │   ├── test_permissions.py # Phase 10 审批、拒绝、协议和 Mock Agent 测试
+│   ├── test_coding_loop.py # Phase 13 fixture、Mock A/B/C 和边界测试
+│   ├── fixtures/coding_workspace/ # 隔离的 calculator.py + test_calculator.py fixture
 │   └── inputs/           # 喂给 main.py 的 stdin 输入，用来复现某次实测
 ├── sessions/             # 本地 Session JSON（已加入 .gitignore，不提交实际会话）
 └── demo_workspace/       # Agent 唯一允许读写的工作目录（沙盒）
@@ -466,8 +487,12 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 - **Phase 12 · Controlled Command Execution** ✅ —— 增加 `run_command`，以 `shell=False`
   执行受限的 Python 测试和 Git 只读命令；增加 workspace cwd 预检、命令审批、超时、
   stdout/stderr 截断、非零退出结果和本地/Mock 测试。
+- **Phase 13 · Bounded Coding Loop** ✅ —— 保留普通 `LLM → Tool Call → Tool Result → LLM`
+  循环，用隔离 calculator fixture 验证 `read → write → test → Final`、测试失败后的二次修复、
+  Permission、Sandbox、Session/Context/Long-file/Command 回归和 `MAX_AGENT_STEPS` 兜底；
+  增加最小任务 Trace，没有引入 Planner 或 Coding 状态机。
 
-当前阶段已收尾，后续能力等待明确确认后再开始。
+Phase 13 已收尾；下一阶段只做分析，不在本阶段自动开始。
 
 > **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
 > 实际在 Phase 2 就和 `read_file` 一起做掉了。

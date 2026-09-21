@@ -457,3 +457,142 @@ OK
 覆盖 CLI、Command、Permission、Session、Context/Loop、Long-file、Sandbox；未运行完整
 Eval，未调用真实模型。Phase 12 真实链路此前已完成，本次补齐 Final Answer → CLI 输出
 边界验证，现正式关闭。
+
+---
+
+# Phase 13：Bounded Coding Loop
+
+日期：2026-09-21
+基线：`41a1c60 Phase 12: fix Unicode CLI output`（Phase 12 command runtime 的前一节点为
+`0b07594 Phase 12: add controlled command execution`）
+
+## 实现范围
+
+本阶段没有加入 Planner、Coding 状态机、MCP、Memory、Multi-Agent、网络命令或 Git 写操作。
+改动集中在：
+
+- `main.py`：增加任务级内存 `CodingTaskTrace`；记录模型轮次、工具参数摘要、审批、结果摘要、
+  `exit_code`、写入目标、调用计数和 token 汇总。
+- `main.py`：`run_command` 的非零退出不再进入成功重复调用集合。它仍是已经执行过的命令，
+  但不是成功动作；模型修复文件后可以再次运行同一条测试命令。
+- `cli.py`：单任务 JSON 结果包含 Trace 汇总。
+- `tests/fixtures/coding_workspace/`：独立的 `calculator.py` 和 `test_calculator.py` fixture，
+  初始状态故意让 `add` / `subtract` 的运算符写反。
+- `tests/test_coding_loop.py`：Mock A/B/C、初始失败、失败重测、审批拒绝、重复保护和 Trace 测试。
+
+## Mock Coding Loop A
+
+初始 fixture 测试：`python -m unittest test_calculator -q`，`Exit code: 1`。
+
+确定性链路：
+
+```text
+read_file(calculator.py)
+→ write_file(calculator.py, fixed content)
+→ run_command(python -m unittest test_calculator -q), Exit code: 0
+→ Final Answer
+```
+
+文件实际变为 `add → a + b`、`subtract → a - b`，Trace 记录 `write=1`、`run=1`、
+`max_steps_reached=false`。
+
+## Mock Coding Loop B
+
+确定性链路：
+
+```text
+read
+→ write v1（只修 add）
+→ run tests, Exit code: 1
+→ write v2（再修 subtract）
+→ run 同一条 tests 命令, Exit code: 0
+→ Final Answer
+```
+
+第二次 `run_command` 确实启动了新的 subprocess；测试失败没有被误判为 Runtime Failure，
+也没有被重复调用保护拦住。
+
+## Mock Coding Loop C
+
+Mock 模型反复请求同一个读取工具，不给 Final Answer。测试确认：
+
+- `model_calls = 8`
+- `tool_calls = 7`
+- `MAX_AGENT_STEPS = 8` 被命中
+- 没有无限循环，没有孤立的 assistant tool-call 写入 canonical history
+
+## 本地验证
+
+```text
+python -m unittest tests.test_coding_loop -q
+Ran 6 tests ... OK
+
+python -m unittest discover -s tests -p "test_*.py" -q
+Ran 55 tests ... OK
+
+git diff --check
+OK
+```
+
+55 项回归覆盖 Coding Loop、Permission、Sandbox、Session、Context/Long-file、Command、CLI 和
+既有 Agent Loop；未安装依赖，未扩大 Command Policy。
+
+## 一次真实 Coding Task
+
+真实任务原文：`修复 calculator.py，让对应测试全部通过。完成后告诉我改了什么。`
+
+真实 fixture 位于临时 `AGENT_WORKSPACE`：
+`C:\Users\30858\AppData\Local\Temp\mini-agent-coding-c6b340c0142c4376a7f947976c3866ba`
+
+模型没有被告知 bug 所在行、正确代码或工具顺序，实际链路为：
+
+```text
+Turn 1  list_files({})
+Turn 2  read_file(calculator.py)
+        read_file(test_calculator.py)
+Turn 3  write_file(calculator.py)
+Turn 4  run_command(python -m unittest test_calculator.py), Exit code: 0
+Turn 5  Final Answer
+```
+
+权限：`write_file=ALLOW`、`run_command=ALLOW`；两者均经过现有 Permission Runtime。
+命令使用现有 `shell=False` 和 workspace cwd；没有 Sandbox violation，没有 Runtime exception，
+没有撞 `MAX_AGENT_STEPS`。
+
+最终测试：`python -m unittest test_calculator.py`，2 个测试通过，`Exit code: 0`。
+最终文件实际为：
+
+```python
+def add(a, b):
+    return a + b
+
+
+def subtract(a, b):
+    return a - b
+```
+
+Final Answer 原文：
+
+```text
+测试全部通过（2 个用例 OK）。
+
+修改内容：`calculator.py` 中两个函数的运算符写反了——`add` 用的是减号，`subtract` 用的是加号。已对调：
+- `add(a, b)` 现在返回 `a + b`
+- `subtract(a, b)` 现在返回 `a - b`
+```
+
+### 真实调用统计
+
+| 指标 | 数值 |
+|---|---:|
+| model calls | 5 |
+| tool calls | 5 |
+| `write_file` calls | 1 |
+| `run_command` calls | 1 |
+| prompt tokens | 8267 |
+| completion tokens | 344 |
+| total tokens | 8611 |
+| MAX_AGENT_STEPS | 未命中 |
+
+真实任务最终通过的是项目已有的 `cli.py --task` 单任务入口；先前一次交互 stdin 管道没有形成
+Final Answer，fixture 随后恢复到初始状态，未计入上述成功链路。

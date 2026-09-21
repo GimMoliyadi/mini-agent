@@ -1,6 +1,6 @@
 # mini-agent-lab 交接文档 → Codex
 
-**写于**：2026-09-21　**状态**：Phase 12 正式关闭（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution 及 Phase 12.5 真实闭环均已收尾）
+**写于**：2026-09-21　**状态**：Phase 13 正式关闭（Phase 7 Context Management、Phase 8 Session Persistence、Phase 9 Long File Reading、Phase 10 Tool Permission、Phase 11 Generalized Tool Capability / Permission Policy、Phase 12 Controlled Command Execution、Phase 12.5 真实闭环及 Phase 13 Bounded Coding Loop 均已收尾）
 **写给**：一个从没见过这个项目的开发 Agent（Codex）
 **目的**：让你在不重新考古整个仓库的前提下，接住这个项目并往下走。
 
@@ -29,9 +29,12 @@ LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
     → Long File Reading → Tool Permission / Side-effect Approval
     → Generalized Tool Capability / Permission Policy
     → Controlled Command Execution
+    → Bounded Coding Loop
 ```
 
-当前已完成 Phase 12 Runtime。本次 Phase 12.5 真实验证中，模型主动调用 `run_command`，
+当前已完成 Phase 13 Runtime。本次 Phase 13 真实验证中，模型主动完成了隔离 calculator fixture 的
+读取、修改、测试和最终回答；
+此前 Phase 12.5 真实验证中，模型主动调用 `run_command`，
 执行 Phase 9 长文件测试并通过 10 项；随后修复 `cli.py` 的 Windows GBK Unicode 输出，
 并通过 ASCII、中文、emoji 及中文+emoji+JSON 回归测试，真实闭环正式关闭。本项目暂不
 自动进入 unrestricted shell、Memory、RAG、MCP 或其它后续能力。
@@ -40,7 +43,7 @@ LLM → Tool Calling → Tool Execution → Tool Result → Agent Loop
 
 ## 2. 当前项目状态
 
-Phase 0 到 Phase 12 全部完成并按阶段验证。每个阶段的三段式说明：
+Phase 0 到 Phase 13 全部完成并按阶段验证。每个阶段的三段式说明：
 **新增了什么 / 为什么新增 / 最重要的结论。**
 
 ### Phase 0 — 项目骨架
@@ -187,6 +190,24 @@ Command、CWD、Exit code、Timed out、STDOUT 和 STDERR；超时会终止 subp
 拒绝路径经过现有 `ASK` / `ALLOW` / `DENY` callback；DENY 不启动 subprocess，仍保留
 合法 `role="tool"` 历史记录，也不会进入成功重复调用集合。
 
+### Phase 13 — Bounded Coding Loop
+
+新增：`CodingTaskTrace`、`counts_as_successful_duplicate()`、隔离 fixture
+`tests/fixtures/coding_workspace/`、`tests/test_coding_loop.py`，以及 CLI 结果中的任务 Trace。
+
+为什么：Phase 12 已经有文件读写、受控测试命令和权限边界，但还没有证明它们能自然串成一次
+小型 Coding Task。这里不加 Planner 或 Coding 专用状态机，只让普通 Agent Loop 处理测试结果。
+
+关键语义：`run_command` 的非零退出码表示测试失败，不是 Runtime 崩溃；它会作为正常
+`role="tool"` 结果继续进入 messages。非零命令不进入成功重复调用集合，因此模型写入修复后
+可以再次运行同一条测试命令。`write_file` / `run_command` 仍分别经过 `SIDE_EFFECT` /
+`EXECUTION` Permission，Sandbox 和 `MAX_AGENT_STEPS` 均未绕过。
+
+确定性验证：Mock A 的链路为 `read → write → test(0) → Final`；Mock B 为
+`read → write v1 → test(1) → write v2 → test(0) → Final`；Mock C 反复请求工具并在
+`MAX_AGENT_STEPS` 停止。一次真实任务使用同一 fixture，模型实际走了
+`list → read calculator → read tests → write → run unittest(0) → Final`。
+
 ---
 
 ## 3. 当前架构
@@ -206,6 +227,7 @@ tests/            mock_server.py（本地假服务器，不需要 Key）
                   test_permissions.py（Phase 10/11 审批/拒绝、Sandbox、Session、Mock Agent）
                   test_commands.py（Phase 12 Command Policy、subprocess、超时和输出边界）
                   test_long_file.py（Phase 9 分段读取、完整行和 mock 分页）
+                  test_coding_loop.py（Phase 13 fixture、Mock A/B/C、失败重测和上限保护）
                   inputs/*.txt（喂给 main.py 的 stdin，用来复现某次实测）
 eval/             轻量 Eval（Phase 6.5）
   tasks.json        8 个任务 + 每个任务的成功规则
@@ -218,7 +240,7 @@ eval/             轻量 Eval（Phase 6.5）
   .workspace_snapshot/  跑 Eval 前备份的 demo_workspace（已 gitignore，重跑前必须删）
 demo_workspace/   Agent 唯一允许读写的工作目录（沙盒），当前 5 个文件
 README.md         项目说明 + 每个阶段的解释
-REAL_RUN_LOG.md   真模型实测记录（Phase 5.5 首轮 + Phase 6 复测 + Phase 12.5）
+REAL_RUN_LOG.md   真模型实测记录（Phase 5.5 首轮 + Phase 6 复测 + Phase 12.5 + Phase 13）
 HANDOFF_TO_CODEX.md  本文件
 ```
 
@@ -645,7 +667,7 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 
 ---
 
-## 11. 当前阶段禁止事项（Phase 12 已完成）
+## 11. 当前阶段禁止事项（Phase 13 已完成）
 
 除非有明确理由（而且要写清楚理由、等用户确认），**不要**做以下任何一件事：
 
@@ -657,7 +679,7 @@ token 合计 prompt 7288 / completion 884 / total 8172，服务商每次请求�
 - ❌ 引入 RAG
 - ❌ 引入 MCP
 - ❌ 把 `run_command` 扩展成 unrestricted shell；不得加入 shell=True、PowerShell、cmd、bash、网络命令或安装命令
-- ❌ 进入 MCP、RAG、Memory 或自动 Coding Loop
+- ❌ 把 Phase 13 的 bounded Coding Loop 扩展成无限自主编程；不得绕过 `MAX_AGENT_STEPS`
 - ❌ 增加超出当前学习目标的新 Tool
 - ❌ 做 GUI
 - ❌ 做 Multi-Agent
@@ -836,7 +858,7 @@ README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复
 
 ---
 
-**交接完毕。** 项目已完成 Phase 12：Context Management、Session Persistence、Long File Reading、
-Tool Permission / Side-effect Approval、Generalized Tool Capability / Permission Policy 与
-Controlled Command Execution 均已收尾；
+**交接完毕。** 项目已完成 Phase 13：Context Management、Session Persistence、Long File Reading、
+Tool Permission / Side-effect Approval、Generalized Tool Capability / Permission Policy、
+Controlled Command Execution 与 Bounded Coding Loop 均已收尾；
 Session 文件默认不进入版本库，后续阶段不自动开始。
