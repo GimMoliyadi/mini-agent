@@ -2,12 +2,15 @@ import io
 import json
 import sys
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cli
+import acceptance
+import tools
 
 
 class CliTests(unittest.TestCase):
@@ -28,6 +31,49 @@ class CliTests(unittest.TestCase):
 
     def test_incomplete(self):
         self.assertEqual(self.invoke(lambda *args, **kwargs: None)["status"], "incomplete")
+
+    def test_contract_result_contains_independent_acceptance(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        workspace = Path(temp_dir.name)
+        (workspace / "calculator.py").write_text(
+            "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n",
+            encoding="utf-8",
+        )
+        (workspace / "test_calculator.py").write_text(
+            "import unittest\nfrom calculator import add, subtract\n\n"
+            "class CalculatorTests(unittest.TestCase):\n"
+            "    def test_add(self): self.assertEqual(add(2, 3), 5)\n"
+            "    def test_subtract(self): self.assertEqual(subtract(5, 3), 2)\n",
+            encoding="utf-8",
+        )
+        contract = acceptance.CodingTaskContract.from_dict({
+            "task_id": "calculator_fix",
+            "instruction": "修复 calculator.py",
+            "allowed_paths": ["calculator.py"],
+            "test_command": {
+                "command": "python",
+                "args": ["-m", "unittest", "test_calculator", "-q"],
+            },
+        })
+
+        def loop(client, model, messages, reply, executed, approval_callback, trace=None):
+            messages.append({"role": "assistant", "content": "done"})
+
+        original_workspace = cli.main.WORKSPACE_DIR
+        original_tool_workspace = tools.WORKSPACE_DIR
+        cli.main.WORKSPACE_DIR = workspace
+        tools.WORKSPACE_DIR = workspace
+        self.addCleanup(setattr, cli.main, "WORKSPACE_DIR", original_workspace)
+        self.addCleanup(setattr, tools, "WORKSPACE_DIR", original_tool_workspace)
+        client = Mock()
+        with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
+             patch.object(cli.main, "build_client", return_value=client), \
+             patch.object(cli.main, "ask"), patch.object(cli.main, "log_reply"), \
+             patch.object(cli.main, "run_agent_loop", side_effect=loop):
+            result = cli.run_task("ignored", contract=contract)
+        self.assertTrue(result["acceptance"]["accepted"])
+        self.assertEqual(result["acceptance"]["final_test_exit_code"], 0)
 
     def test_provider_error(self):
         self.assertEqual(self.invoke(TimeoutError("timeout"))["status"], "failed")

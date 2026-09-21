@@ -596,3 +596,113 @@ Final Answer 原文：
 
 真实任务最终通过的是项目已有的 `cli.py --task` 单任务入口；先前一次交互 stdin 管道没有形成
 Final Answer，fixture 随后恢复到初始状态，未计入上述成功链路。
+
+---
+
+# Phase 14：Coding Task Contract / Machine-Verifiable Acceptance
+
+日期：2026-09-21
+基线：`c3de53e Phase 13: add bounded coding loop validation`
+
+## 实现范围
+
+新增 `acceptance.py`，没有新增 Agent Tool，也没有修改普通 `run_agent_loop` 的决策逻辑。
+Contract 至少包含：`task_id`、`instruction`、`allowed_paths`、固定 `test_command` 和
+`require_test_pass`。Verifier 独立完成：
+
+```text
+Contract load
+→ task-start workspace snapshot
+→ ordinary Agent Loop / Trace
+→ changed_files = before/after file hash diff
+→ unexpected_changes = changed_files - allowed_paths
+→ independent final test through safe run_command
+→ explainable acceptance result
+```
+
+Verifier 不调用 LLM、不读取 Session、不使用 Agent Tool Call。`run_command` 仍保持
+`shell=False`、timeout、cwd sandbox 和 command allowlist。快照检测普通文件的新增、删除和
+内容变化；`__pycache__` / `.pyc` 是 Python 测试运行时产物，不计入源码变化。
+
+## Mock Contract 结果
+
+| Case | Agent/最终状态 | Verifier 结果 |
+|---|---|---|
+| A | 只改 `calculator.py`，最终测试 exit 0，有 Final | PASS；`unexpected_changes=[]` |
+| B | 改 `test_calculator.py` 让错误实现通过，最终测试 exit 0 | FAIL；`unexpected file changed: test_calculator.py` |
+| C | 有 Final Answer，但代码仍错误 | FAIL；`final_test_failed` |
+| D | 曾测试通过，之后回归为错误代码 | FAIL；Verifier 最终重跑失败 |
+
+## 本地验证
+
+```text
+python -m unittest tests.test_acceptance tests.test_cli -q
+Ran 16 tests ... OK
+
+python -m unittest discover -s tests -p "test_*.py" -q
+Ran 66 tests ... OK
+
+git diff --check
+OK
+```
+
+## 一次真实 Coding Task
+
+Contract 文件：`tests/fixtures/coding_contract.json`
+
+任务 instruction：`修复 calculator.py，让对应测试通过。完成后告诉我改了什么。`
+
+真实 workspace：
+`C:\Users\30858\AppData\Local\Temp\mini-agent-phase14-real-5fa0fc8182af40358114fe9afdc30df0\coding_workspace`
+
+模型没有被告知正确代码，实际链路：
+
+```text
+Turn 1  list_files({})
+Turn 2  read_file(calculator.py) + read_file(test_calculator.py)
+Turn 3  write_file(calculator.py)
+Turn 4  重复 write_file(calculator.py)，被重复检测拦截
+Turn 5  run_command 参数类型错误，被 Command Policy 拒绝
+Turn 6  run_command(python -m unittest test_calculator.py -v)，Exit code: 0
+Turn 7  重复 read_file(calculator.py)，被重复检测拦截
+Turn 8  仍请求工具，撞 MAX_AGENT_STEPS；没有 Final Answer
+```
+
+模型实际只修改了允许的 `calculator.py`，内容已修复；`test_calculator.py` 未改。
+它执行过一个测试命令，但不是 Contract 完全一致的命令（Contract 要求 `test_calculator -q`，
+模型执行的是 `test_calculator.py -v`），因此报告中的 `agent_ran_required_test=false` 是严格匹配的结果。
+
+### Agent 统计
+
+| 指标 | 数值 |
+|---|---:|
+| model calls | 8 |
+| tool calls | 8 |
+| executed tool calls | 5 |
+| `write_file` calls | 2 |
+| `run_command` calls | 2 |
+| prompt tokens | 14637 |
+| completion tokens | 575 |
+| total tokens | 15212 |
+| `MAX_AGENT_STEPS` | 命中 |
+
+### Independent Verifier 结果
+
+```json
+{
+  "task_id": "calculator_fix",
+  "accepted": false,
+  "changed_files": ["calculator.py"],
+  "unexpected_changes": [],
+  "agent_ran_required_test": false,
+  "final_test_exit_code": 0,
+  "final_test_passed": true,
+  "agent_final_answer_present": false,
+  "max_steps_reached": true,
+  "runtime_exception": null,
+  "reasons": ["agent_final_answer_missing", "max_agent_steps_reached"]
+}
+```
+
+这次真实运行证明：Agent 做对代码、测试通过、甚至工作区没有越界修改，仍不等于
+Coding Task accepted；Final Answer 和步数上限也是机器验收契约的一部分。

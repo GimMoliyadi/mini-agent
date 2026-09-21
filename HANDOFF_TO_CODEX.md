@@ -858,7 +858,55 @@ README 与 REPORT 关于 8/8、2.20 倍、88.71%、31 次工具调用、0 重复
 
 ---
 
-**交接完毕。** 项目已完成 Phase 13：Context Management、Session Persistence、Long File Reading、
+## 15. Phase 14：Coding Task Contract / Machine-Verifiable Acceptance
+
+本阶段代码已实现，HEAD 仍在等待提交；不要把真实运行的 FAIL 误读成 Verifier 失败：
+真实模型确实修复了允许文件并通过了独立最终测试，但没有给 Final Answer 且撞上
+`MAX_AGENT_STEPS`，所以按 Contract 必须拒绝。
+
+### 新增与接入
+
+- `acceptance.py`：`CodingTaskContract` / `TestCommand`、JSON 加载、workspace SHA-256 快照、
+  changed file 差异和确定性 `verify_contract`。
+- `cli.py`：保留普通 `--task`，新增 `--contract CONTRACT.json`；带 Contract 时先拍快照，
+  Agent 结束后独立重跑固定测试并在 JSON 中返回 `acceptance`。
+- `tools.py`：`run_command` 增加显式 workspace 参数，Verifier 复用同一套 `shell=False`、
+  timeout、cwd 沙盒和 command allowlist，不经过 LLM Tool Call。
+- `tests/test_acceptance.py`：Contract、快照增删改、命令安全、Mock A/B/C/D、缓存排除和
+  无 LLM 验证；`tests/fixtures/coding_contract.json` 是可复用 Contract。
+
+### 当前验收规则
+
+`accepted=true` 必须同时满足：
+
+1. Agent 有 Final Answer；
+2. 没有 `MAX_AGENT_STEPS`；
+3. 没有 Runtime exception；
+4. `unexpected_changes` 为空；
+5. Verifier 独立执行 Contract 测试且 `final_test_exit_code == 0`。
+
+`agent_ran_required_test` 只记录 Agent 是否确实执行了与 Contract 完全一致的测试命令；
+它不是最终正确性的替代品。Verifier 始终自己执行最终测试。
+
+### 本地结果
+
+```text
+python -m unittest tests.test_acceptance tests.test_cli -q
+Ran 16 tests ... OK
+
+python -m unittest discover -s tests -p "test_*.py" -q
+Ran 66 tests ... OK
+
+git diff --check
+OK
+```
+
+### 下一阶段只做分析
+
+最值得补的是 Agent 的收口/预算策略：真实样本已经证明「最终测试通过」仍可能因为
+重复动作耗尽步数而不被接受。下一阶段再决定是否调整模型提示、重复检测或预算；本阶段不实现。
+
+**交接完毕。** 项目已完成 Phase 14：Context Management、Session Persistence、Long File Reading、
 Tool Permission / Side-effect Approval、Generalized Tool Capability / Permission Policy、
-Controlled Command Execution 与 Bounded Coding Loop 均已收尾；
+Controlled Command Execution、Bounded Coding Loop 与 Coding Task Acceptance 均已收尾；
 Session 文件默认不进入版本库，后续阶段不自动开始。

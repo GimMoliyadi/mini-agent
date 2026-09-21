@@ -172,7 +172,7 @@ RUN_COMMAND_TOOL = {
     },
 }
 
-def resolve_inside_workspace(path: str) -> Path:
+def resolve_inside_workspace(path: str, workspace: str | Path | None = None) -> Path:
     """把模型给的路径解析成绝对路径，并保证它落在工作目录内。
 
     这是整个项目最重要的一条不变量：Agent 不许碰沙盒之外的任何东西。
@@ -188,8 +188,8 @@ def resolve_inside_workspace(path: str) -> Path:
     越界时抛 PermissionError，绝不静默返回空值或改成沙盒内的路径：
     边界必须显式失败，静默降级等于把它写成装饰。
     """
-    target = (WORKSPACE_DIR / path).resolve()
-    root = WORKSPACE_DIR.resolve()
+    root = Path(workspace if workspace is not None else WORKSPACE_DIR).resolve()
+    target = (root / path).resolve()
 
     if not target.is_relative_to(root):
         raise PermissionError(f"路径越出工作目录，拒绝访问：{path}")
@@ -357,7 +357,9 @@ def _reject_shell_syntax(tokens: list[str]) -> None:
             )
 
 
-def _reject_workspace_escape_tokens(tokens: list[str]) -> None:
+def _reject_workspace_escape_tokens(
+    tokens: list[str], workspace: str | Path | None = None
+) -> None:
     """Reject path-like command arguments that resolve outside the workspace."""
     for token in tokens:
         candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
@@ -368,12 +370,14 @@ def _reject_workspace_escape_tokens(tokens: list[str]) -> None:
             or Path(candidate).is_absolute()
         ):
             try:
-                resolve_inside_workspace(candidate)
+                resolve_inside_workspace(candidate, workspace)
             except PermissionError as exc:
                 raise CommandPolicyError(f"命令参数越出工作目录：{token}") from exc
 
 
-def validate_run_command_arguments(arguments: dict) -> None:
+def validate_run_command_arguments(
+    arguments: dict, workspace: str | Path | None = None
+) -> None:
     """Validate the command policy without starting a process."""
     command = arguments.get("command")
     args = arguments.get("args", [])
@@ -392,7 +396,7 @@ def validate_run_command_arguments(arguments: dict) -> None:
             raise CommandPolicyError("python 只允许执行 python -m pytest 或 python -m unittest")
         if any(arg == "-c" or arg.startswith("-c") for arg in args):
             raise CommandPolicyError("禁止 python -c 任意执行代码")
-        _reject_workspace_escape_tokens(args[2:])
+        _reject_workspace_escape_tokens(args[2:], workspace)
         return
 
     if not args or args[0] not in _ALLOWED_GIT_COMMANDS:
@@ -403,7 +407,7 @@ def validate_run_command_arguments(arguments: dict) -> None:
         for arg in args[1:]
     ):
         raise CommandPolicyError("该 git 参数可能改变状态或访问未受控目标，已拒绝")
-    _reject_workspace_escape_tokens(args[1:])
+    _reject_workspace_escape_tokens(args[1:], workspace)
 
 
 def _decode_process_output(value: object) -> str:
@@ -468,14 +472,20 @@ def _format_command_result(
     )
 
 
-def run_command(command: str, args: list[str] = [], cwd: str = ".") -> str:
+def run_command(
+    command: str,
+    args: list[str] = [],
+    cwd: str = ".",
+    *,
+    workspace: str | Path | None = None,
+) -> str:
     """Run one allowlisted local development command without a shell."""
     arguments = {"command": command, "args": args, "cwd": cwd}
-    validate_run_command_arguments(arguments)
+    validate_run_command_arguments(arguments, workspace)
     if not isinstance(cwd, str):
         raise ValueError("cwd 必须是字符串")
 
-    target = resolve_inside_workspace(cwd)
+    target = resolve_inside_workspace(cwd, workspace)
     if not target.is_dir():
         raise NotADirectoryError(f"cwd 不是目录：{cwd}")
 

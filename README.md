@@ -21,7 +21,7 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 13
+## 当前状态：Phase 14
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -452,6 +452,55 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
   功能本身正确（19 个单测覆盖），只是没被真正需要过。
 - **步数上限余量只有 2**：最多用到第 6 轮，上限是 8。稍微复杂一点的任务就会逼近上限。
 
+## Phase 14：Coding Task Contract / Machine-Verifiable Acceptance
+
+Phase 13 的 Trace 记录 Agent 怎么做，但 Trace 和 Final Answer 都不是任务成功本身。
+Phase 14 增加独立的 `acceptance.py`，用结构化 Contract 和确定性 Verifier 判断最终状态。
+它不调用 LLM、不读取 Session、不进入普通 Agent Loop，也没有新增 Agent Tool。
+
+最小 Contract 形状如下；`instruction` 是给模型看的任务文本，其余字段是 Runtime / Eval
+独立读取的事实：
+
+```json
+{
+  "task_id": "calculator_fix",
+  "instruction": "修复 calculator.py，让对应测试通过",
+  "allowed_paths": ["calculator.py"],
+  "test_command": {
+    "command": "python",
+    "args": ["-m", "unittest", "test_calculator", "-q"],
+    "cwd": "."
+  },
+  "require_test_pass": true
+}
+```
+
+Prompt 只能告诉模型规则，不能证明模型遵守了规则。Verifier 在任务开始做文件快照，
+结束时比较 SHA-256，得到 `changed_files` 和 `unexpected_changes`；普通新增、删除、
+修改都能检测，Python 运行时生成的 `__pycache__` / `.pyc` 不计入源码变化。随后它用
+Contract 中固定的命令，通过现有 `run_command` 的安全策略独立重跑最终测试，不相信 Agent
+Trace 里的旧 `exit_code`。
+
+只有以下条件全部满足才是 `accepted=true`：有 Final Answer、没有 `MAX_AGENT_STEPS`、
+没有 Runtime exception、没有越界修改、Verifier 最终测试退出码为 0。结果同时返回
+`agent_ran_required_test`、`final_test_exit_code`、`final_test_passed`、`reasons` 等证据。
+
+Mock A（只改 `calculator.py`，最终测试通过）PASS；Mock B（改测试让测试通过）因
+`unexpected file changed: test_calculator.py` FAIL；Mock C（有 Final Answer 但最终测试失败）
+因 `final_test_failed` FAIL。这样明确区分了「模型说完成」「测试曾经通过」和「最终任务被接受」。
+
+Contract 单任务入口：
+
+```powershell
+$env:AGENT_WORKSPACE = "C:\\path\\to\\coding_workspace"
+$env:TOOL_APPROVAL_MODE = "ALLOW"
+.venv\\Scripts\\python.exe cli.py --contract tests\\fixtures\\coding_contract.json
+```
+
+普通 `--task` 入口仍保留原有行为；只有传入 Contract 时，JSON 结果才附带独立 `acceptance`
+对象。Phase 14 本地共 66 项测试通过；一次真实模型运行的详细结果见 `REAL_RUN_LOG.md`，
+模型修复了允许文件且最终测试通过，但撞步数上限、没有 Final Answer，所以被 Verifier 正确拒绝。
+
 ## 阶段完成情况
 
 每一步都需要你确认才继续，不会自动往下走。
@@ -491,8 +540,11 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
   循环，用隔离 calculator fixture 验证 `read → write → test → Final`、测试失败后的二次修复、
   Permission、Sandbox、Session/Context/Long-file/Command 回归和 `MAX_AGENT_STEPS` 兜底；
   增加最小任务 Trace，没有引入 Planner 或 Coding 状态机。
+- **Phase 14 · Coding Task Contract / Machine-Verifiable Acceptance** ✅ —— 增加结构化
+  Contract、文件快照差异和独立最终测试 Verifier；Mock A/B/C/D、增删文件、命令安全策略和
+  全量 66 项本地测试通过。真实模型样本被正确判为未接受，暴露出当前 Agent 收口仍受步数上限影响。
 
-Phase 13 已收尾；下一阶段只做分析，不在本阶段自动开始。
+Phase 14 已收尾；下一阶段只做分析，不在本阶段自动开始。
 
 > **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
 > 实际在 Phase 2 就和 `read_file` 一起做掉了。

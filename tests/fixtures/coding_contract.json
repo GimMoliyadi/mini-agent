@@ -1,0 +1,18 @@
+{
+  "task_id": "calculator_fix",
+  "instruction": "修复 calculator.py，让对应测试通过。完成后告诉我改了什么。",
+  "allowed_paths": [
+    "calculator.py"
+  ],
+  "test_command": {
+    "command": "python",
+    "args": [
+      "-m",
+      "unittest",
+      "test_calculator",
+      "-q"
+    ],
+    "cwd": "."
+  },
+  "require_test_pass": true
+}
