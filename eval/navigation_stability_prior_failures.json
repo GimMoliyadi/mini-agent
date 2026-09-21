@@ -1,0 +1,11 @@
+[
+  {
+    "scenario": "large_symbol_coding",
+    "run_index": 2,
+    "attempt_index": 1,
+    "provider_failure": true,
+    "error": "TimeoutExpired after 900 seconds",
+    "source": "first Phase 18.5 runner batch; the pre-checkpoint runner terminated before serializing this attempt",
+    "metrics_available": false
+  }
+]

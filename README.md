@@ -690,3 +690,18 @@ LARGE-SYNTHETIC（75 文件）fixture；`eval/navigation_metrics.py` 从真实�
 `eval/NAVIGATION_REPORT.md`。四个有效场景各运行一次并被接受；首次使用未监听的 `127.0.0.1:7897`
 未进入 Agent loop，随后使用 Phase 17 已验证的 `127.0.0.1:9674` relay 完成有效运行。离线 fixture、
 ground truth、search/read、Coding Contract 和全量回归通过；完整记录见 `REAL_RUN_LOG.md`。
+
+## Phase 18.5 · Repository Navigation Stability Check
+
+Phase 18.5 在 Phase 18 的 `0aaae56` 基线之上，仅重复 SMALL / MEDIUM / LARGE-SYNTHETIC 三个 symbol 场景，
+每个场景新增 2 次真实运行，并与基线合并为 `n=3`。Agent runtime、Tool schema、Prompt、上下文/验收逻辑均未修改；
+评测代码、原始结果和报告分别见 `eval/navigation_stability.py`、`eval/navigation_stability_results.json` 和
+`eval/NAVIGATION_STABILITY_REPORT.md`。
+
+六次有效新增运行均无 Provider failure。SMALL 三次均为 `search_text → read_file → Final`；MEDIUM 三次均先
+`list_files ×3` 再 `search_text`，其中 2/3 被接受，1 次因达到 max steps 且缺少 Final Answer 未被接受（但产物与最终
+测试均通过）；LARGE 三次均使用 `search_text`，3/3 被接受。一次早期稳定性 harness 在 LARGE 新运行上超时，因未
+成功序列化而单独记录在 `eval/navigation_stability_prior_failures.json`，不混入 n=3 模型统计，也不重写为模型失败。
+
+综合结论：SMALL 的搜索路径稳定；MEDIUM 的仓库导航稳定但 Coding 收尾存在路径/步数波动；LARGE 的搜索使用稳定，
+具体 tool chain 仍是多路径。当前没有足够证据新增 Navigation Guidance，下一步继续做受控重复观察即可。

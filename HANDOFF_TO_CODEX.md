@@ -1119,3 +1119,22 @@ Phase 17 已验证的 `127.0.0.1:9674` relay 完成有效运行；原始记录�
 
 Phase 18 的下一步只应是 Provider 可用时重新运行这四个一次性场景并填充对照数据；不要提前新增 Navigation Guidance，
 也不要修改 `search_text` 描述或系统提示词。
+
+---
+
+## 19. Phase 18.5：Repository Navigation Stability Check（已完成）
+
+Phase 18.5 以 `0aaae56` 为基线，对 Phase 18 的 SMALL / MEDIUM / LARGE-SYNTHETIC symbol 场景各新增 2 次
+真实运行，与原基线合并为每场景 `n=3`。没有修改 Agent runtime、Tool schema、Prompt、上下文窗口或验收逻辑。
+
+有效新增运行共 6 次，Provider failure 为 `0`。SMALL 为 3/3 次 `search_text → read_file → Final`；MEDIUM 为
+3/3 次 `list_files ×3 → search_text`，Coding acceptance 为 `2/3`；LARGE 三次均使用 `search_text`，Coding
+acceptance 为 `3/3`。MEDIUM 的一次未接受运行是 max steps 且没有 Final Answer，但 artifact 与最终测试均通过；
+required test 按 contract 在三次中均未运行。MEDIUM/LARGE 的 `first_correct_file_turn` 都稳定在 `3`，SMALL 稳定在 `1`。
+
+早期稳定性 harness 曾在 LARGE 的一次尝试上发生 900 秒超时且未序列化结果；该 harness attempt 单独保存在
+`eval/navigation_stability_prior_failures.json`，没有计入 n=3，也没有当作 Provider failure 或模型行为数据。
+
+报告和机器结果：`eval/NAVIGATION_STABILITY_REPORT.md`、`eval/navigation_stability_results.json`。当前结论是
+导航观察已足够支持“SMALL 稳定、MEDIUM 收尾有波动、LARGE 搜索稳定但多路径”；暂不实现 Navigation Guidance。
+本阶段全量回归为 `113` 项通过、`1` 项跳过。

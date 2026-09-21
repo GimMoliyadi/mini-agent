@@ -1214,3 +1214,32 @@ Large coding 第一次测试失败后第二次通过；独立 Verifier 两者都
 离线验证：全量 `python -m unittest discover -s tests -p "test_*.py" -q` 为 `110` 项通过，`1` 项 Windows
 符号链接测试跳过。下一阶段最值得做的是在同一 Provider 下重复 A/B/C，区分稳定偏好与单次路径差异，
 再判断是否需要 Navigation Guidance。
+
+---
+
+### Phase 18.5 真实运行：Repository Navigation Stability Check
+
+本阶段严格复用 Phase 18 fixture、任务和 acceptance 逻辑，基线 commit 为 `0aaae56`。新增 SMALL、MEDIUM、
+LARGE-SYNTHETIC 三个 symbol 场景各 2 次真实运行，与 Phase 18 基线组成每场景 `n=3`；未运行 error-string，
+未修改 Agent runtime、Tool schema、Prompt、上下文或验收代码。
+
+有效新增运行记录：6 次；新增 Provider failure：0。早期第一批 stability harness 在 LARGE 的一次新运行上发生
+900 秒超时，因未完成序列化而没有可用 raw run；该次仅作为 harness attempt 保存在
+`eval/navigation_stability_prior_failures.json`，不计入模型统计。随后完成的 6 次有效运行均使用 Phase 17 已验证的
+`127.0.0.1:9674` relay；`127.0.0.1:7897` 没有监听器。
+
+合并基线后的稳定性结果：
+
+| scenario | tool chain / 3 runs | search usage | list/search/read min·mean·max | model/tool range | total tokens min·mean·max | accepted |
+|---|---|---:|---:|---:|---:|---:|
+| SMALL | 3 次均 `search_text → read_file → Final` | 3/3 | 0/0/0 · 1/1/1 · 1/1/1 | 3–3 / 2–2 | 6,936 / 6,960.67 / 6,986 | 3/3 |
+| MEDIUM | 3 次均 `list_files ×3 → search_text`，收尾有差异 | 3/3 | 3/3/3 · 1/1/1 · 2/2/2 | 6–8 / 7–9 | 14,757 / 17,769.67 / 20,892 | 2/3 |
+| LARGE | 3 次均使用 `search_text`，具体顺序多路径 | 3/3 | 3/3/3 · 1/1/1 · 2/2/2 | 7–8 / 8–9 | 17,809 / 18,897.33 / 21,028 | 3/3 |
+
+`first_correct_file_turn`：SMALL `[1, 1, 1]`，MEDIUM `[3, 3, 3]`，LARGE `[3, 3, 3]`。MEDIUM required test 为
+`false, false, false`；其中一次虽然 artifact 与最终测试通过，但达到 max steps 且没有 Final Answer，因此 acceptance
+为 false。Coding acceptance 为 MEDIUM `2/3`、LARGE `3/3`。这支持“SMALL 导航稳定、MEDIUM 导航稳定但收尾有波动、
+LARGE 搜索稳定但 tool chain 多路径”的结论；当前不新增 Navigation Guidance。
+
+原始机器结果：`eval/navigation_stability_results.json`；完整分析：`eval/NAVIGATION_STABILITY_REPORT.md`。
+离线全量回归：`113` 项通过、`1` 项跳过。

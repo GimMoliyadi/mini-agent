@@ -161,7 +161,7 @@ def _run_child(scenario_name: str) -> dict:
     }
 
 
-def _run_one_subprocess(scenario_name: str, root: Path) -> dict:
+def _run_one_subprocess(scenario_name: str, root: Path, timeout_seconds: int = 900) -> dict:
     environment = {
         **os.environ,
         "AGENT_WORKSPACE": str(root),
@@ -174,7 +174,7 @@ def _run_one_subprocess(scenario_name: str, root: Path) -> dict:
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         env=environment,
-        timeout=900,
+        timeout=timeout_seconds,
     )
     try:
         result = json.loads(completed.stdout.decode("utf-8", "replace"))
