@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cli
 import acceptance
+import main
 import tools
 
 
@@ -78,6 +79,7 @@ class CliTests(unittest.TestCase):
         self.addCleanup(setattr, tools, "WORKSPACE_DIR", original_tool_workspace)
         client = Mock()
         with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
+             patch.object(cli, "get_approval_mode", return_value="ALLOW"), \
              patch.object(cli.main, "build_client", return_value=client), \
              patch.object(cli.main, "ask"), patch.object(cli.main, "log_reply"), \
              patch.object(cli.main, "run_agent_loop", side_effect=loop):
@@ -85,6 +87,69 @@ class CliTests(unittest.TestCase):
         self.assertTrue(result["acceptance"]["accepted"])
         self.assertEqual(result["acceptance"]["final_test_exit_code"], 0)
         self.assertEqual(result["answer"], "done")
+
+    def test_contract_refuses_ask_without_a_terminal_before_any_model_call(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        contract = acceptance.CodingTaskContract.from_dict({
+            "task_id": "calculator_fix",
+            "instruction": "修复 calculator.py",
+            "allowed_paths": ["calculator.py"],
+            "test_command": {
+                "command": "python",
+                "args": ["-m", "unittest", "test_calculator", "-q"],
+                "cwd": ".",
+            },
+        })
+        ask = Mock()
+        build_client = Mock()
+
+        with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
+             patch.object(cli, "get_approval_mode", return_value="ASK"), \
+             patch.object(cli.main, "interactive_approval_available", return_value=False), \
+             patch.object(cli.main, "build_client", build_client), \
+             patch.object(cli.main, "ask", ask):
+            result = cli.run_task("ignored", contract=contract)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIsNone(result["answer"])
+        self.assertEqual(result["error"], main.NON_INTERACTIVE_APPROVAL_ERROR)
+        self.assertEqual(result["trace"]["model_calls"], 0)
+        ask.assert_not_called()
+        build_client.assert_not_called()
+
+    def test_contract_allows_allow_mode_without_a_terminal(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        (Path(temp_dir.name) / "calculator.py").write_text(
+            "def add(a, b):\n    return a + b\n",
+            encoding="utf-8",
+        )
+        contract = acceptance.CodingTaskContract.from_dict({
+            "task_id": "calculator_fix",
+            "instruction": "修复 calculator.py",
+            "allowed_paths": ["calculator.py"],
+            "test_command": {
+                "command": "python",
+                "args": ["-m", "unittest", "test_calculator", "-q"],
+                "cwd": ".",
+            },
+        })
+        original_workspace = cli.main.WORKSPACE_DIR
+        self.addCleanup(setattr, cli.main, "WORKSPACE_DIR", original_workspace)
+        cli.main.WORKSPACE_DIR = Path(temp_dir.name)
+
+        client = Mock()
+        with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
+             patch.object(cli, "get_approval_mode", return_value="ALLOW"), \
+             patch.object(cli.main, "interactive_approval_available", return_value=False), \
+             patch.object(cli.main, "build_client", return_value=client), \
+             patch.object(cli.main, "ask"), patch.object(cli.main, "log_reply"), \
+             patch.object(cli.main, "run_agent_loop"):
+            result = cli.run_task("ignored", contract=contract)
+
+        client.close.assert_called_once()
+        self.assertEqual(result["status"], "incomplete")
 
     def test_provider_error(self):
         self.assertEqual(self.invoke(TimeoutError("timeout"))["status"], "failed")

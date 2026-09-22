@@ -1388,3 +1388,87 @@ Phase 21 把「完成」变成 Runtime 可判定的一次请求，模型即使�
 能力测试跳过**。
 
 原始记录：`eval/phase21_real_run.json`（含 trace 逐事件 `event_seq`、classification、approval）。
+
+## Phase 21.1 验证：Approval Fail-Fast 与 Snapshot Ignore
+
+### 1. 本轮没有真实模型运行
+
+Phase 21.1 是基础设施硬化，不需要真实模型实验：两个问题的行为都能在离线测试和
+无网络的子进程里完全判定。本轮**没有调用任何真实模型**，没有产生新的
+`eval/*_real_run.json`。
+
+### 2. ASK + 无交互通道：真实子进程验证
+
+用一个临时脚本跑真实子进程：`cli.py --contract tests/fixtures/repo_contract.json`，
+工作区是临时副本，`TOOL_APPROVAL_MODE` 分别设为 `ASK` / `DENY` / `ALLOW`，
+`stdin=subprocess.DEVNULL`，API 指向一个必然拒绝的失效本地端点
+（`OPENAI_BASE_URL=http://127.0.0.1:9`），所以即使 preflight 误放行也会被立即拒绝，不会消耗额度。
+
+```text
+TOOL_APPROVAL_MODE=ASK
+  exit code   1
+  status      failed
+  error       Non-interactive approval unavailable. Use TOOL_APPROVAL_MODE=ALLOW or DENY, or run in an interactive terminal.
+  model_calls 0      finish_calls 0
+  stderr      <empty>      ← 没有 traceback
+
+TOOL_APPROVAL_MODE=DENY
+  exit code   1
+  status      incomplete
+  error       finish_task_not_accepted; runtime_exception: APIConnectionError: Connection error.; final_test_failed
+  model_calls 0      ← 越过 preflight，走到模型调用后被失效端点拒绝
+
+TOOL_APPROVAL_MODE=ALLOW
+  同上                                                    ← 同样越过 preflight
+```
+
+ASK 在第一次模型调用之前就被拒绝：`model_calls=0`、无 stderr、无 traceback、退出码 1。
+DENY / ALLOW 都会越过 preflight，说明 preflight 没有误伤非 ASK 模式。
+
+### 3. 为什么交互通道判定要用两端条件
+
+第一次实现只看 `stdin.isatty()`，在这个环境下不起作用。实测同一台机器：
+
+```text
+stdin=DEVNULL   isatty() True
+stdin=PIPE      isatty() False
+stdin=inherit   isatty() True
+```
+
+Windows 上 `isatty()` 对 `NUL` 这类字符设备也返回 True，所以 stdin 指向 `NUL` 的
+子进程会被误判成交互终端，ASK 会继续走进多轮重试。改成「stdin 和 stdout **都是**终端」
+两端条件后才正确：真实终端两端都是 TTY，而 harness / CI / 重定向的输出两端不可能同时是 TTY。
+
+代价是 `python main.py > transcript.txt` 这类只重定向输出的跑法里，副作用工具会报
+「审批不可用」。可接受的：提示本来也看不见，让人盲打 `y` 不是正确行为。
+
+### 4. Snapshot ignore：离线验证
+
+本环境未安装 pytest，也没有为本阶段安装新依赖，所以用模拟 cache 文件验证，
+文件集与真实 `pytest` 产物一致：`.pytest_cache/README.md`、`.pytest_cache/CACHEDIR.TAG`、
+`.pytest_cache/v/cache/nodeids`。
+
+- 生成 `.pytest_cache/` 后，`snapshot_workspace` 结果与改动前完全相同（hash 摘要不变）。
+- 同时放一个越界文件 `unexpected.txt`：它仍然被检出为 `unexpected_changes == ["unexpected.txt"]`，
+  cache 文件不出现在 `changed_files` 里。
+- 允许的 `calculator.py` 与 `.pytest_cache/` 同时存在：`changed_files == ["calculator.py"]`，
+  `unexpected_changes == []`，`artifact_passed=true`，`accepted=true`
+  —— Finish Gate 在其它条件满足时不会因 cache 拒绝。
+- 未列举的生成文件仍然算改动：`.coverage`、`.mypy_cache/cache.json` 都被检出。
+- 根目录的 `README.md` 仍然被跟踪（忽略规则按目录名锚定，不会误伤同名文件）。
+
+### 5. 离线闭环
+
+`python -m unittest discover -s tests -p "test*.py"`：**166 项，1 项 Windows 符号链接
+能力测试跳过**。`compileall`、`py_compile` 通过，`git diff --check` 无空白错误。
+
+其中 `tests/test_session.py::test_main_missing_resume_has_no_traceback` 在这台机器上失败，
+但与 Phase 21.1 无关：把 HEAD 原样抽出到临时目录跑同一模块，失败完全一致。
+根因是子进程 stderr 输出 UTF-8 字节（`b'[Session\xe9\x94\x99\xe8\xaf\xaf] ...'`），
+父进程用 `text=True` 按 `cp936` 解码，reader 线程的 `UnicodeDecodeError` 被吞掉，
+`result.stderr` 变成 `None`。一个不 import 任何项目代码的
+`python -c "print('错误', file=sys.stderr)"` 也输出同样的 UTF-8 字节，
+证明这是解释器/环境行为。修法是在测试里显式指定 `encoding="utf-8"`，属于独立小修。
+
+Phase 21 的 Mock A–J、Session、Acceptance、Permission、Sandbox、Command、Patch、Search、
+Context、Long-file 全部无回归。

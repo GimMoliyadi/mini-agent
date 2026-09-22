@@ -103,6 +103,16 @@ TOOL_FAILURE_PREFIX = "[工具失败]"
 # 用户拒绝是一个合法的工具结果，但不是工具成功执行。
 APPROVAL_DENIED_PREFIX = "[用户拒绝执行]"
 
+# 无交互审批通道是环境失败，必须和「用户明确拒绝」区分开，不能伪装成后者。
+NON_INTERACTIVE_APPROVAL_ERROR = (
+    "Non-interactive approval unavailable. "
+    "Use TOOL_APPROVAL_MODE=ALLOW or DENY, or run in an interactive terminal."
+)
+
+
+class ApprovalUnavailableError(RuntimeError):
+    """ASK is selected but no interactive approval channel can answer."""
+
 ApprovalCallback = Callable[[str, dict, str], bool]
 
 # 重复调用被拦截时回喂给模型的结果。
@@ -517,8 +527,25 @@ def always_deny(tool_name: str, arguments: dict, operation: str) -> bool:
     return False
 
 
+def _is_terminal(stream) -> bool:
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def interactive_approval_available(stdin=None, stdout=None) -> bool:
+    """ASK needs a human who can both read the prompt and type the answer.
+
+    Windows 上 isatty() 对 NUL 等字符设备也返回 True，所以只看 stdin 会把
+    stdin 指向 NUL 的 subprocess 误判成交互终端；两端都是终端才算有审批通道。
+    """
+    input_stream = sys.stdin if stdin is None else stdin
+    output_stream = sys.stdout if stdout is None else stdout
+    return _is_terminal(input_stream) and _is_terminal(output_stream)
+
+
 def ask_for_approval(tool_name: str, arguments: dict, operation: str) -> bool:
     """CLI approval callback; input stays at the CLI boundary, not in execution."""
+    if not interactive_approval_available():
+        raise ApprovalUnavailableError(NON_INTERACTIVE_APPROVAL_ERROR)
     print("\nAgent 请求执行有副作用的工具：")
     print(f"工具：{tool_name}")
     if "path" in arguments:
@@ -554,6 +581,11 @@ def approval_callback_for_mode(mode: str, input_func=None) -> ApprovalCallback:
 
         return ask_with_injected_input
     raise ValueError(f"审批模式必须是 ASK, ALLOW, DENY 之一，当前是：{mode!r}")
+
+
+def approval_needs_interactive_input(mode: str) -> bool:
+    """Only ASK blocks a headless process; ALLOW and DENY decide by themselves."""
+    return mode.strip().upper() == "ASK" and not interactive_approval_available()
 
 
 def check_tool_permission(call, approval_callback: ApprovalCallback) -> tuple[bool, str | None]:
@@ -1334,8 +1366,8 @@ def main(argv: list[str] | None = None) -> int:
                     contract=coding_contract,
                     task_state=task_state,
                 )
-            except (APIError, ConnectionError, TimeoutError) as exc:
-                # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通。
+            except (APIError, ConnectionError, TimeoutError, ApprovalUnavailableError) as exc:
+                # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通、审批通道缺失。
                 # 代码自身的 bug 不在此列，应当让它正常抛出来，方便你发现真问题。
                 if coding_contract is not None and task_state is not None:
                     _record_runtime_error(task_state, trace, exc)

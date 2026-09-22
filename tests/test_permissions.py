@@ -1,7 +1,9 @@
 """Phase 10 tests for tool permission checks and side-effect approval."""
 
+import io
 import json
 import inspect
+from contextlib import redirect_stdout
 from pathlib import Path
 import sys
 import tempfile
@@ -325,6 +327,105 @@ class PermissionTests(unittest.TestCase):
 
                 self.assertEqual(messages[-1]["role"], "assistant")
                 self.assertTrue(path.exists() is expected_exists)
+
+
+class AskApprovalWithoutTtyTests(unittest.TestCase):
+    """ASK 需要真人回答；没有终端时快速失败，ALLOW/DENY 不需要终端。"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_workspace = tools.WORKSPACE_DIR
+        tools.WORKSPACE_DIR = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        tools.WORKSPACE_DIR = self.original_workspace
+        self.temp_dir.cleanup()
+
+    def test_interactive_approval_needs_both_ends_to_be_terminals(self):
+        terminal = Mock(isatty=Mock(return_value=True))
+        redirected = Mock(isatty=Mock(return_value=False))
+        self.assertTrue(main.interactive_approval_available(terminal, terminal))
+        self.assertFalse(main.interactive_approval_available(terminal, redirected))
+        self.assertFalse(main.interactive_approval_available(redirected, terminal))
+
+    def test_interactive_approval_falls_back_for_streams_without_isatty(self):
+        self.assertFalse(
+            main.interactive_approval_available(io.StringIO(), io.StringIO())
+        )
+
+    def test_approval_needs_interactive_input_only_for_ask(self):
+        with patch.object(main, "interactive_approval_available", return_value=False):
+            self.assertTrue(main.approval_needs_interactive_input("ASK"))
+            self.assertTrue(main.approval_needs_interactive_input(" ask "))
+            self.assertFalse(main.approval_needs_interactive_input("ALLOW"))
+            self.assertFalse(main.approval_needs_interactive_input("DENY"))
+
+    def test_ask_prompt_still_asks_when_a_terminal_is_available(self):
+        callback = main.approval_callback_for_mode("ASK")
+        read_input = Mock(return_value="yes")
+        with patch.object(main, "interactive_approval_available", return_value=True), \
+             patch("builtins.input", read_input), \
+             redirect_stdout(io.StringIO()) as prompt:
+            self.assertTrue(callback("write_file", {"path": "ask.txt"}, "CREATE"))
+        read_input.assert_called_once_with("是否允许？[y/N] ")
+        self.assertIn("操作：CREATE", prompt.getvalue())
+
+    def test_ask_denies_without_raising_when_a_terminal_is_available(self):
+        callback = main.approval_callback_for_mode("ASK")
+        with patch.object(main, "interactive_approval_available", return_value=True), \
+             patch("builtins.input", return_value="n"), \
+             redirect_stdout(io.StringIO()):
+            self.assertFalse(callback("write_file", {"path": "ask.txt"}, "CREATE"))
+
+    def test_ask_without_terminal_fails_fast_and_never_calls_input(self):
+        read_input = Mock(return_value="y")
+        callback = main.approval_callback_for_mode("ASK")
+        with patch.object(main, "interactive_approval_available", return_value=False), \
+             patch("builtins.input", read_input):
+            with self.assertRaises(main.ApprovalUnavailableError) as raised:
+                callback("write_file", {"path": "ask.txt"}, "CREATE")
+        read_input.assert_not_called()
+        self.assertIn("TOOL_APPROVAL_MODE", str(raised.exception))
+        self.assertNotIn(main.APPROVAL_DENIED_PREFIX, str(raised.exception))
+
+    def test_ask_failure_is_not_rewritten_as_a_tool_denial(self):
+        callback = main.approval_callback_for_mode("ASK")
+        with patch.object(main, "interactive_approval_available", return_value=False):
+            with self.assertRaises(main.ApprovalUnavailableError):
+                run_round(
+                    [], set(), "ask", "write_file",
+                    {"path": "ask.txt", "content": "OK"}, callback,
+                )
+        self.assertFalse((tools.WORKSPACE_DIR / "ask.txt").exists())
+
+    def test_allow_mode_does_not_need_a_terminal(self):
+        callback = main.approval_callback_for_mode("ALLOW")
+        with patch.object(main, "interactive_approval_available", return_value=False):
+            result = run_round(
+                [], set(), "allow", "write_file",
+                {"path": "allow.txt", "content": "OK"}, callback,
+            )
+        self.assertIn("已写入", result)
+        self.assertTrue((tools.WORKSPACE_DIR / "allow.txt").exists())
+
+    def test_deny_mode_does_not_need_a_terminal(self):
+        callback = main.approval_callback_for_mode("DENY")
+        with patch.object(main, "interactive_approval_available", return_value=False):
+            result = run_round(
+                [], set(), "deny", "write_file",
+                {"path": "deny.txt", "content": "OK"}, callback,
+            )
+        self.assertIn(main.APPROVAL_DENIED_PREFIX, result)
+        self.assertFalse((tools.WORKSPACE_DIR / "deny.txt").exists())
+
+    def test_read_only_tool_ignores_the_missing_terminal(self):
+        (tools.WORKSPACE_DIR / "note.txt").write_text("hello", encoding="utf-8")
+        callback = main.approval_callback_for_mode("ASK")
+        with patch.object(main, "interactive_approval_available", return_value=False):
+            result = run_round(
+                [], set(), "read", "read_file", {"path": "note.txt"}, callback,
+            )
+        self.assertIn("hello", result)
 
 
 if __name__ == "__main__":

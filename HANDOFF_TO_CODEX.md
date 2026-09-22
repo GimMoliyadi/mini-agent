@@ -1282,3 +1282,101 @@ list_files → read_file ×2 → apply_patch → run_command（exact test, exit 
    新建交互式 Session 没有 Contract。这与 Phase 14 的入口结构一致（Coding Task 走 `cli.py`），
    不是本阶段引入的。
 4. **`.pytest_cache` 之外的 test-cache 目录**（`.mypy_cache` 等）同样不在排除列表内。
+
+## 22. Phase 21.1：Runtime Hardening（已完成）
+
+Phase 21.1 以 `ec2fdfd`（Phase 21）为 baseline。这是基础设施硬化，**不是新的 Agent 能力阶段**：
+Phase 21 的 `finish_task` schema、`ToolKind`、Finish Gate freshness 规则、exact required test 匹配、
+`MAX_AGENT_STEPS`、Completion Hint、`accepted` 定义、Session schema、Agent Loop 主结构全部未改动。
+本阶段只解决 Phase 21 真实运行暴露的两个环境问题。
+
+### 1. ASK + 无交互通道：快速失败
+
+原状（Phase 21 真实运行第 2 节记录过）：无 TTY 时 `input()` 返回 EOF，`ask_for_approval` 按安全默认
+拒绝，副作用工具全部被拒，模型反复重试到 `MAX_AGENT_STEPS`，`finish_task_calls=0`，
+`LIMIT_REACHED`，`total_tokens=23660` 全花在环境失败上。
+
+修法（`main.py` + `cli.py`）：
+
+- 新增 `ApprovalUnavailableError(RuntimeError)` 和统一文案
+  `NON_INTERACTIVE_APPROVAL_ERROR`。它**不**复用 `APPROVAL_DENIED_PREFIX`：
+  「没有审批通道」是环境失败，「用户明确拒绝」是用户决定，混在一起会让日志和 Session 记录同时失真。
+- `check_tool_permission` 的异常列表保持 `(OSError, TypeError, ValueError)`，
+  所以 `RuntimeError` 子类会原样向上传播，不会被改写成一个普通工具拒绝。
+- `cli.run_task` 在第一次 `main.ask` 之前做 preflight：`contract is not None` 且
+  `approval_needs_interactive_input(get_approval_mode())` → 返回
+  `{"status": "failed", "answer": None, "error": ..., "trace": ...}`，`model_calls=0`。
+  形状与既有的失败分支一致（`acceptance` / `task_state` 不生成，因为什么都没跑）。
+- `ask_for_approval` 在打印提示**之前**检测通道；检测不到就抛异常，不再把 EOFError 当正常控制流。
+- `main.main()` 把该异常加入既有通信失败分支，Contract 生效时记入 `task_state` 的 `ERROR`，
+  普通聊天回滚本轮悬空消息。没有为它复制第二份恢复逻辑。
+
+交互通道判定用两端条件：`stdin.isatty() and stdout.isatty()`。
+只看 stdin 在这台 Windows 上不够——`isatty()` 对 `NUL` 等字符设备也返回 True，
+实测 `stdin=DEVNULL` 的子进程报 `True`，`stdin=PIPE` 报 `False`。
+两端都要求终端后，无 TTY 的 harness 才会被正确判定为「不可交互」。
+代价：`python main.py > transcript.txt` 这类只重定向输出的跑法里，副作用工具会报
+「审批不可用」而不是弹出提示——提示本来也看不见，报清晰错误比让人盲打更对。
+
+安全语义未变：没有用户明确批准，SIDE_EFFECT / EXECUTION 不执行。
+ASK + 无 TTY **不会**被自动降级成 ALLOW，也不会跳过 Approval。
+ALLOW / DENY 不检测终端，行为不变。READ_ONLY 和 CONTROL_FLOW 在回调之前就已放行，不受影响。
+
+### 2. Snapshot 忽略 pytest cache
+
+原状：`snapshot_workspace` 只排除 `__pycache__` 和 `.pyc`/`.pyo`。
+Contract 的 required test 一旦用 `python -m pytest`，生成的 `.pytest_cache/` 会成为
+`unexpected_change:<path>`，Finish Gate 永久拒绝。
+
+修法只动 `acceptance.py` 一处：
+
+```python
+_GENERATED_FILE_SUFFIXES = {".pyc", ".pyo"}
+_GENERATED_DIRECTORY_NAMES = {"__pycache__", ".pytest_cache"}
+```
+
+`_is_generated_artifact` 是唯一过滤点，`snapshot_workspace` 调用它，
+Finish Gate（`evaluate_finish_request`）和独立 Verifier（`verify_contract`）都从
+`snapshot_workspace` 取摘要——**没有第二套规则**，两边判定天然一致。
+按目录名锚定匹配，所以根目录同名的 `README.md` 仍然被跟踪。
+
+为什么只加 `.pytest_cache`：清单必须保持刻意地短。
+忽略所有点目录 / 所有隐藏文件 / 所有未知新文件，都会让真实的越界改动逃出 Verifier，
+而那正是这个机制存在的理由。「只忽略明确列举的缓存」是唯一不会放过真问题的形状。
+`.coverage`、`.mypy_cache`、`.ruff_cache` 本轮未确认，**不加**；
+有测试锁住它们仍然被报为 `unexpected_change`。
+
+忽略只影响 `changed_files` / `unexpected_changes` 的判定，
+**不改 Sandbox 路径校验**，Agent 能访问的范围没有变化。
+`tools.py` 里 `search_text` 对 `__pycache__` 的跳过是搜索遍历，不是变更检测，未触碰。
+
+### 本地验证
+
+`python -m unittest discover -s tests -p "test*.py"`：**166 项，1 项 Windows 符号链接能力测试跳过**。
+`compileall` 与 `py_compile` 通过，`git diff --check` 无空白错误。
+新增 17 个测试：审批行为 10 个（真实终端下 y/N 两条、无 TTY 快速失败且不调用 `input()`、
+不作为普通拒绝、ALLOW / DENY 不受影响、READ_ONLY 不受影响、通道两端判定两条、模式判定两条）、
+pytest cache 5 个、CLI preflight 2 个。
+
+本轮**没有调用真实模型**。ASK + 无 TTY 用真实子进程验证过：
+`cli.py --contract` 在 `stdin=DEVNULL`、API 指向失效本地端点的情况下，
+返回 `status=failed`、`model_calls=0`、无 stderr、无 traceback；
+同一条件下 ALLOW / DENY 都会越过 preflight 走到模型调用（被失效端点立即拒绝），
+证明 preflight 没有误伤。
+`.pytest_cache` 用模拟 cache 文件验证（`README.md`、`CACHEDIR.TAG`、`v/cache/nodeids`），
+因为本环境未安装 pytest，也没有为本阶段安装新依赖。
+
+### 顺带发现的既有问题（未修）
+
+1. **`tests/test_session.py::test_main_missing_resume_has_no_traceback` 在这台机器上失败**，
+   与 Phase 21.1 无关：把 HEAD 原样抽出到临时目录跑同一模块，失败完全一致。
+   根因是子进程的 stderr 以 UTF-8 字节输出（`[Session\xe9\x94\x99\xe8\xaf\xaf] ...`），
+   而父进程用 `text=True` 按 `cp936` 解码，reader 线程 `UnicodeDecodeError` 被吞掉，
+   `result.stderr` 变成 `None`。用一个不 import 任何项目代码的
+   `python -c "print('错误', file=sys.stderr)"` 复现同样的 UTF-8 字节，
+   说明这是解释器/环境行为，不是本仓库代码的行为。修法应是测试里显式 `encoding="utf-8"`，
+   但那是独立的小修，不在本阶段范围内。
+2. 同一临时目录里 `test_finish_protocol.py` 有一个失败，但那来自
+   `git archive` 抽出时是 LF 而工作树是 CRLF：该测试把文件原样写回去，
+   `write_text` 的换行转换让 LF 文件变成 CRLF，被判定成「发生了改动」。
+   工作树本身是 CRLF，该测试通过。这是一个对环境敏感的测试写法，不是 Phase 21 的缺陷。

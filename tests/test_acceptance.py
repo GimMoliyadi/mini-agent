@@ -155,6 +155,53 @@ class AcceptanceTests(unittest.TestCase):
         (cache / "test_calculator.cpython-311.pyc").write_bytes(b"cache")
         self.assertEqual(acceptance.snapshot_workspace(self.workspace), self.before)
 
+    def make_pytest_cache(self):
+        cache = self.workspace / ".pytest_cache"
+        node_ids = cache / "v" / "cache"
+        node_ids.mkdir(parents=True)
+        (cache / "README.md").write_text("pytest cache guide", encoding="utf-8")
+        (cache / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172", encoding="utf-8")
+        (node_ids / "nodeids").write_text('["test_calculator.py"]', encoding="utf-8")
+
+    def test_pytest_cache_is_not_reported_as_agent_change(self):
+        self.make_pytest_cache()
+        self.assertEqual(acceptance.snapshot_workspace(self.workspace), self.before)
+
+    def test_pytest_cache_does_not_mask_a_real_unexpected_change(self):
+        self.make_pytest_cache()
+        (self.workspace / "unexpected.txt").write_text("outside contract", encoding="utf-8")
+        result = self.verify()
+        self.assertEqual(result["unexpected_changes"], ["unexpected.txt"])
+        self.assertNotIn(".pytest_cache/README.md", result["changed_files"])
+        self.assertNotIn(".pytest_cache/v/cache/nodeids", result["changed_files"])
+
+    def test_allowed_source_plus_pytest_cache_reports_only_the_source(self):
+        self.fix_calculator()
+        self.make_pytest_cache()
+        result = self.verify()
+        self.assertEqual(result["changed_files"], ["calculator.py"])
+        self.assertEqual(result["unexpected_changes"], [])
+        self.assertTrue(result["artifact_passed"])
+        self.assertTrue(result["accepted"])
+
+    def test_unlisted_generated_files_still_count_as_changes(self):
+        (self.workspace / ".coverage").write_bytes(b"coverage")
+        mypy_cache = self.workspace / ".mypy_cache"
+        mypy_cache.mkdir()
+        (mypy_cache / "cache.json").write_text("{}", encoding="utf-8")
+        result = self.verify()
+        self.assertEqual(
+            result["changed_files"],
+            [".coverage", ".mypy_cache/cache.json"],
+        )
+
+    def test_root_level_file_keeps_its_name_outside_a_cache_directory(self):
+        (self.workspace / "README.md").write_text("project readme", encoding="utf-8")
+        self.assertEqual(
+            acceptance.changed_files(self.before, acceptance.snapshot_workspace(self.workspace)),
+            ["README.md"],
+        )
+
     def test_legacy_caller_without_task_state_keeps_final_answer_rule(self):
         """Phase 18-20 eval harnesses never drive the finish protocol."""
         self.fix_calculator()

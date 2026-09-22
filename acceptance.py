@@ -16,6 +16,7 @@ import tools
 
 
 _GENERATED_FILE_SUFFIXES = {".pyc", ".pyo"}
+_GENERATED_DIRECTORY_NAMES = {"__pycache__", ".pytest_cache"}
 
 
 class TaskStatus(str, Enum):
@@ -269,15 +270,19 @@ def load_contract(path: str | Path) -> CodingTaskContract:
 
 
 def _is_generated_artifact(path: Path) -> bool:
-    return "__pycache__" in path.parts or path.suffix.casefold() in _GENERATED_FILE_SUFFIXES
+    return (
+        any(part in _GENERATED_DIRECTORY_NAMES for part in path.parts)
+        or path.suffix.casefold() in _GENERATED_FILE_SUFFIXES
+    )
 
 
 def snapshot_workspace(workspace: str | Path) -> dict[str, str]:
     """Return relative-file-to-SHA256 state for a workspace.
 
-    Python bytecode is a test-runtime artifact rather than an agent source
-    change, so it is excluded. Ordinary files, including new and deleted files,
-    remain visible to the diff.
+    Bytecode and test-runner caches are runtime artifacts rather than agent
+    source changes, so they are excluded. The ignore list stays deliberately
+    short and directory-anchored: any file outside it, including new and
+    deleted files, remains visible to the diff.
     """
     root = Path(workspace).resolve()
     if not root.is_dir():

@@ -37,6 +37,13 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
         else None
     )
     config = load_config()
+    if contract is not None and main.approval_needs_interactive_input(get_approval_mode()):
+        return {
+            "status": "failed",
+            "answer": None,
+            "error": main.NON_INTERACTIVE_APPROVAL_ERROR,
+            "trace": trace.summary(),
+        }
     client = None
     runtime_exception = None
     try:

@@ -857,3 +857,60 @@ Session version 升到 2，同时接受 1。v1 记录被明确禁止携带 Codin
 required test 通过后的提示从“如果完成请 Final Answer”改为“请调用 `finish_task(summary=...)`”，
 同步更新了 coding task guidance、duplicate notice 和系统提示词。提示只是引导，
 真正完成仍必须走 `finish_task → Gate → FINISHED`。
+
+## Phase 21.1 · Runtime Hardening
+
+这不是新的 Agent 能力阶段。Phase 21 的协议、状态机、Gate 规则、Acceptance 判定和
+Session schema 全部不变；本阶段只修 Phase 21 真实运行暴露出来的两个环境问题。
+
+### 1. ASK 审批在无交互环境下快速失败
+
+问题：`DEFAULT_APPROVAL_MODE=ASK` 在子进程、评测 harness、CI 里没有交互通道，
+`input()` 返回 EOF，`ask_for_approval` 按安全默认拒绝。副作用工具每次都拿到拒绝，
+模型反复重试直到 `MAX_AGENT_STEPS`，结果是 `finish_task_calls=0`、`LIMIT_REACHED`、
+`total_tokens` 白白花掉。这是环境失败，不是推理失败。
+
+现在：
+
+- `ApprovalUnavailableError` 是独立异常，**不会被改写成 `[用户拒绝执行]`**。
+  「环境没有审批通道」和「用户明确拒绝」是两回事，混在一起会让日志和 Session 记录同时失真。
+- `cli.py` 的 Coding Task 在第一次模型调用之前做一次 preflight：Contract 生效 + 模式为 ASK +
+  检测不到交互通道 → 直接返回 `{"status": "failed", "error": ...}`，`model_calls=0`，
+  不进循环、不消耗额度。
+- `ask_for_approval` 在打印提示之前先检测；检测不到就抛异常，不靠 EOFError 当正常控制流。
+- `main.py` 的循环把该异常与 API 通信类失败一起处理，报清晰错误，不甩 traceback；
+  Contract 生效时记入 `task_state` 的 `ERROR`，普通聊天回滚本轮悬空消息。
+
+交互通道的检测用「stdin 和 stdout **都是**终端」两端条件。只看 stdin 在 Windows 上不够：
+`isatty()` 对 `NUL` 这类字符设备也返回 True，stdin 指向 `NUL` 的子进程会被误判成交互终端。
+代价是 `python main.py > transcript.txt` 这种只重定向输出的跑法里，副作用工具会报
+「审批不可用」——提示本来也看不见，报清晰错误比让人盲打更对。
+
+安全语义没有变：没有用户明确批准，SIDE_EFFECT / EXECUTION 不执行。
+ASK + 无 TTY 不会被自动降级成 ALLOW，也不会跳过 Approval。
+ALLOW / DENY 不检测终端，行为不变；READ_ONLY 和 CONTROL_FLOW 在回调之前就已放行，不受影响。
+
+### 2. Snapshot 忽略测试运行器缓存
+
+问题：Contract 的 required test 用 `python -m pytest` 时，`pytest` 生成 `.pytest_cache/`，
+被 `snapshot_workspace` 当作 Agent 的改动 → `unexpected_change:<path>` → Finish Gate 永久拒绝。
+
+扩展的是**同一份** ignore 集合，不是另写一套规则：
+
+```python
+_GENERATED_FILE_SUFFIXES = {".pyc", ".pyo"}
+_GENERATED_DIRECTORY_NAMES = {"__pycache__", ".pytest_cache"}
+```
+
+`_is_generated_artifact` 是唯一的过滤点，`snapshot_workspace` 调用它，
+Finish Gate 和独立 Verifier 都从 `snapshot_workspace` 取摘要，两边的判定天然一致。
+按目录名锚定匹配，所以根目录里同名的 `README.md` 仍然被跟踪。
+
+为什么清单保持刻意地短：任何宽泛的忽略规则（忽略所有点目录、所有隐藏文件、所有未知新文件）
+都会让真实的越界改动逃出 Verifier，而那正是这个机制要抓的东西。
+「只忽略明确列举的缓存」是唯一不会放过真问题的形状。
+`.coverage`、`.mypy_cache`、`.ruff_cache` 等本轮未确认的问题不加，
+它们仍然会被报为 `unexpected_change`，有回归测试锁住这一点。
+
+忽略 snapshot 产物只影响 `changed_files` / `unexpected_changes` 的判定，
+**不涉及 Sandbox 路径校验**：Agent 能读写和访问的范围没有任何变化。
