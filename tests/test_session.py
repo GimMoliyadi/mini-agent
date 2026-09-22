@@ -282,12 +282,14 @@ class SessionTests(unittest.TestCase):
 
     def test_main_missing_resume_has_no_traceback(self):
         environment = os.environ.copy()
+        environment["PYTHONUTF8"] = "1"
         result = subprocess.run(
             [sys.executable, "main.py", "--resume", "missing-session"],
             cwd=Path(__file__).resolve().parents[1],
             env=environment,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=15,
         )
         self.assertEqual(result.returncode, 2)
