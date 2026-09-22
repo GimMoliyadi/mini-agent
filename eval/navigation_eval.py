@@ -17,8 +17,8 @@ EVAL_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = EVAL_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from navigation_fixtures import build_fixture, coding_contract, get_spec, validate_fixture  # noqa: E402
-from navigation_metrics import calculate_navigation_metrics, navigation_accepted  # noqa: E402
+from .navigation_fixtures import build_fixture, coding_contract, get_spec, validate_fixture  # noqa: E402
+from .navigation_metrics import calculate_navigation_metrics, navigation_accepted  # noqa: E402
 
 
 SCENARIOS = {
@@ -170,7 +170,13 @@ def _run_one_subprocess(scenario_name: str, root: Path, timeout_seconds: int = 9
         "PYTHONIOENCODING": "utf-8",
     }
     completed = subprocess.run(
-        [str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"), str(Path(__file__).resolve()), "--child", scenario_name],
+        [
+            str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"),
+            "-m",
+            "eval.navigation_eval",
+            "--child",
+            scenario_name,
+        ],
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         env=environment,

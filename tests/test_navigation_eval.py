@@ -9,10 +9,9 @@ import unittest
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "eval"))
 
-from navigation_fixtures import SPECS, build_fixture, coding_contract, validate_fixture  # noqa: E402
-from navigation_metrics import calculate_navigation_metrics, navigation_accepted  # noqa: E402
+from eval.navigation_fixtures import SPECS, build_fixture, coding_contract, validate_fixture  # noqa: E402
+from eval.navigation_metrics import calculate_navigation_metrics, navigation_accepted  # noqa: E402
 import tools  # noqa: E402
 
 

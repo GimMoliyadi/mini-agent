@@ -14,9 +14,10 @@ EVAL_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = EVAL_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from navigation_eval import SCENARIOS  # noqa: E402
-from navigation_fixtures import build_fixture, coding_contract, get_spec, validate_fixture  # noqa: E402
-from navigation_stability import is_provider_failure  # noqa: E402
+from .navigation_eval import SCENARIOS  # noqa: E402
+from .navigation_fixtures import build_fixture, coding_contract, get_spec, validate_fixture  # noqa: E402
+from .navigation_metrics import calculate_navigation_metrics  # noqa: E402
+from .navigation_stability import is_provider_failure  # noqa: E402
 
 
 SCENARIO_NAME = "medium_symbol_coding"
@@ -293,9 +294,7 @@ def _run_child() -> dict:
         if client is not None:
             client.close()
 
-    metrics = __import__("navigation_metrics", fromlist=["calculate_navigation_metrics"]).calculate_navigation_metrics(
-        model_replies, messages, spec.target_file
-    )
+    metrics = calculate_navigation_metrics(model_replies, messages, spec.target_file)
     metrics["runtime_errors"] = runtime_errors
     metrics["finish_reason"] = [getattr(reply, "finish_reason", None) for reply in model_replies]
     metrics["max_steps_reached"] = trace.max_steps_reached
@@ -355,7 +354,12 @@ def _run_attempt(root: Path) -> dict:
     }
     try:
         completed = subprocess.run(
-            [str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"), str(Path(__file__).resolve()), "--child"],
+            [
+                str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"),
+                "-m",
+                "eval.required_test_visibility",
+                "--child",
+            ],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             env=environment,

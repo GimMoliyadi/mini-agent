@@ -1287,3 +1287,17 @@ run 2: list_files ×3 → read_file → search_text → read_file → apply_patc
 
 离线验证：Phase 19 专项测试、Navigation Eval、Navigation Stability 和全量回归均通过；
 `python -m unittest discover -s tests -p "test_*.py" -q` 为 `117` 项通过、`1` 项 Windows 符号链接测试跳过。
+
+### Phase 19.5R Recovery harness 启动路径修复
+
+Recovery 初次直接执行 `eval\required_test_visibility_recovery.py` 时，在 Agent 启动前报
+`ModuleNotFoundError: No module named 'config'`，没有产生真实模型调用。随后确认 Provider 最小请求成功，
+并确认从 repo root 使用 module invocation、显式加入 `eval` 到 `PYTHONPATH` 可以通过启动 smoke：
+
+```powershell
+$env:PYTHONPATH = (Join-Path (Get-Location) "eval")
+.venv\Scripts\python.exe -m eval.required_test_visibility_recovery --help
+```
+
+本次只修复和记录启动方式，未重新启动 Recovery Treatment；Runtime、Prompt、Provider、Contract、Tool Schema
+和 `MAX_AGENT_STEPS` 均未修改。

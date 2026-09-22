@@ -1,13 +1,11 @@
 """Offline checks for the Phase 19 required-test visibility eval."""
 
-import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "eval"))
 
-from required_test_visibility import (  # noqa: E402
+from eval.required_test_visibility import (  # noqa: E402
     EXACT_REQUIRED_TEST,
     aggregate_condition,
     build_treatment_system_prompt,

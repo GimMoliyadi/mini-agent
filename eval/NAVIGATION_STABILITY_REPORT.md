@@ -62,4 +62,4 @@ MEDIUM 三次记录的 `agent_ran_required_test`：false, false, false。Accepta
 
 每条新增运行保留 `raw_result`；聚合结果与原始数据均在 `eval/navigation_stability_results.json`。
 先前 timeout 的保留记录在 `eval/navigation_stability_prior_failures.json`。
-入口：`python eval/navigation_stability.py`。每个场景从干净 fixture snapshot 开始，Provider failure 最多一次 replacement。
+入口：`python -m eval.navigation_stability`。每个场景从干净 fixture snapshot 开始，Provider failure 最多一次 replacement。

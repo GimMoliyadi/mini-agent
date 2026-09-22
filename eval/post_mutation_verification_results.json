@@ -1,0 +1,268 @@
+{
+  "phase": "19.6",
+  "status": "complete",
+  "sources": [
+    "eval/required_test_visibility_results.json",
+    "eval/required_test_visibility_recovery_results.json"
+  ],
+  "definitions": {
+    "last_mutation_turn": "last successful apply_patch or write_file tool call",
+    "last_required_test_turn": "last exact Contract required-test execution",
+    "post_mutation_required_test_passed": "exact test exit 0 with test turn greater than last mutation turn",
+    "agent_self_verified": "post_mutation_required_test_passed",
+    "accepted_unchanged": true
+  },
+  "runs": [
+    {
+      "condition": "treatment",
+      "run": 1,
+      "tool_chain": [
+        "list_files",
+        "list_files",
+        "list_files",
+        "search_text",
+        "read_file",
+        "read_file",
+        "apply_patch",
+        "run_command",
+        "Final"
+      ],
+      "last_mutation_turn": 5,
+      "mutation_tools": [
+        "apply_patch"
+      ],
+      "exact_test_turns": [
+        6
+      ],
+      "exact_test_exit_codes": [
+        "0"
+      ],
+      "last_required_test_turn": 6,
+      "last_successful_exact_test_turn": 6,
+      "exact_test_before_last_mutation": false,
+      "test_evidence_expired": false,
+      "post_mutation_required_test_passed": true,
+      "agent_self_verified": true,
+      "final_answer_present": true,
+      "final_turn": 7,
+      "completion_hint_triggered": true,
+      "completion_hint_turn": 6,
+      "artifact_passed": true,
+      "interaction_completed": true,
+      "accepted": true
+    },
+    {
+      "condition": "treatment",
+      "run": 2,
+      "tool_chain": [
+        "list_files",
+        "list_files",
+        "list_files",
+        "read_file",
+        "search_text",
+        "read_file",
+        "apply_patch",
+        "run_command",
+        "Final"
+      ],
+      "last_mutation_turn": 5,
+      "mutation_tools": [
+        "apply_patch"
+      ],
+      "exact_test_turns": [
+        6
+      ],
+      "exact_test_exit_codes": [
+        "0"
+      ],
+      "last_required_test_turn": 6,
+      "last_successful_exact_test_turn": 6,
+      "exact_test_before_last_mutation": false,
+      "test_evidence_expired": false,
+      "post_mutation_required_test_passed": true,
+      "agent_self_verified": true,
+      "final_answer_present": true,
+      "final_turn": 7,
+      "completion_hint_triggered": true,
+      "completion_hint_turn": 6,
+      "artifact_passed": true,
+      "interaction_completed": true,
+      "accepted": true
+    },
+    {
+      "condition": "treatment",
+      "run": 7,
+      "tool_chain": [
+        "list_files",
+        "search_text",
+        "list_files",
+        "list_files",
+        "read_file",
+        "read_file",
+        "apply_patch",
+        "run_command",
+        "Final"
+      ],
+      "last_mutation_turn": 4,
+      "mutation_tools": [
+        "apply_patch"
+      ],
+      "exact_test_turns": [
+        5
+      ],
+      "exact_test_exit_codes": [
+        "0"
+      ],
+      "last_required_test_turn": 5,
+      "last_successful_exact_test_turn": 5,
+      "exact_test_before_last_mutation": false,
+      "test_evidence_expired": false,
+      "post_mutation_required_test_passed": true,
+      "agent_self_verified": true,
+      "final_answer_present": true,
+      "final_turn": 6,
+      "completion_hint_triggered": true,
+      "completion_hint_turn": 5,
+      "artifact_passed": true,
+      "interaction_completed": true,
+      "accepted": true
+    },
+    {
+      "condition": "treatment",
+      "run": 8,
+      "tool_chain": [
+        "list_files",
+        "list_files",
+        "list_files",
+        "read_file",
+        "search_text",
+        "read_file",
+        "apply_patch",
+        "run_command",
+        "Final"
+      ],
+      "last_mutation_turn": 5,
+      "mutation_tools": [
+        "apply_patch"
+      ],
+      "exact_test_turns": [
+        6
+      ],
+      "exact_test_exit_codes": [
+        "0"
+      ],
+      "last_required_test_turn": 6,
+      "last_successful_exact_test_turn": 6,
+      "exact_test_before_last_mutation": false,
+      "test_evidence_expired": false,
+      "post_mutation_required_test_passed": true,
+      "agent_self_verified": true,
+      "final_answer_present": true,
+      "final_turn": 7,
+      "completion_hint_triggered": true,
+      "completion_hint_turn": 6,
+      "artifact_passed": true,
+      "interaction_completed": true,
+      "accepted": true
+    },
+    {
+      "condition": "treatment",
+      "run": 9,
+      "tool_chain": [
+        "list_files",
+        "list_files",
+        "list_files",
+        "read_file",
+        "search_text",
+        "read_file",
+        "run_command",
+        "apply_patch",
+        "Final"
+      ],
+      "last_mutation_turn": 5,
+      "mutation_tools": [
+        "apply_patch"
+      ],
+      "exact_test_turns": [
+        4
+      ],
+      "exact_test_exit_codes": [
+        "1"
+      ],
+      "last_required_test_turn": 4,
+      "last_successful_exact_test_turn": null,
+      "exact_test_before_last_mutation": true,
+      "test_evidence_expired": false,
+      "post_mutation_required_test_passed": false,
+      "agent_self_verified": false,
+      "final_answer_present": true,
+      "final_turn": 6,
+      "completion_hint_triggered": false,
+      "completion_hint_turn": null,
+      "artifact_passed": true,
+      "interaction_completed": true,
+      "accepted": true
+    }
+  ],
+  "aggregate": {
+    "valid_runs": 5,
+    "final_answer": {
+      "used": 5,
+      "denominator": 5,
+      "rate": "5/5"
+    },
+    "accepted": {
+      "used": 5,
+      "denominator": 5,
+      "rate": "5/5"
+    },
+    "exact_test_executed": {
+      "used": 5,
+      "denominator": 5,
+      "rate": "5/5"
+    },
+    "exact_test_passed": {
+      "used": 4,
+      "denominator": 5,
+      "rate": "4/5"
+    },
+    "post_mutation_exact_test_passed": {
+      "used": 4,
+      "denominator": 5,
+      "rate": "4/5"
+    },
+    "agent_self_verified": {
+      "used": 4,
+      "denominator": 5,
+      "rate": "4/5"
+    },
+    "completion_hint": {
+      "used": 4,
+      "denominator": 5,
+      "rate": "4/5"
+    },
+    "artifact_passed": {
+      "used": 5,
+      "denominator": 5,
+      "rate": "5/5"
+    },
+    "interaction_completed": {
+      "used": 5,
+      "denominator": 5,
+      "rate": "5/5"
+    },
+    "max_steps": {
+      "used": 0,
+      "denominator": 5,
+      "rate": "0/5"
+    },
+    "test_evidence_expired": 0
+  },
+  "conclusions": {
+    "run9_pre_mutation_test": true,
+    "run9_agent_self_verified": false,
+    "dominant_issue": "verification_freshness",
+    "completion_hint_ablation_ready": false,
+    "statistical_significance_claim": false
+  }
+}

@@ -88,7 +88,7 @@ python -m unittest discover -s tests -p "test_*.py" -q
 $env:HTTPS_PROXY="http://127.0.0.1:7897"
 $env:HTTP_PROXY="http://127.0.0.1:7897"
 $env:ALL_PROXY="socks5://127.0.0.1:7897"
-.venv\Scripts\python.exe eval\navigation_eval.py
+.venv\Scripts\python.exe -m eval.navigation_eval
 ```
 
 每个有效场景只执行一次，源工作目录不修改；结果写入 `eval/navigation_results.json`。

@@ -6,8 +6,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from navigation_eval import SCENARIOS, _run_one_subprocess
-from navigation_fixtures import build_fixture, get_spec, validate_fixture
+from .navigation_eval import SCENARIOS, _run_one_subprocess
+from .navigation_fixtures import build_fixture, get_spec, validate_fixture
 
 
 EVAL_DIR = Path(__file__).resolve().parent
@@ -349,7 +349,7 @@ def render_report(payload: dict) -> str:
             "",
             "每条新增运行保留 `raw_result`；聚合结果与原始数据均在 `eval/navigation_stability_results.json`。",
             "先前 timeout 的保留记录在 `eval/navigation_stability_prior_failures.json`。",
-            "入口：`python eval/navigation_stability.py`。每个场景从干净 fixture snapshot 开始，Provider failure 最多一次 replacement。",
+            "入口：`python -m eval.navigation_stability`。每个场景从干净 fixture snapshot 开始，Provider failure 最多一次 replacement。",
         ]
     )
     return "\n".join(lines) + "\n"

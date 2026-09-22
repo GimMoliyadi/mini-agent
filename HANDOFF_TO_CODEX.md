@@ -1155,3 +1155,15 @@ Hint `0/3`、Final `2/3`、accepted `2/3`、MAX `1/3`。有效 Treatment 对应�
 评测代码、结果和报告：`eval/required_test_visibility.py`、`eval/required_test_visibility_results.json`、
 `eval/REQUIRED_TEST_VISIBILITY_REPORT.md`。该 n=3 结果只能支持“required-test 可见性与更稳定收口一致”，不作因果证明。
 Phase 19 专项测试与全量回归通过：全量 `117` 项通过、`1` 项 Windows 符号链接能力测试跳过。
+
+### Phase 19.5R Recovery harness 启动方式
+
+从 repo root 启动 Recovery 时使用 module invocation，并显式加入 `eval` 到 `PYTHONPATH`：
+
+```powershell
+$env:PYTHONPATH = (Join-Path (Get-Location) "eval")
+C:\Users\30858\mini-agent-lab\.venv\Scripts\python.exe -m eval.required_test_visibility_recovery
+```
+
+不要直接运行 `python eval\required_test_visibility_recovery.py`；该路径不会自动把 repo root
+加入 import path。`--help` smoke test 只验证启动，不调用模型。

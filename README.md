@@ -686,7 +686,7 @@ Phase 18 新增独立评测 harness，不新增 Agent Tool，也不修改 `searc
 LARGE-SYNTHETIC（75 文件）fixture；`eval/navigation_metrics.py` 从真实历史中的 tool call/result
 计算 `first_correct_file_turn`、目录/搜索/读取次数、candidate files 和 token 成本，不使用 LLM Judge。
 
-真实入口是 `python eval/navigation_eval.py`，结构化结果为 `eval/navigation_results.json`，报告为
+真实入口是 `python -m eval.navigation_eval`，结构化结果为 `eval/navigation_results.json`，报告为
 `eval/NAVIGATION_REPORT.md`。四个有效场景各运行一次并被接受；首次使用未监听的 `127.0.0.1:7897`
 未进入 Agent loop，随后使用 Phase 17 已验证的 `127.0.0.1:9674` relay 完成有效运行。离线 fixture、
 ground truth、search/read、Coding Contract 和全量回归通过；完整记录见 `REAL_RUN_LOG.md`。
@@ -718,6 +718,18 @@ exact required test、触发 Completion Hint、给出 Final Answer 并被接受�
 Final `2/3`、accepted `2/3`、MAX_AGENT_STEPS `1/3`；Treatment 有效分母为 `2`，对应指标均为 `2/2`。
 该 n=3 实验只说明可见性与更稳定的收口行为一致，不单独证明因果关系。
 
-评测入口为 `python eval/required_test_visibility.py`；结果为 `eval/required_test_visibility_results.json`，报告为
+评测入口为 `python -m eval.required_test_visibility`；结果为 `eval/required_test_visibility_results.json`，报告为
 `eval/REQUIRED_TEST_VISIBILITY_REPORT.md`。完整 raw result、实际 run_command、zero-test 和 provider failure 记录均保留在结果文件中。
 Phase 19 专项测试与 Navigation/稳定性测试通过；全量回归为 `117` 项通过、`1` 项 Windows 符号链接测试跳过。
+
+## Phase 19.5R · Provider Recovery & Resume 启动方式
+
+Recovery harness 必须从 repo root 以 module invocation 启动，并显式把 `eval` 放入
+`PYTHONPATH`，以兼容现有 eval 模块的顶层导入；不修改 Runtime 或 Python import 逻辑：
+
+```powershell
+$env:PYTHONPATH = (Join-Path (Get-Location) "eval")
+.venv\Scripts\python.exe -m eval.required_test_visibility_recovery
+```
+
+启动 smoke test 使用 `--help`，不会发起真实模型请求。

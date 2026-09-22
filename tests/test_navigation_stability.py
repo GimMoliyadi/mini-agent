@@ -1,13 +1,8 @@
 """Offline checks for Phase 18.5 aggregation and Provider classification."""
 
-from pathlib import Path
-import sys
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "eval"))
-
-from navigation_stability import aggregate_runs, is_provider_failure  # noqa: E402
+from eval.navigation_stability import aggregate_runs, is_provider_failure  # noqa: E402
 
 
 def run_record(**overrides):
