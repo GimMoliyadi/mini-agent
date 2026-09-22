@@ -31,6 +31,13 @@ class RiskLevel(str, Enum):
     EXTERNAL_SIDE_EFFECT = "EXTERNAL_SIDE_EFFECT"
 
 
+class ToolKind(str, Enum):
+    """How a tool participates in the Agent loop, independent of risk."""
+
+    NORMAL = "NORMAL"
+    CONTROL_FLOW = "CONTROL_FLOW"
+
+
 @dataclass(frozen=True)
 class ToolDefinition:
     """一个工具的完整 Runtime 定义。"""
@@ -42,6 +49,8 @@ class ToolDefinition:
     workspace_arguments: tuple[str, ...] = ("path",)
     operation_path_argument: str | None = "path"
     preflight: Callable[[dict], None] | None = None
+    tool_kind: ToolKind = ToolKind.NORMAL
+    workspace_mutation: bool = False
 
 # 工具的「说明书」。发给模型的不是函数本身，而是这份 JSON 描述；
 # 模型照着它生成一次工具调用请求。
@@ -240,6 +249,32 @@ RUN_COMMAND_TOOL = {
         },
     },
 }
+
+
+FINISH_TASK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "finish_task",
+        "description": (
+            "Request completion of the current Coding Task with a short user-facing summary. "
+            "A Coding Task is complete only when finish_task is accepted by the Runtime Finish Gate; "
+            "ordinary Final Answer text does not complete it. After the final code change, make sure "
+            "the required test is still valid before requesting finish."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Short final summary shown to the user when finish is accepted.",
+                },
+            },
+            "required": ["summary"],
+        },
+    },
+}
+
 
 def resolve_inside_workspace(path: str, workspace: str | Path | None = None) -> Path:
     """把模型给的路径解析成绝对路径，并保证它落在工作目录内。
@@ -798,6 +833,13 @@ def run_command(
     )
 
 
+def finish_task(summary: str) -> str:
+    """Validate the model-facing finish summary for the control-flow dispatcher."""
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError("summary 必须是非空字符串")
+    return summary.strip()
+
+
 TOOL_REGISTRY = {
     "list_files": ToolDefinition(
         name="list_files",
@@ -822,12 +864,14 @@ TOOL_REGISTRY = {
         schema=WRITE_FILE_TOOL,
         handler=write_file,
         risk_level=RiskLevel.SIDE_EFFECT,
+        workspace_mutation=True,
     ),
     "apply_patch": ToolDefinition(
         name="apply_patch",
         schema=APPLY_PATCH_TOOL,
         handler=apply_patch,
         risk_level=RiskLevel.SIDE_EFFECT,
+        workspace_mutation=True,
     ),
     "run_command": ToolDefinition(
         name="run_command",
@@ -837,6 +881,15 @@ TOOL_REGISTRY = {
         workspace_arguments=("cwd",),
         operation_path_argument=None,
         preflight=validate_run_command_arguments,
+    ),
+    "finish_task": ToolDefinition(
+        name="finish_task",
+        schema=FINISH_TASK_TOOL,
+        handler=finish_task,
+        risk_level=RiskLevel.READ_ONLY,
+        workspace_arguments=(),
+        operation_path_argument=None,
+        tool_kind=ToolKind.CONTROL_FLOW,
     ),
 }
 

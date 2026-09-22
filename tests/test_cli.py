@@ -63,7 +63,12 @@ class CliTests(unittest.TestCase):
                 ("python", ("-m", "unittest", "test_calculator", "-q"), "."),
             )
             self.assertIn("Coding Task 收口规则", messages[0]["content"])
-            messages.append({"role": "assistant", "content": "done"})
+            task_state = kwargs["task_state"]
+            task_state.event_seq = 2
+            task_state.last_mutation_event_seq = 1
+            task_state.last_successful_exact_required_test_seq = 2
+            task_state.record_finish_attempt("done", True, [])
+            trace.set_task_state(task_state)
 
         original_workspace = cli.main.WORKSPACE_DIR
         original_tool_workspace = tools.WORKSPACE_DIR
@@ -79,6 +84,7 @@ class CliTests(unittest.TestCase):
             result = cli.run_task("ignored", contract=contract)
         self.assertTrue(result["acceptance"]["accepted"])
         self.assertEqual(result["acceptance"]["final_test_exit_code"], 0)
+        self.assertEqual(result["answer"], "done")
 
     def test_provider_error(self):
         self.assertEqual(self.invoke(TimeoutError("timeout"))["status"], "failed")

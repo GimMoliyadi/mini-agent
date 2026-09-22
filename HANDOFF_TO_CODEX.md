@@ -1167,3 +1167,118 @@ C:\Users\30858\mini-agent-lab\.venv\Scripts\python.exe -m eval.required_test_vis
 
 不要直接运行 `python eval\required_test_visibility_recovery.py`；该路径不会自动把 repo root
 加入 import path。`--help` smoke test 只验证启动，不调用模型。
+
+---
+
+## 21. Phase 21：Explicit Task Finish + Deterministic Finish Gate（已完成）
+
+Phase 21 以 `9c114e6`（Phase 20）为 baseline。Codex 在本阶段实现了完整的 Runtime 骨架后额度耗尽，
+工作树留下 13 个已修改文件和 1 个新测试文件、**没有提交**。Claude Code 接力完成了收尾。
+
+### 本阶段唯一目标
+
+显式 `finish_task` 工具 + 确定性 Finish Gate + 最小 Task State。
+明确不做：STUCK detector、Planner、Critic、Reviewer LLM、Multi-Agent、Event Bus、DAG、MCP、RAG、
+Memory、自动测试、fuzzy command matching、语义化 Finish Judge。
+
+### 实现与数据流
+
+```
+LLM → tool_calls
+     → run_tool_round
+         → 普通工具：permission → execute → 更新 TaskState 游标
+         → CONTROL_FLOW：专用分发器（跳过 permission / duplicate / handler）
+             → evaluate_finish_request（纯判定）→ FINISHED | REJECTED
+     → FINISHED → Agent Loop 退出
+```
+
+`tool_kind` 与 `risk_level` 正交。三道隔离：`run_tool_round` 在普通分发前查 `tool_kind` 并 `break`；
+`check_tool_permission` 对 CONTROL_FLOW 放行；`execute_tool_call` 对 CONTROL_FLOW 返回失败作为兜底。
+
+一个 response 只处理到第一个 CONTROL_FLOW 调用为止，`tool_calls_through_control_flow` 截出的前缀
+同时用于「执行」和「写回 canonical assistant message」。截断作用于两处是必需的：残留的 tool_call
+会留下没有配对 result 的 `tool_call_id`，下一次请求被提供商 400。Gate 拒绝时同样截断。
+
+### Mock A–J
+
+`tests/test_finish_protocol.py` 覆盖全部十条场景，全部通过：
+
+| 编号 | 场景 | 结论 |
+| --- | --- | --- |
+| A | patch → exact test PASS → finish_task | `FINISHED`，Gate 接受，acceptance 全绿 |
+| B | test FAIL → patch → finish REJECT → test PASS → finish | 第二次接受；拒绝原因是 stale，不是 missing |
+| C | 改动测试文件后 finish | 拒绝，`unexpected_change:test_calculator.py`，最终 `LIMIT_REACHED` |
+| D | finish 后同批还有 read / run | 不执行，canonical 无 dangling call |
+| E | finish 被拒后同批还有 tool call | 不执行，状态保持 `RUNNING` |
+| F | 完全相同的 finish_task 第二次提交 | 不被 duplicate guard 拦截，REJECTED → FINISHED |
+| G | Contract 生效 + 普通 Final | 状态保持 `RUNNING`，注入 nudge 后再问一次 |
+| H | 最后一步 finish 且 Gate PASS | `FINISHED`，`max_steps_reached=False` |
+| I | 最后一步 finish 但 Gate REJECT | 记录拒绝，协议合法，`LIMIT_REACHED` |
+| J | 历史失败后更新的 fresh PASS | 历史失败不永久污染，最终允许 finish |
+
+### 本地验证
+
+`python -m unittest discover -s tests -p "test*.py"`：**149 项通过，1 项 Windows 符号链接能力测试跳过**。
+`compileall` 通过，`git diff --check` 无空白错误。
+Session、Permission、Sandbox、Context、Long-file、Patch、Search、Command、Acceptance 全部无回归。
+
+### 关键设计取舍
+
+1. **freshness 用逻辑时钟不用时间戳**：`event_seq` 对每个工具尝试递增，但只有 `write_file` /
+   `apply_patch` 在前后 workspace 摘要确实不同时移动 `last_mutation_event_seq`；
+   `run_command` 仅在 command + args + cwd 完全匹配且退出码 0 时移动测试游标。
+   失败、被拒、duplicate、no-op 都不移动。
+2. **MAX vs Finish**：每个被允许的模型响应先完整处理到第一个 CONTROL_FLOW 调用，
+   所以最后一步的合法 finish 优先于步数上限。代价是 Contract 生效且模型反复给普通 Final 时，
+   nudge 会让实际请求数最多接近两倍——这是 Phase 21 的取舍，不是缺陷。
+3. **Hint 只作引导**：required test 通过后提示改为「调用 `finish_task(summary=...)`」，
+   同步更新了 coding guidance、duplicate notice 和系统提示词。
+
+### 交接修正（Claude Code 补的部分）
+
+Codex 的实现中 `verify_contract` 无条件用 `task_state` 判定 `interaction_completed`，
+导致**不驱动 finish 协议的旧调用方全部变成 `accepted=false`**，
+reason 是它们从未被告知要调用工具的 `finish_task_not_accepted`。
+受影响的现有调用方：`eval/navigation_eval.py`、`eval/post_mutation_verification_guidance.py`、
+`eval/required_test_visibility.py`（三者都不传 `task_state`）。
+后果是 Phase 18–20 的评测报告会系统性误报失败，且已保存的结果 JSON 不可比。
+
+修正为：传入 `task_state` 时按 finish 协议判定；未传时保留「普通 Final + 未触上限」的旧语义。
+这样 `verify_contract` 只在实际执行了 finish 协议的运行上要求 `finish_task`，不做无依据的归咎。
+补了两个回归测试锁住该行为。
+
+同时把 `_finish_control_flow_result` 里重复的 summary 校验改为直接调用 Tool Registry 中的
+`tools.finish_task`，消除了两处相同的校验逻辑，也让该 handler 不再是死代码。
+
+改动范围：`acceptance.py`、`main.py`、`tests/test_acceptance.py`。
+
+### 真实模型验证
+
+单次运行，MEDIUM fixture（`tests/fixtures/repo_fixture` + `tests/fixtures/repo_contract.json`）。
+Provider：`sensenova-6.8-flash-lite`，`TOOL_APPROVAL_MODE=ALLOW`。
+
+```
+list_files → read_file ×2 → apply_patch → run_command（exact test, exit 0）→ finish_task → FINISHED
+```
+
+`model_calls=4`，`finish_task_calls=1`，`finish_successes=1`，`finish_rejections=0`，
+`max_steps_reached=False`，`total_tokens=10882`。
+`event_seq`：apply_patch=4（mutation）、run_command=5（测试通过）、finish_task=6。
+`artifact_passed=true`，`interaction_completed=true`，`agent_self_verified=true`，`accepted=true`，
+`unexpected_changes=[]`，独立 Verifier 重新执行测试 `final_test_exit_code=0`。
+原始记录：`eval/phase21_real_run.json`。
+
+### 已知限制
+
+1. **`DEFAULT_APPROVAL_MODE=ASK` 在非交互环境下会让 Coding Task 必然失败**：无 TTY 时 `input()` 返回
+   EOF，`ask_for_approval` 按安全默认拒绝所有副作用工具。真实 CLI 运行需要显式
+   `TOOL_APPROVAL_MODE=ALLOW`。这是 Phase 11 就存在的配置语义，不是 Phase 21 引入的，
+   但 Phase 21 把它变成了硬阻塞（模型无法写入 → 无法通过测试 → 无法 finish）。
+2. **测试运行器自身的缓存目录不被排除**：`snapshot_workspace` 只排除 `__pycache__` 和 `.pyc`/`.pyo`。
+   若 Contract 的 required test 用 `python -m pytest`（命令策略允许），生成的 `.pytest_cache/`
+   会被当作 `unexpected_change` 阻塞 finish。当前 fixture 用 `python -m unittest`，不触发。
+   这是 Phase 14 verifier 与 Finish Gate 共享的既有缺口，未在本阶段扩大范围处理。
+3. **交互模式（`main.py`）下 finish 协议只在 `--resume` 一个携带 Coding 状态的 Session 时生效**；
+   新建交互式 Session 没有 Contract。这与 Phase 14 的入口结构一致（Coding Task 走 `cli.py`），
+   不是本阶段引入的。
+4. **`.pytest_cache` 之外的 test-cache 目录**（`.mypy_cache` 等）同样不在排除列表内。

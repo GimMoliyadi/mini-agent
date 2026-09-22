@@ -1,20 +1,13 @@
-"""mini-agent-lab 的程序入口（Phase 10：工具权限与副作用审批）。
+"""mini-agent-lab 的程序入口。
 
-这一阶段做的事不是加能力，而是解决 Phase 5.5 真模型实测暴露的问题：
-任务其实已经做完了，Agent 却不知道自己该停。
+Phase 21 将 Coding Task 的完成从普通文本收口升级为显式
+finish_task(summary=...) 请求。Runtime 的确定性 Finish Gate 只根据
+Contract、TaskState 和 workspace 快照决定能否进入 FINISHED；独立
+Verifier 仍在循环结束后重新验证最终 artifact。
 
-三条独立的防线，互不替代：
-  1. 系统提示词里的收口原则 —— 让模型自己判断「目标满足了就回答」
-  2. 重复调用检测 —— 同一工具 + 完全相同参数已成功执行过，就不重复执行，
-     而是把「这次没新信息」作为一条正常工具结果回喂，让模型自己收口
-  3. MAX_AGENT_STEPS —— 最后的保险丝，仍然数「问了几次模型」
-
-外加可观测性：每次请求都会打印 finish_reason 和 token 用量。
-Phase 5 里 ask() 只返回 message，这两项被直接丢掉，
-结果「模型为什么不收口」这类问题只能靠肉眼数工具调用次数。
-
-仍然刻意不做的事：不禁止「写完再读回来验证」、不写死任何工具顺序、
-不在 Python 里强行替模型做 Final Answer 的决定、不记 Memory。
+普通聊天仍由模型的普通 Final Answer 收口。Coding Task 则保留提示词、
+重复调用检测和 MAX_AGENT_STEPS 作为辅助机制，但不能绕过 Finish Gate。
+每次请求打印 finish_reason 与 token 用量，便于观察循环行为。
 """
 
 import argparse
@@ -26,6 +19,14 @@ from dataclasses import dataclass, field
 from openai import APIError, OpenAI
 from openai.types.chat import ChatCompletionMessage
 
+from acceptance import (
+    CodingTaskContract,
+    TaskState,
+    TaskStatus,
+    changed_files,
+    evaluate_finish_request,
+    snapshot_workspace,
+)
 from config import (
     CONTEXT_MODES,
     MAX_AGENT_STEPS,
@@ -38,8 +39,21 @@ from config import (
     get_context_mode,
     load_config,
 )
-from tools import AVAILABLE_TOOLS, RiskLevel, TOOL_REGISTRY, resolve_inside_workspace
-from session import SessionError, create_session, load_session, save_session
+from tools import (
+    AVAILABLE_TOOLS,
+    RiskLevel,
+    TOOL_REGISTRY,
+    ToolKind,
+    finish_task,
+    resolve_inside_workspace,
+)
+from session import (
+    SessionError,
+    create_session,
+    load_session,
+    load_task_state,
+    save_session,
+)
 
 BANNER = "Mini Agent Lab"
 
@@ -61,10 +75,10 @@ EXIT_COMMANDS = {"exit", "quit", "q"}
 # 这种合理的验证也一起砍掉。真正拦住重复动作的是重复调用检测。
 SYSTEM_PROMPT = (
     "你是一个运行在命令行里的助手。直接回答用户的问题，尽量简短，不要客套开场。\n"
-    "你有六个工具：list_files 看工作目录里有什么，search_text 按固定字符串递归搜索，"
+    "你有七个工具：list_files 看工作目录里有什么，search_text 按固定字符串递归搜索，"
     "read_file 读文件内容，"
     "write_file 写入完整文本，apply_patch 对已有文件做唯一的精确局部替换，"
-    "run_command 执行受控的本地开发命令。\n"
+    "run_command 执行受控的本地开发命令，finish_task 请求结束 Coding Task。\n"
     "run_command 只能使用 command + args 数组，允许 python -m pytest、"
     "python -m unittest、git status、git diff、git log；不要使用 shell 语法、"
     "python -c、pip、PowerShell、cmd 或网络命令。cwd 必须在工作目录内。\n"
@@ -76,9 +90,10 @@ SYSTEM_PROMPT = (
     "没有读取的文件只能根据名称介绍，不能断言其具体内容、与其他文件相同或哪个版本更精简。\n"
     "用哪个工具、用什么顺序，你自己决定。\n"
     "每次拿到工具结果后，先判断用户明确要求的目标是否已经满足："
-    "所需操作已成功、没有新的错误、没有缺失的信息、没有未完成的要求，就直接给出最终回答。\n"
+    "所需操作已成功、没有新的错误、没有缺失的信息、没有未完成的要求时，普通对话直接给出最终回答；"
+    "Coding Task 则调用 finish_task(summary=...) 请求结束。\n"
     "不要为了「再确认一下」反复调用工具；需要验证有副作用的操作可以验证，"
-    "但验证成功后要收口，不要反复改写同一份内容。"
+    "但验证成功后不要反复改写同一份内容；Coding Task 应调用 finish_task。"
 )
 
 # 工具失败时的统一前缀。既是失败话术的唯一出处，
@@ -104,14 +119,19 @@ DUPLICATE_NOTICE = (
 CODING_DUPLICATE_NOTICE = (
     DUPLICATE_NOTICE
     + "\n该动作刚刚已经成功执行，没有新信息。"
-    + "如果 Coding Task 目标已满足，请直接 Final Answer。"
+    + "如果 Coding Task 目标已满足，请调用 finish_task(summary=...)。"
 )
 
 COMPLETION_HINT = (
     "[Completion status]\n"
-    "Command succeeded.\n"
-    "If this satisfies the requested coding task and no work remains, "
-    "return the final answer instead of repeating reads/writes/tests."
+    "Required test succeeded.\n"
+    "If all contract requirements are satisfied, call finish_task(summary=...) "
+    "instead of repeating reads/writes/tests."
+)
+
+CODING_FINISH_PROTOCOL_NOTICE = (
+    "Coding task is still RUNNING.\n"
+    "To finish, call finish_task(summary=...)."
 )
 
 RequiredTest = tuple[str, tuple[str, ...], str]
@@ -176,11 +196,16 @@ class CodingTaskTrace:
     policy_rejected: int = 0
     failed_commands: int = 0
     successful_commands: int = 0
+    finish_task_calls: int = 0
+    finish_successes: int = 0
+    finish_rejections: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
     max_steps_reached: bool = False
     final_answer: str | None = None
+    task_status: str | None = None
+    finish_attempts: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
 
     def record_model_turn(self, turn: int, reply: ModelReply) -> None:
@@ -202,6 +227,8 @@ class CodingTaskTrace:
         approval: str,
         executed: bool,
         classification: str | None = None,
+        event_seq: int | None = None,
+        finish_gate: dict | None = None,
     ) -> dict:
         tool_name = call.function.name
         arguments_summary, write_target = trace_arguments(call)
@@ -228,6 +255,9 @@ class CodingTaskTrace:
         self.policy_rejected += int(classification == "POLICY_REJECTED")
         self.failed_commands += int(classification == "FAILED_COMMAND")
         self.successful_commands += int(classification == "SUCCESSFUL_COMMAND")
+        self.finish_task_calls += int(tool_name == "finish_task")
+        self.finish_successes += int(classification == "FINISH_ACCEPTED")
+        self.finish_rejections += int(classification == "FINISH_REJECTED")
         event = {
             "turn": turn,
             "action": "tool_call",
@@ -240,11 +270,22 @@ class CodingTaskTrace:
             "executed": executed,
             "classification": classification,
         }
+        if event_seq is not None:
+            event["event_seq"] = event_seq
+        if finish_gate is not None:
+            event["finish_gate"] = finish_gate
+            self.finish_attempts.append(dict(finish_gate))
         self.events.append(event)
         return event
 
     def mark_max_steps(self) -> None:
         self.max_steps_reached = True
+
+    def set_task_state(self, task_state: TaskState | None) -> None:
+        if task_state is None:
+            return
+        self.task_status = task_state.status.value
+        self.finish_attempts = list(task_state.finish_attempts)
 
     def summary(self) -> dict:
         return {
@@ -265,11 +306,16 @@ class CodingTaskTrace:
             "policy_rejected": self.policy_rejected,
             "failed_commands": self.failed_commands,
             "successful_commands": self.successful_commands,
+            "finish_task_calls": self.finish_task_calls,
+            "finish_successes": self.finish_successes,
+            "finish_rejections": self.finish_rejections,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "max_steps_reached": self.max_steps_reached,
             "final_answer": self.final_answer,
+            "task_status": self.task_status,
+            "finish_attempts": list(self.finish_attempts),
             "events": list(self.events),
         }
 
@@ -451,6 +497,8 @@ def execute_tool_call(call) -> str:
         definition = TOOL_REGISTRY.get(call.function.name)
         if definition is None:
             return f"{TOOL_FAILURE_PREFIX} 没有名为 {call.function.name} 的工具，无法执行"
+        if definition.tool_kind is ToolKind.CONTROL_FLOW:
+            return f"{TOOL_FAILURE_PREFIX} 控制流工具必须由 Runtime 专用分发器处理"
         arguments = parse_tool_arguments(call)
         return limit_result_length(definition.handler(**arguments))
     except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
@@ -512,7 +560,11 @@ def check_tool_permission(call, approval_callback: ApprovalCallback) -> tuple[bo
     """Check permission before execution; return (may_execute, immediate_result)."""
     tool_name = call.function.name
     definition = TOOL_REGISTRY.get(tool_name)
-    if definition is None or definition.risk_level is RiskLevel.READ_ONLY:
+    if (
+        definition is None
+        or definition.tool_kind is ToolKind.CONTROL_FLOW
+        or definition.risk_level is RiskLevel.READ_ONLY
+    ):
         return True, None
 
     try:
@@ -545,12 +597,15 @@ def check_tool_permission(call, approval_callback: ApprovalCallback) -> tuple[bo
         return False, f"{TOOL_FAILURE_PREFIX} {type(exc).__name__}：{exc}"
 
 
-def assistant_tool_call_message(message: ChatCompletionMessage) -> dict:
+def assistant_tool_call_message(
+    message: ChatCompletionMessage, calls=None
+) -> dict:
     """把模型那条「提了工具调用」的回复原样写回对话历史。
 
     tool_calls 必须原样带上，尤其是 arguments 要保留模型当初给的**原始字符串**：
     重新序列化一遍可能改变字段顺序或转义方式，部分服务商会因此直接 400。
     """
+    selected_calls = message.tool_calls if calls is None else calls
     return {
         "role": "assistant",
         "content": message.content or "",
@@ -563,7 +618,7 @@ def assistant_tool_call_message(message: ChatCompletionMessage) -> dict:
                     "arguments": call.function.arguments,
                 },
             }
-            for call in message.tool_calls
+            for call in selected_calls
         ],
     }
 
@@ -575,6 +630,17 @@ def tool_result_message(call, content: str) -> dict:
     「这次结果对应哪次调用」的唯一凭据。漏了它，模型和服务商都会困惑。
     """
     return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+
+def tool_calls_through_control_flow(message: ChatCompletionMessage) -> list:
+    """Keep calls through the first control-flow request for canonical history."""
+    selected = []
+    for call in message.tool_calls or []:
+        selected.append(call)
+        definition = TOOL_REGISTRY.get(call.function.name)
+        if definition is not None and definition.tool_kind is ToolKind.CONTROL_FLOW:
+            break
+    return selected
 
 
 def _compact_write_arguments(arguments: str) -> str | None:
@@ -809,6 +875,93 @@ def counts_as_successful_duplicate(call, result: str) -> bool:
     return True
 
 
+def _finish_control_flow_result(
+    call,
+    contract: CodingTaskContract | None,
+    task_state: TaskState | None,
+) -> tuple[str, str, int | None, dict | None]:
+    """Dispatch finish_task without using permission or duplicate flow."""
+    try:
+        arguments = parse_tool_arguments(call)
+        if set(arguments) != {"summary"}:
+            raise ValueError("finish_task 只接受 summary 参数")
+        summary = finish_task(arguments["summary"])
+    except ValueError as exc:
+        return f"{TOOL_FAILURE_PREFIX} {type(exc).__name__}：{exc}", "PRODUCTIVE", None, None
+
+    event_seq = task_state.next_event() if task_state is not None else None
+    gate_state = task_state or TaskState()
+    decision = evaluate_finish_request(contract, gate_state, WORKSPACE_DIR)
+    gate_result = decision.as_dict()
+    if event_seq is not None:
+        gate_result["event_seq"] = event_seq
+        task_state.record_finish_attempt(summary, decision.accepted, list(decision.reasons))
+    result = json.dumps(gate_result, ensure_ascii=False, separators=(",", ":"))
+    return (
+        result,
+        "FINISH_ACCEPTED" if decision.accepted else "FINISH_REJECTED",
+        event_seq,
+        gate_result,
+    )
+
+
+def _update_task_state_after_normal_tool(
+    task_state: TaskState | None,
+    definition,
+    call,
+    result: str,
+    may_execute: bool,
+    required_test: RequiredTest | None,
+    event_seq: int | None,
+    pre_mutation_snapshot: dict[str, str] | None,
+) -> None:
+    """Record only real mutations and successful exact required tests."""
+    if task_state is None or event_seq is None:
+        return
+
+    if (
+        pre_mutation_snapshot is not None
+        and may_execute
+        and not result.startswith(TOOL_FAILURE_PREFIX)
+        and not result.startswith(APPROVAL_DENIED_PREFIX)
+    ):
+        post_mutation_snapshot = snapshot_workspace(WORKSPACE_DIR)
+        if changed_files(pre_mutation_snapshot, post_mutation_snapshot):
+            task_state.last_mutation_event_seq = event_seq
+
+    if (
+        may_execute
+        and not result.startswith(TOOL_FAILURE_PREFIX)
+        and call_matches_required_test(call, required_test)
+        and trace_exit_code(result) == "0"
+    ):
+        task_state.last_successful_exact_required_test_seq = event_seq
+
+
+def _record_runtime_error(
+    task_state: TaskState | None,
+    trace: CodingTaskTrace | None,
+    exc: Exception,
+) -> None:
+    """Persist a fatal Runtime failure without treating normal Tool Results as errors."""
+    if task_state is None:
+        return
+    task_state.status = TaskStatus.ERROR
+    task_state.unresolved_runtime_error = f"{type(exc).__name__}: {exc}"
+    if trace is not None:
+        trace.set_task_state(task_state)
+
+
+def _print_trace_event(event: dict) -> None:
+    print(
+        "Trace > "
+        f"Turn {event['turn']} | tool={event['tool']} | "
+        f"args={event['arguments']} | approval={event['approval']} | "
+        f"result={event['result']} | exit_code={event['exit_code']} | "
+        f"write_target={event['write_target']}"
+    )
+
+
 def run_tool_round(
     messages: list[dict],
     message: ChatCompletionMessage,
@@ -817,6 +970,8 @@ def run_tool_round(
     trace: CodingTaskTrace | None = None,
     turn: int | None = None,
     required_test: RequiredTest | None = None,
+    contract: CodingTaskContract | None = None,
+    task_state: TaskState | None = None,
 ) -> None:
     """执行这一批工具调用，把「模型提了调用」和「调用结果」都写进历史。
 
@@ -831,10 +986,35 @@ def run_tool_round(
     是外层循环的事——把「执行」和「决定要不要继续」分开，
     循环才能只写在它该出现的那一处。
     """
-    messages.append(assistant_tool_call_message(message))
+    calls = tool_calls_through_control_flow(message)
+    messages.append(assistant_tool_call_message(message, calls))
 
-    for call in message.tool_calls:
+    for call in calls:
         print(f"\nAgent 想调用工具：{call.function.name}({call.function.arguments})")
+        definition = TOOL_REGISTRY.get(call.function.name)
+
+        if definition is not None and definition.tool_kind is ToolKind.CONTROL_FLOW:
+            result, classification, event_seq, gate_result = _finish_control_flow_result(
+                call, contract, task_state
+            )
+            print(f"Tool 结果 > {result}")
+            messages.append(tool_result_message(call, result))
+            if trace is not None:
+                event = trace.record_tool(
+                    turn or 0,
+                    call,
+                    result,
+                    "CONTROL_FLOW",
+                    True,
+                    classification,
+                    event_seq,
+                    gate_result,
+                )
+                trace.set_task_state(task_state)
+                _print_trace_event(event)
+            break
+
+        event_seq = task_state.next_event() if task_state is not None else None
 
         fingerprint = call_fingerprint(call)
         if fingerprint in executed:
@@ -848,21 +1028,41 @@ def run_tool_round(
             messages.append(tool_result_message(call, duplicate_notice))
             if trace is not None:
                 event = trace.record_tool(
-                    turn or 0, call, duplicate_notice, "DUPLICATE_BLOCKED", False
+                    turn or 0,
+                    call,
+                    duplicate_notice,
+                    "DUPLICATE_BLOCKED",
+                    False,
+                    event_seq=event_seq,
                 )
-                print(
-                    "Trace > "
-                    f"Turn {event['turn']} | tool={event['tool']} | "
-                    f"args={event['arguments']} | approval={event['approval']} | "
-                    f"result={event['result']} | exit_code={event['exit_code']} | "
-                    f"write_target={event['write_target']}"
-                )
+                trace.set_task_state(task_state)
+                _print_trace_event(event)
             continue
 
         may_execute, permission_result = check_tool_permission(call, approval_callback)
+        pre_mutation_snapshot = (
+            snapshot_workspace(WORKSPACE_DIR)
+            if (
+                task_state is not None
+                and may_execute
+                and definition is not None
+                and definition.workspace_mutation
+            )
+            else None
+        )
         result = permission_result if not may_execute else execute_tool_call(call)
         if may_execute:
             result = add_completion_hint(call, result, required_test)
+        _update_task_state_after_normal_tool(
+            task_state,
+            definition,
+            call,
+            result,
+            may_execute,
+            required_test,
+            event_seq,
+            pre_mutation_snapshot,
+        )
         if may_execute and counts_as_successful_duplicate(call, result):
             # 只有成功执行过的调用才记下来。失败的那次不该被锁定——
             # 模型换个参数重试是合理行为，拦它才是帮倒忙。
@@ -871,7 +1071,6 @@ def run_tool_round(
         print(f"Tool 结果 > {result}")
         messages.append(tool_result_message(call, result))
         if trace is not None:
-            definition = TOOL_REGISTRY.get(call.function.name)
             if definition is None:
                 approval = "N/A"
             elif definition.risk_level is RiskLevel.READ_ONLY:
@@ -891,14 +1090,10 @@ def run_tool_round(
                 result,
                 approval,
                 tool_executed,
+                event_seq=event_seq,
             )
-            print(
-                "Trace > "
-                f"Turn {event['turn']} | tool={event['tool']} | "
-                f"args={event['arguments']} | approval={event['approval']} | "
-                f"result={event['result']} | exit_code={event['exit_code']} | "
-                f"write_target={event['write_target']}"
-            )
+            trace.set_task_state(task_state)
+            _print_trace_event(event)
 
 
 def finalize(messages: list[dict], message: ChatCompletionMessage) -> None:
@@ -916,60 +1111,103 @@ def run_agent_loop(
     approval_callback: ApprovalCallback,
     trace: CodingTaskTrace | None = None,
     required_test: RequiredTest | None = None,
+    contract: CodingTaskContract | None = None,
+    task_state: TaskState | None = None,
 ) -> None:
     """把「问模型 → 执行工具 → 回喂 → 再问」装进循环。
 
-    它不认识任何工具名字，所以工具从 1 个变成 3 个，它照样工作。
+    它不认识普通工具的具体名字；CONTROL_FLOW 工具由专用分发器处理。
 
     循环体只做一件事：问一次模型。然后分岔——
       有 tool_calls → 执行并回喂 → 回到循环开头再问一次
-      没有 tool_calls → 这就是最终回答，循环结束
-    退出循环只有这两条路，没有第三条。
+      没有 tool_calls → 普通聊天直接收口；Coding Task 提醒模型调用 finish_task
+      finish_task 被 Gate 接受 → Coding Task 进入 FINISHED
 
     为什么 while 写在这一处、而不是散在几个地方：
     模型每次回话都可能要求继续调工具，谁来决定「够了，停」只能是这个循环。
 
-    MAX_AGENT_STEPS 是最后一层保险丝，数的是「问了几次模型」：
-    每一轮都先问再执行，所以能执行的工具轮数最多是 MAX_AGENT_STEPS - 1
-    （最后一次问必须用来收口给答案，否则工具结果发不出去、没有模型回答）。
-    它不是唯一那一层——正常情况应该由模型自己判完就收口，
-    重复调用检测负责在它原地打转时提醒一次；走到这里说明前两层都没拦住。
-    达到上限时任务就此停止，模型最后一句「我还要调工具」被丢掉——
-    那条孤立记录故意不进历史，下一轮提问的历史必须始终是合法的。
+    MAX_AGENT_STEPS 是最后一层保险丝，数的是「问了几次模型」。
+    每个允许的模型响应都会先完整处理到第一个 CONTROL_FLOW 调用为止，
+    因而最后一步合法的 finish_task 可以优先进入 FINISHED。若该步没有
+    成功完成，所有已处理的工具结果仍保留在 canonical history，随后状态才
+    进入 LIMIT_REACHED。
     """
+    if contract is not None:
+        if task_state is None:
+            task_state = TaskState(initial_snapshot=snapshot_workspace(WORKSPACE_DIR))
+        if required_test is None:
+            required_test = (
+                contract.test_command.command,
+                contract.test_command.args,
+                contract.test_command.cwd,
+            )
+        if trace is not None:
+            trace.set_task_state(task_state)
+
     reply = first_reply
 
     for step in range(1, MAX_AGENT_STEPS + 1):
         if trace is not None:
             trace.record_model_turn(step, reply)
         if not reply.message.tool_calls:
-            # 模型决定直接回答：当前任务完成
             finalize(messages, reply.message)
             if trace is not None:
                 print(f"Trace > Turn {step} | action=Final Answer")
+            if contract is None:
+                return
+            if step == MAX_AGENT_STEPS:
+                task_state.status = TaskStatus.LIMIT_REACHED
+                if trace is not None:
+                    trace.mark_max_steps()
+                    trace.set_task_state(task_state)
+                print(f"\n[已达到最大步骤数 {MAX_AGENT_STEPS}，Coding Task 未调用 finish_task]")
+                return
+
+            messages.append({"role": "user", "content": CODING_FINISH_PROTOCOL_NOTICE})
+            print(f"Runtime > {CODING_FINISH_PROTOCOL_NOTICE}")
+            try:
+                reply = ask(client, model, build_model_context(messages))
+            except Exception as exc:
+                _record_runtime_error(task_state, trace, exc)
+                raise
+            log_reply(step + 1, reply)
+            continue
+
+        try:
+            run_tool_round(
+                messages,
+                reply.message,
+                executed,
+                approval_callback,
+                trace=trace,
+                turn=step,
+                required_test=required_test,
+                contract=contract,
+                task_state=task_state,
+            )
+        except Exception as exc:
+            _record_runtime_error(task_state, trace, exc)
+            raise
+        if task_state is not None and task_state.status is TaskStatus.FINISHED:
+            if trace is not None:
+                trace.set_task_state(task_state)
             return
 
         if step == MAX_AGENT_STEPS:
+            if task_state is not None:
+                task_state.status = TaskStatus.LIMIT_REACHED
             if trace is not None:
                 trace.mark_max_steps()
-            print(
-                f"\n[已达到最大步骤数 {MAX_AGENT_STEPS}，停止当前任务；"
-                "此时模型仍要求调用工具]"
-            )
+                trace.set_task_state(task_state)
+            print(f"\n[已达到最大步骤数 {MAX_AGENT_STEPS}，停止当前任务]")
             return
 
-        # 还有预算，就执行并回喂；下一轮循环再问模型，由它决定继续还是收口
-        run_tool_round(
-            messages,
-            reply.message,
-            executed,
-            approval_callback,
-            trace=trace,
-            turn=step,
-            required_test=required_test,
-        )
         # Keep canonical history intact; only shrink the outbound model view.
-        reply = ask(client, model, build_model_context(messages))
+        try:
+            reply = ask(client, model, build_model_context(messages))
+        except Exception as exc:
+            _record_runtime_error(task_state, trace, exc)
+            raise
         log_reply(step + 1, reply)
 
 
@@ -990,6 +1228,41 @@ def print_environment(config: LLMConfig) -> None:
     print("每次请求会打印 finish_reason 和 token 用量（服务商没返回就显示 unavailable）")
 
 
+def restore_coding_session(
+    record: dict,
+) -> tuple[CodingTaskContract | None, TaskState | None]:
+    """Restore the paired Coding Contract and TaskState from one Session."""
+    encoded_contract = record.get("coding_contract")
+    if encoded_contract is None:
+        return None, None
+    try:
+        contract = CodingTaskContract.from_dict(encoded_contract)
+    except ValueError as exc:
+        raise SessionError(f"Session 的 coding_contract 无效：{exc}") from exc
+    task_state = load_task_state(record)
+    if task_state.status is not TaskStatus.RUNNING:
+        raise SessionError(
+            f"Coding Session 状态为 {task_state.status.value}，不能继续恢复执行"
+        )
+    return contract, task_state
+
+
+def update_coding_session_record(
+    record: dict,
+    contract: CodingTaskContract,
+    task_state: TaskState,
+    messages: list[dict],
+    model: str,
+    context_mode: str,
+) -> None:
+    """Keep a resumable Coding Session limited to canonical runtime facts."""
+    record["messages"] = messages
+    record["model"] = model
+    record["context_mode"] = context_mode
+    record["coding_contract"] = contract.as_dict()
+    record["task_state"] = task_state.as_dict()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the interactive Mini Agent")
     parser.add_argument("--resume", metavar="SESSION_ID", help="恢复一个已保存的 Session")
@@ -998,9 +1271,12 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config()
     print_environment(config)
 
+    coding_contract: CodingTaskContract | None = None
+    task_state: TaskState | None = None
     if args.resume:
         try:
             record = load_session(args.resume)
+            coding_contract, task_state = restore_coding_session(record)
         except SessionError as exc:
             print(f"[Session错误] {exc}", file=sys.stderr)
             return 2
@@ -1055,12 +1331,44 @@ def main(argv: list[str] | None = None) -> int:
                     executed,
                     approval_callback,
                     trace=trace,
+                    contract=coding_contract,
+                    task_state=task_state,
                 )
             except (APIError, ConnectionError, TimeoutError) as exc:
                 # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通。
                 # 代码自身的 bug 不在此列，应当让它正常抛出来，方便你发现真问题。
+                if coding_contract is not None and task_state is not None:
+                    _record_runtime_error(task_state, trace, exc)
+                    update_coding_session_record(
+                        record,
+                        coding_contract,
+                        task_state,
+                        messages,
+                        config.model,
+                        get_context_mode(),
+                    )
+                    save_session(record)
+                    print(f"\n[请求失败] {exc}")
+                    return 1
                 del messages[position:]
                 print(f"\n[请求失败] {exc}")
+                continue
+
+            if coding_contract is not None and task_state is not None:
+                update_coding_session_record(
+                    record,
+                    coding_contract,
+                    task_state,
+                    messages,
+                    config.model,
+                    get_context_mode(),
+                )
+                save_session(record)
+                print(f"Session 已保存：{session_id}")
+                if task_state.status is TaskStatus.FINISHED:
+                    return 0
+                if task_state.status in {TaskStatus.LIMIT_REACHED, TaskStatus.ERROR}:
+                    return 1
                 continue
 
             last = messages[-1] if messages else {}

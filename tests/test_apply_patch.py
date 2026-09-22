@@ -57,7 +57,7 @@ class ApplyPatchTests(unittest.TestCase):
 
     def test_registry_exposes_apply_patch_as_side_effect(self):
         definition = tools.TOOL_REGISTRY["apply_patch"]
-        self.assertIs(tools.AVAILABLE_TOOLS[-2], definition.schema)
+        self.assertIn(definition.schema, tools.AVAILABLE_TOOLS)
         self.assertEqual(definition.risk_level, tools.RiskLevel.SIDE_EFFECT)
         self.assertEqual(
             set(definition.schema["function"]["parameters"]["properties"]),
@@ -355,6 +355,15 @@ class ApplyPatchTests(unittest.TestCase):
             encoding="utf-8",
         )
         before = acceptance.snapshot_workspace(self.workspace)
+        contract = acceptance.CodingTaskContract.from_dict({
+            "task_id": "patch_test",
+            "instruction": "修复 calculator.py",
+            "allowed_paths": ["calculator.py"],
+            "test_command": {
+                "command": "python",
+                "args": ["-m", "unittest", "test_calculator", "-q"],
+            },
+        })
         first = main.ModelReply(
             fake_message("patch", "apply_patch", {
                 "path": "calculator.py", "old_text": "return a - b", "new_text": "return a + b"
@@ -368,10 +377,14 @@ class ApplyPatchTests(unittest.TestCase):
                 }),
                 "tool_calls", 10, 2, 12,
             ),
-            main.ModelReply(SimpleNamespace(content="patch → test → final", tool_calls=None), "stop", 10, 2, 12),
+            main.ModelReply(
+                fake_message("finish", "finish_task", {"summary": "patch → test → finish"}),
+                "tool_calls", 10, 2, 12,
+            ),
         ]
         messages = [{"role": "user", "content": "修复 calculator.py"}]
         trace = main.CodingTaskTrace()
+        task_state = acceptance.TaskState(initial_snapshot=before)
         with patch.object(main, "ask", side_effect=following):
             main.run_agent_loop(
                 None,
@@ -382,20 +395,15 @@ class ApplyPatchTests(unittest.TestCase):
                 main.always_allow,
                 trace=trace,
                 required_test=("python", ("-m", "unittest", "test_calculator", "-q"), "."),
+                contract=contract,
+                task_state=task_state,
             )
 
         result = acceptance.verify_contract(
-            acceptance.CodingTaskContract.from_dict({
-                "task_id": "patch_test",
-                "instruction": "修复 calculator.py",
-                "allowed_paths": ["calculator.py"],
-                "test_command": {
-                    "command": "python",
-                    "args": ["-m", "unittest", "test_calculator", "-q"],
-                },
-            }),
+            contract,
             self.workspace,
             before,
+            task_state=task_state,
             agent_final_answer_present=trace.final_answer is not None,
             agent_ran_required_test=trace.successful_commands == 1,
             max_steps_reached=trace.max_steps_reached,
@@ -404,7 +412,7 @@ class ApplyPatchTests(unittest.TestCase):
         self.assertEqual(trace.apply_patch_calls, 1)
         self.assertEqual(trace.patch_successes, 1)
         self.assertEqual(trace.run_command_calls, 1)
-        self.assertEqual(trace.final_answer, "patch → test → final")
+        self.assertEqual(task_state.finish_message, "patch → test → finish")
 
 
 if __name__ == "__main__":

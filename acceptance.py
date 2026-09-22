@@ -5,7 +5,8 @@ it compares workspace snapshots, validates and runs the contract's fixed test
 command, then returns an explainable acceptance result.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +16,130 @@ import tools
 
 
 _GENERATED_FILE_SUFFIXES = {".pyc", ".pyo"}
+
+
+class TaskStatus(str, Enum):
+    """The small, persisted lifecycle for one Coding Task."""
+
+    RUNNING = "RUNNING"
+    FINISHED = "FINISHED"
+    LIMIT_REACHED = "LIMIT_REACHED"
+    ERROR = "ERROR"
+
+
+@dataclass
+class TaskState:
+    """Deterministic state used by the Coding Task finish protocol.
+
+    ``event_seq`` is a task-local logical clock.  It intentionally avoids
+    wall-clock timestamps so a successful required test is fresh exactly when
+    its event sequence is newer than the last workspace mutation.
+    """
+
+    status: TaskStatus = TaskStatus.RUNNING
+    event_seq: int = 0
+    last_mutation_event_seq: int | None = None
+    last_successful_exact_required_test_seq: int | None = None
+    finish_message: str | None = None
+    last_finish_rejection: dict[str, Any] | None = None
+    unresolved_runtime_error: str | None = None
+    finish_attempts: list[dict[str, Any]] = field(default_factory=list)
+    initial_snapshot: dict[str, str] = field(default_factory=dict)
+
+    def next_event(self) -> int:
+        self.event_seq += 1
+        return self.event_seq
+
+    def record_finish_attempt(
+        self, summary: str, accepted: bool, reasons: list[str]
+    ) -> None:
+        attempt = {
+            "event_seq": self.event_seq,
+            "summary": summary,
+            "status": "FINISHED" if accepted else "REJECTED",
+            "reasons": list(reasons),
+        }
+        self.finish_attempts.append(attempt)
+        if accepted:
+            self.status = TaskStatus.FINISHED
+            self.finish_message = summary
+        else:
+            self.last_finish_rejection = attempt
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "event_seq": self.event_seq,
+            "last_mutation_event_seq": self.last_mutation_event_seq,
+            "last_successful_exact_required_test_seq": (
+                self.last_successful_exact_required_test_seq
+            ),
+            "finish_message": self.finish_message,
+            "last_finish_rejection": self.last_finish_rejection,
+            "unresolved_runtime_error": self.unresolved_runtime_error,
+            "finish_attempts": list(self.finish_attempts),
+            "initial_snapshot": dict(self.initial_snapshot),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "TaskState":
+        if not isinstance(value, dict):
+            raise ValueError("task_state 必须是对象")
+
+        try:
+            status = TaskStatus(value.get("status", TaskStatus.RUNNING.value))
+        except ValueError as exc:
+            raise ValueError("task_state.status 不受支持") from exc
+
+        def optional_sequence(name: str) -> int | None:
+            sequence = value.get(name)
+            if sequence is None:
+                return None
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+                raise ValueError(f"task_state.{name} 必须是非负整数或 null")
+            return sequence
+
+        event_seq = value.get("event_seq", 0)
+        if isinstance(event_seq, bool) or not isinstance(event_seq, int) or event_seq < 0:
+            raise ValueError("task_state.event_seq 必须是非负整数")
+
+        mutation_seq = optional_sequence("last_mutation_event_seq")
+        test_seq = optional_sequence("last_successful_exact_required_test_seq")
+        if any(sequence is not None and sequence > event_seq for sequence in (mutation_seq, test_seq)):
+            raise ValueError("task_state 事件序号不能超过 event_seq")
+
+        snapshot = value.get("initial_snapshot", {})
+        if not isinstance(snapshot, dict) or any(
+            not isinstance(path, str) or not isinstance(digest, str)
+            for path, digest in snapshot.items()
+        ):
+            raise ValueError("task_state.initial_snapshot 必须是字符串映射")
+
+        finish_message = value.get("finish_message")
+        runtime_error = value.get("unresolved_runtime_error")
+        if finish_message is not None and not isinstance(finish_message, str):
+            raise ValueError("task_state.finish_message 必须是字符串或 null")
+        if runtime_error is not None and not isinstance(runtime_error, str):
+            raise ValueError("task_state.unresolved_runtime_error 必须是字符串或 null")
+
+        rejection = value.get("last_finish_rejection")
+        if rejection is not None and not isinstance(rejection, dict):
+            raise ValueError("task_state.last_finish_rejection 必须是对象或 null")
+        attempts = value.get("finish_attempts", [])
+        if not isinstance(attempts, list) or any(not isinstance(item, dict) for item in attempts):
+            raise ValueError("task_state.finish_attempts 必须是对象数组")
+
+        return cls(
+            status=status,
+            event_seq=event_seq,
+            last_mutation_event_seq=mutation_seq,
+            last_successful_exact_required_test_seq=test_seq,
+            finish_message=finish_message,
+            last_finish_rejection=dict(rejection) if rejection is not None else None,
+            unresolved_runtime_error=runtime_error,
+            finish_attempts=[dict(item) for item in attempts],
+            initial_snapshot=dict(snapshot),
+        )
 
 
 def _normalise_relative_path(value: str, field_name: str) -> str:
@@ -130,7 +255,8 @@ def coding_task_guidance(contract: CodingTaskContract) -> str:
         "Coding Task 收口规则：目标文件是 "
         f"{allowed}；必需测试命令是 `{test}`（cwd={contract.test_command.cwd}）。"
         "当代码改动已完成、该测试成功、没有新错误且没有未满足要求时，"
-        "不要重复读取、写入或测试，直接 Final Answer，简要说明改动和测试结果。"
+        "不要重复读取、写入或测试；调用 finish_task(summary=...) 请求完成，"
+        "并在 summary 中简要说明改动和测试结果。普通 Final Answer 不会完成 Coding Task。"
     )
 
 
@@ -175,6 +301,71 @@ def changed_files(before: dict[str, str], after: dict[str, str]) -> list[str]:
     )
 
 
+@dataclass(frozen=True)
+class FinishGateResult:
+    """A deterministic decision for one ``finish_task`` request."""
+
+    accepted: bool
+    reasons: tuple[str, ...]
+    changed_files: tuple[str, ...] = ()
+    unexpected_changes: tuple[str, ...] = ()
+    required_test: TestCommand | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": "FINISHED" if self.accepted else "REJECTED",
+            "reasons": list(self.reasons),
+        }
+        if not self.accepted and self.required_test is not None:
+            result["required_test"] = self.required_test.as_dict()
+        return result
+
+
+def evaluate_finish_request(
+    contract: CodingTaskContract | None,
+    task_state: TaskState,
+    workspace: str | Path,
+) -> FinishGateResult:
+    """Allow FINISHED only when the current structured Coding Task facts pass.
+
+    This gate only reads current state and snapshots.  It never invokes a
+    model, changes files, or runs a test command.
+    """
+    if contract is None:
+        return FinishGateResult(False, ("coding_contract_missing",))
+
+    current_snapshot = snapshot_workspace(workspace)
+    changed = changed_files(task_state.initial_snapshot, current_snapshot)
+    unexpected = tuple(path for path in changed if path not in contract.allowed_paths)
+    reasons: list[str] = []
+
+    if unexpected:
+        reasons.extend(f"unexpected_change:{path}" for path in unexpected)
+
+    test_seq = task_state.last_successful_exact_required_test_seq
+    if contract.require_test_pass and test_seq is None:
+        reasons.append("successful_exact_required_test_missing")
+
+    mutation_seq = task_state.last_mutation_event_seq
+    if (
+        contract.require_test_pass
+        and mutation_seq is not None
+        and (test_seq is None or test_seq <= mutation_seq)
+    ):
+        reasons.append("successful_exact_required_test_stale")
+
+    if task_state.unresolved_runtime_error:
+        reasons.append("unresolved_runtime_error")
+
+    return FinishGateResult(
+        not reasons,
+        tuple(reasons),
+        tuple(changed),
+        unexpected,
+        contract.test_command,
+    )
+
+
 def _parse_exit_code(result: str) -> int | None:
     for line in result.splitlines():
         if not line.startswith("Exit code: "):
@@ -192,8 +383,9 @@ def verify_contract(
     workspace: str | Path,
     initial_snapshot: dict[str, str],
     *,
-    agent_final_answer_present: bool,
-    agent_ran_required_test: bool,
+    task_state: TaskState | None = None,
+    agent_final_answer_present: bool = False,
+    agent_ran_required_test: bool = False,
     max_steps_reached: bool = False,
     runtime_exception: str | None = None,
 ) -> dict[str, Any]:
@@ -221,12 +413,32 @@ def verify_contract(
     artifact_passed = not unexpected and (
         not contract.require_test_pass or final_test_passed
     ) and test_error is None
-    interaction_completed = agent_final_answer_present and not max_steps_reached
 
-    reasons = []
-    if not agent_final_answer_present:
-        reasons.append("agent_final_answer_missing")
-    if max_steps_reached:
+    # Only a run that actually drove the finish protocol can be judged on
+    # finish_task. Callers without a TaskState never enforced it, so they keep
+    # the plain Final Answer rule instead of being blamed for skipping a tool
+    # they were never told to call.
+    reasons: list[str] = []
+    if task_state is not None:
+        interaction_completed = task_state.status is TaskStatus.FINISHED
+        if not interaction_completed:
+            reasons.append("finish_task_not_accepted")
+    else:
+        interaction_completed = agent_final_answer_present and not max_steps_reached
+        if not agent_final_answer_present:
+            reasons.append("agent_final_answer_missing")
+
+    agent_self_verified = (
+        task_state is not None
+        and task_state.last_successful_exact_required_test_seq is not None
+        and (
+            task_state.last_mutation_event_seq is None
+            or task_state.last_successful_exact_required_test_seq
+            > task_state.last_mutation_event_seq
+        )
+    )
+
+    if max_steps_reached and not interaction_completed:
         reasons.append("max_agent_steps_reached")
     if runtime_exception:
         reasons.append(f"runtime_exception: {runtime_exception}")
@@ -244,9 +456,11 @@ def verify_contract(
         "changed_files": changed,
         "unexpected_changes": unexpected,
         "agent_ran_required_test": agent_ran_required_test,
+        "agent_self_verified": agent_self_verified,
         "final_test_exit_code": final_test_exit_code,
         "final_test_passed": final_test_passed,
         "agent_final_answer_present": agent_final_answer_present,
+        "task_status": task_state.status.value if task_state is not None else None,
         "max_steps_reached": max_steps_reached,
         "runtime_exception": runtime_exception,
         "reasons": reasons,

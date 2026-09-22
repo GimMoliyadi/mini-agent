@@ -46,10 +46,21 @@ class AcceptanceTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def verify(self, **kwargs):
+        task_state = kwargs.pop(
+            "task_state",
+            acceptance.TaskState(
+                status=acceptance.TaskStatus.FINISHED,
+                event_seq=2,
+                last_mutation_event_seq=1,
+                last_successful_exact_required_test_seq=2,
+                initial_snapshot=self.before,
+            ),
+        )
         return acceptance.verify_contract(
             self.contract,
             self.workspace,
             self.before,
+            task_state=task_state,
             agent_final_answer_present=kwargs.pop("final", True),
             agent_ran_required_test=kwargs.pop("agent_test", True),
             **kwargs,
@@ -113,7 +124,10 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_mock_d_artifact_passes_but_missing_final_is_not_accepted(self):
         self.fix_calculator()
-        result = self.verify(final=False, max_steps_reached=True)
+        result = self.verify(
+            task_state=acceptance.TaskState(initial_snapshot=self.before),
+            max_steps_reached=True,
+        )
         self.assertTrue(result["artifact_passed"])
         self.assertFalse(result["interaction_completed"])
         self.assertFalse(result["accepted"])
@@ -140,6 +154,39 @@ class AcceptanceTests(unittest.TestCase):
         cache.mkdir()
         (cache / "test_calculator.cpython-311.pyc").write_bytes(b"cache")
         self.assertEqual(acceptance.snapshot_workspace(self.workspace), self.before)
+
+    def test_legacy_caller_without_task_state_keeps_final_answer_rule(self):
+        """Phase 18-20 eval harnesses never drive the finish protocol."""
+        self.fix_calculator()
+        result = acceptance.verify_contract(
+            self.contract,
+            self.workspace,
+            self.before,
+            agent_final_answer_present=True,
+            agent_ran_required_test=True,
+        )
+        self.assertTrue(result["interaction_completed"])
+        self.assertTrue(result["accepted"])
+        self.assertFalse(result["agent_self_verified"])
+        self.assertEqual(result["task_status"], None)
+        self.assertNotIn("finish_task_not_accepted", result["reasons"])
+
+        missing_final = acceptance.verify_contract(
+            self.contract,
+            self.workspace,
+            self.before,
+            agent_final_answer_present=False,
+        )
+        self.assertFalse(missing_final["interaction_completed"])
+        self.assertIn("agent_final_answer_missing", missing_final["reasons"])
+        self.assertNotIn("finish_task_not_accepted", missing_final["reasons"])
+
+    def test_finish_at_the_step_limit_is_not_counted_as_a_limit_failure(self):
+        self.fix_calculator()
+        result = self.verify(max_steps_reached=True)
+        self.assertTrue(result["interaction_completed"])
+        self.assertTrue(result["accepted"])
+        self.assertNotIn("max_agent_steps_reached", result["reasons"])
 
     def test_verifier_uses_fixed_command_and_does_not_call_an_llm(self):
         self.fix_calculator()

@@ -1301,3 +1301,90 @@ $env:PYTHONPATH = (Join-Path (Get-Location) "eval")
 
 本次只修复和记录启动方式，未重新启动 Recovery Treatment；Runtime、Prompt、Provider、Contract、Tool Schema
 和 `MAX_AGENT_STEPS` 均未修改。
+
+## Phase 21 真实运行：Explicit Finish Protocol
+
+### 1. 运行条件
+
+- Fixture：`tests/fixtures/repo_fixture`（MEDIUM），Contract：`tests/fixtures/repo_contract.json`
+- 任务：修复 `calculate_discount`，让对应测试通过；allowed path 仅 `src/pricing.py`
+- 必需测试：`python -m unittest discover -s tests -p test_pricing.py -q`（`require_test_pass=true`）
+- Provider：`sensenova-6.8-flash-lite`，`MAX_AGENT_STEPS=8`，`TOOL_APPROVAL_MODE=ALLOW`
+- 工作区：临时目录，`AGENT_WORKSPACE` 指向副本；不触碰任何已检入或用户文件
+
+### 2. 首次尝试：ASK 模式下的硬阻塞
+
+第一次运行未显式设置审批模式，落到 `DEFAULT_APPROVAL_MODE=ASK`。
+在非交互子进程里没有 TTY，`input()` 返回 EOF，`ask_for_approval` 按安全默认拒绝所有副作用工具：
+
+```text
+list_files ×3 → read_file ×3 → apply_patch(DENY) → read_file ×3 → Final Answer
+→ nudge「Coding task is still RUNNING」→ read_file(DUPLICATE_BLOCKED) → run_command(DENY)
+```
+
+`finish_task_calls=0`，`max_steps_reached=true`，`task_status=LIMIT_REACHED`，
+`finish_attempts=[]`，`changed_files=[]`，`event_seq=11`，`total_tokens=23660`。
+
+结论：这条失败不是 Phase 21 的缺陷。模型始终没有机会写文件，因此没有 mutation、没有测试通过、
+也就没有理由调用 `finish_task`。状态机在缺少 finish 的情况下把任务正确判定为 `LIMIT_REACHED`，
+三个 reason（`finish_task_not_accepted`、`max_agent_steps_reached`、`final_test_failed`）全部成立。
+它同时验证了一个新事实：ASK + 非交互 = Coding Task 必然失败。
+
+### 3. 正式运行：ALLOW 模式
+
+```text
+Turn 1  list_files()                              seq=1  approval=AUTO
+Turn 1  read_file(src/pricing.py)                 seq=2  approval=AUTO
+Turn 1  read_file(tests/test_pricing.py)          seq=3  approval=AUTO
+Turn 2  apply_patch(src/pricing.py)               seq=4  approval=ALLOW   ← last_mutation_event_seq
+Turn 3  run_command(exact required test, exit 0)  seq=5  approval=ALLOW   ← last_successful_exact_required_test_seq
+Turn 4  finish_task(summary=...)                  seq=6  approval=CONTROL_FLOW  → FINISHED
+```
+
+修复内容：`return price * rate` → `return price * (1 - rate)`。
+模型自行识别了唯一正确的修复，没有改动测试文件，没有多余的写入。
+
+### 4. Finish 协议行为
+
+- `finish_task_calls=1`，`finish_successes=1`，`finish_rejections=0`
+- `approval=CONTROL_FLOW`：全程未走普通 Approval 路径
+- Gate 返回 `{"status":"FINISHED","reasons":[],"event_seq":6}`
+- `model_calls=4`，`total_tokens=10882`，`max_steps_reached=false`
+- 对用户的 `answer` 取自 `task_state.finish_message`，不是普通 Final Answer
+
+freshness 顺序 `5 > 4`（测试成功晚于最后一次改动）是 Gate 接受的直接依据。
+
+### 5. 独立 Verifier
+
+Verifier 与 Finish Gate 是两条独立判定线，没有相互替代：
+
+```text
+artifact_passed          true
+interaction_completed    true
+agent_self_verified      true
+accepted                 true
+unexpected_changes       []
+changed_files            [src/pricing.py]
+final_test_exit_code     0          ← Verifier 重新执行 Contract 固定命令
+agent_ran_required_test  true
+reasons                  []
+```
+
+Verifier 的 `final_test_exit_code=0` 来自它自己重新执行测试，不是信任 Agent 的自述，
+也不是信任 Gate 的结论。
+
+### 6. 与前序阶段对比
+
+Phase 15–20 的收口信号是「模型给出普通 Final Answer」，模型无法区分「完成了」和「不知道说什么」；
+Phase 19 的 n=3 实验里 `agent_ran_required_test` 仍只有 `2/2`（有效分母），提示可见性只能改善、不能保证。
+Phase 21 把「完成」变成 Runtime 可判定的一次请求，模型即使判断失误也会被 Gate 拦下并拿到精确的补救信息。
+
+本次运行是单次观测（n=1），只能证明协议在一条真实链路上端到端可用，不构成稳定性或因果结论。
+
+### 7. 离线闭环
+
+真实运行之前已完成：Phase 21 全量单测通过，`compileall` 通过，`git diff --check` 无空白错误。
+全量回归 `python -m unittest discover -s tests -p "test*.py"`：**149 项通过，1 项 Windows 符号链接
+能力测试跳过**。
+
+原始记录：`eval/phase21_real_run.json`（含 trace 逐事件 `event_seq`、classification、approval）。

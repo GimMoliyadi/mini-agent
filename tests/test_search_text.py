@@ -269,10 +269,15 @@ class SearchTextTests(unittest.TestCase):
                 "run_command",
                 {"command": "python", "args": list(contract.test_command.args), "cwd": "."},
             ),
-            model_final_reply("已修复 calculate_discount，并通过对应测试。"),
+            model_tool_reply(
+                "finish",
+                "finish_task",
+                {"summary": "已修复 calculate_discount，并通过对应测试。"},
+            ),
         ]
         messages = [{"role": "user", "content": contract.instruction}]
         trace = main.CodingTaskTrace()
+        task_state = acceptance.TaskState(initial_snapshot=before)
         with patch.object(main, "ask", side_effect=following):
             main.run_agent_loop(
                 None,
@@ -287,12 +292,15 @@ class SearchTextTests(unittest.TestCase):
                     contract.test_command.args,
                     contract.test_command.cwd,
                 ),
+                contract=contract,
+                task_state=task_state,
             )
 
         result = acceptance.verify_contract(
             contract,
             workspace,
             before,
+            task_state=task_state,
             agent_final_answer_present=trace.final_answer is not None,
             agent_ran_required_test=True,
             max_steps_reached=trace.max_steps_reached,

@@ -56,9 +56,11 @@ def check_registry() -> None:
     expected_risks = {
         "list_files": tools.RiskLevel.READ_ONLY,
         "read_file": tools.RiskLevel.READ_ONLY,
+        "search_text": tools.RiskLevel.READ_ONLY,
         "write_file": tools.RiskLevel.SIDE_EFFECT,
         "apply_patch": tools.RiskLevel.SIDE_EFFECT,
         "run_command": tools.RiskLevel.EXECUTION,
+        "finish_task": tools.RiskLevel.READ_ONLY,
     }
     assert schema_names == registry_names, (
         f"正式工具 Schema 和 Registry 不一致："
@@ -80,7 +82,15 @@ def check_registry() -> None:
         assert isinstance(definition.risk_level, tools.RiskLevel)
 
         declared_params = set(declared["parameters"]["properties"])
-        real_params = set(inspect.signature(handler).parameters)
+        signature = inspect.signature(handler)
+        real_params = {
+            parameter.name
+            for parameter in signature.parameters.values()
+            # run_command accepts this keyword-only Runtime injection so the
+            # independent verifier can point it at an isolated workspace. It
+            # is not model-visible and must not be exposed in the schema.
+            if parameter.name != "workspace"
+        }
         assert declared_params == real_params, (
             f"工具 {name} 的参数名对不上：说明书 {sorted(declared_params)}，"
             f"函数 {sorted(real_params)}"

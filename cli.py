@@ -8,6 +8,8 @@ from openai import APIError
 
 from acceptance import (
     CodingTaskContract,
+    TaskState,
+    TaskStatus,
     coding_task_guidance,
     load_contract,
     snapshot_workspace,
@@ -29,6 +31,11 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
     initial_snapshot = (
         snapshot_workspace(main.WORKSPACE_DIR) if contract is not None else None
     )
+    task_state = (
+        TaskState(initial_snapshot=initial_snapshot or {})
+        if contract is not None
+        else None
+    )
     config = load_config()
     client = None
     runtime_exception = None
@@ -44,6 +51,8 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
                     contract.test_command.args,
                     contract.test_command.cwd,
                 )
+                loop_options["contract"] = contract
+                loop_options["task_state"] = task_state
             main.run_agent_loop(
                 client,
                 config.model,
@@ -75,6 +84,11 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
         if client is not None:
             client.close()
 
+    if task_state is not None and runtime_exception is not None:
+        task_state.status = TaskStatus.ERROR
+        task_state.unresolved_runtime_error = runtime_exception
+        trace.set_task_state(task_state)
+
     last = messages[-1] if messages else {}
     answer = last.get("content") if last.get("role") == "assistant" and not last.get("tool_calls") else None
     if contract is None:
@@ -86,6 +100,7 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
         contract,
         main.WORKSPACE_DIR,
         initial_snapshot or {},
+        task_state=task_state,
         agent_final_answer_present=answer is not None,
         agent_ran_required_test=any(
             event.get("tool") == "run_command"
@@ -98,9 +113,10 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
     )
     return {
         "status": "completed" if acceptance["accepted"] else "incomplete",
-        "answer": answer,
+        "answer": task_state.finish_message if task_state is not None else answer,
         "error": None if acceptance["accepted"] else "; ".join(acceptance["reasons"]),
         "trace": trace.summary(),
+        "task_state": task_state.as_dict() if task_state is not None else None,
         "acceptance": acceptance,
     }
 

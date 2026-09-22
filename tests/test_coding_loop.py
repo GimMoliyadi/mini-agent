@@ -177,9 +177,9 @@ class CodingLoopTests(unittest.TestCase):
         self.assertTrue(trace.max_steps_reached)
         self.assertIsNone(trace.final_answer)
         self.assertEqual(trace.model_calls, main.MAX_AGENT_STEPS)
-        self.assertEqual(trace.tool_calls, main.MAX_AGENT_STEPS - 1)
+        self.assertEqual(trace.tool_calls, main.MAX_AGENT_STEPS)
         self.assertFalse(any(message.get("role") == "assistant" and not message.get("tool_calls") for message in messages))
-        self.assertEqual(trace.duplicate_blocked, main.MAX_AGENT_STEPS - 2)
+        self.assertEqual(trace.duplicate_blocked, main.MAX_AGENT_STEPS - 1)
 
     def test_mock_d_policy_reject_recovers_with_required_test_hint(self):
         fixed = "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n"

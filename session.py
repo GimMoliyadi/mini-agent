@@ -12,10 +12,13 @@ import re
 import tempfile
 import uuid
 
+from acceptance import CodingTaskContract, TaskState
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SESSIONS_DIR = PROJECT_ROOT / "sessions"
-SESSION_VERSION = 1
+SESSION_VERSION = 2
+_SUPPORTED_SESSION_VERSIONS = {1, SESSION_VERSION}
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _FORBIDDEN_TOP_LEVEL_KEYS = {
     "api_key",
@@ -102,7 +105,7 @@ def _validate_record(record: object) -> dict:
     missing = required.difference(record)
     if missing:
         raise SessionError(f"Session 缺少字段：{', '.join(sorted(missing))}")
-    if record["version"] != SESSION_VERSION:
+    if record["version"] not in _SUPPORTED_SESSION_VERSIONS:
         raise SessionError(f"不支持的 Session version：{record['version']!r}")
     _validate_session_id(record["session_id"])
     if not isinstance(record["model"], str) or not record["model"]:
@@ -110,10 +113,37 @@ def _validate_record(record: object) -> dict:
     _validate_messages(record["messages"])
     if "context_mode" in record and not isinstance(record["context_mode"], str):
         raise SessionError("Session 的 context_mode 必须是字符串")
+    if record["version"] == 1 and (
+        "task_state" in record or "coding_contract" in record
+    ):
+        raise SessionError("旧版 Session 不能包含 Coding Task 状态")
+    if "coding_contract" in record and "task_state" not in record:
+        raise SessionError("Coding Session 缺少 task_state，不能恢复 Coding Task")
+    if "task_state" in record and "coding_contract" not in record:
+        raise SessionError("Coding Session 缺少 coding_contract，不能恢复 Coding Task")
+    if "task_state" in record:
+        try:
+            record["task_state"] = TaskState.from_dict(record["task_state"]).as_dict()
+        except ValueError as exc:
+            raise SessionError(f"Session 的 task_state 无效：{exc}") from exc
+    if "coding_contract" in record:
+        try:
+            record["coding_contract"] = CodingTaskContract.from_dict(
+                record["coding_contract"]
+            ).as_dict()
+        except ValueError as exc:
+            raise SessionError(f"Session 的 coding_contract 无效：{exc}") from exc
     return record
 
 
-def create_session(model: str, messages: list[dict], context_mode: str | None = None) -> dict:
+def create_session(
+    model: str,
+    messages: list[dict],
+    context_mode: str | None = None,
+    *,
+    task_state: TaskState | dict | None = None,
+    coding_contract: CodingTaskContract | dict | None = None,
+) -> dict:
     """Create an unsaved session record containing canonical messages only."""
     now = _now()
     record = {
@@ -126,7 +156,29 @@ def create_session(model: str, messages: list[dict], context_mode: str | None = 
     }
     if context_mode is not None:
         record["context_mode"] = context_mode
+    if task_state is not None:
+        record["task_state"] = (
+            task_state.as_dict()
+            if isinstance(task_state, TaskState)
+            else task_state
+        )
+    if coding_contract is not None:
+        record["coding_contract"] = (
+            coding_contract.as_dict()
+            if isinstance(coding_contract, CodingTaskContract)
+            else coding_contract
+        )
     return _validate_record(record)
+
+
+def load_task_state(record: dict) -> TaskState:
+    """Return persisted Coding Task state or fail clearly for a legacy session."""
+    if "task_state" not in record:
+        raise SessionError("Coding Session 缺少 task_state，不能恢复 Coding Task")
+    try:
+        return TaskState.from_dict(record["task_state"])
+    except ValueError as exc:
+        raise SessionError(f"Session 的 task_state 无效：{exc}") from exc
 
 
 def _path_for(session_id: str) -> Path:

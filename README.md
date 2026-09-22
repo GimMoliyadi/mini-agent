@@ -733,3 +733,127 @@ $env:PYTHONPATH = (Join-Path (Get-Location) "eval")
 ```
 
 启动 smoke test 使用 `--help`，不会发起真实模型请求。
+
+## Phase 21 · Explicit Task Finish + Deterministic Finish Gate
+
+Phase 21 把 Coding Task 的“完成”从模型的普通文本收口，改成 Runtime 可判定的一次显式请求。
+模型仍然自己决定何时收口，但“是否真的完成”不再由自然语言推断，而由一份确定性规则决定。
+
+### 1. `finish_task(summary=...)`
+
+新增第七个工具 `finish_task`，唯一参数 `summary`（非空字符串），是接受时被展示给用户的最终说明。
+它不执行任何文件操作、不跑测试、不询问用户。Tool Registry 里的 `tool_kind` 把它标为
+`CONTROL_FLOW`，与 `risk_level` 正交：前者描述它参与循环的方式，后者描述它的副作用风险。
+
+三个隔离点，任一都不足以单独保证正确：
+
+1. `run_tool_round` 在普通工具分发之前先查 `tool_kind`，命中就交给专用分发器，`break` 结束本轮。
+2. `check_tool_permission` 对 `CONTROL_FLOW` 直接放行，因此它永远不进普通 Approval。
+3. `execute_tool_call` 对 `CONTROL_FLOW` 返回失败提示，作为最后一道防线。
+
+它也不进重复调用指纹表：finish 的结果从不写入 `executed`，所以
+`finish_task("done") → rejected → run required test → PASS → finish_task("done")`
+这条链路必须成立，第二次完全相同的调用不会被拦成“无新信息”。
+
+### 2. Control Flow 分发与本轮截断
+
+一个 assistant response 里可以并列多个 tool call。Runtime 只处理到**第一个** `CONTROL_FLOW` 调用为止，
+`tool_calls_through_control_flow` 返回这段前缀，并把它作为 assistant message 写回历史。
+
+这解决的不只是执行顺序：被截掉的调用如果写进 canonical history，就会留下没有对应 tool result 的
+`tool_call_id`，下一次请求会被提供商直接 400。所以截断同时作用于「执行」和「历史记录」两处，
+`session._validate_messages` 的配对校验会兜住任何漏网情况。
+
+Gate 拒绝也一样：`finish_task` 后面的 read / run 本轮不执行。它们不是被丢弃的错误，
+而是等模型在下一轮重新提出。
+
+### 3. Task State
+
+`acceptance.TaskState` 是一份极小的持久化生命周期，刻意不用时间戳：
+
+```
+status                            RUNNING | FINISHED | LIMIT_REACHED | ERROR
+event_seq                         任务内单调逻辑时钟，每个工具尝试消耗一个
+last_mutation_event_seq           真正改变 workspace 的那次事件序号
+last_successful_exact_required_test_seq   成功 exact required test 的事件序号
+finish_message                    Gate 接受时写入，作为对用户的最终回答
+last_finish_rejection             最近一次被拒的尝试（含 reasons）
+unresolved_runtime_error          Runtime 级失败
+finish_attempts                   全部尝试，保留拒绝历史
+initial_snapshot                  任务开始时的 workspace 摘要
+```
+
+关键在比较 `last_successful_exact_required_test_seq > last_mutation_event_seq`：
+它比“测试时间戳晚于写入时间戳”稳得多，测试重跑、时钟回拨都不影响判断。
+
+### 4. Finish Gate
+
+`acceptance.evaluate_finish_request(contract, task_state, workspace)` 是纯函数式的判定：
+只读 Contract、TaskState 和 workspace 摘要，不调模型、不改文件、不跑测试。
+
+按顺序检查：
+
+1. Contract 存在（缺失返回 `coding_contract_missing`）。
+2. `unexpected_changes` 为空 —— 改动了 `allowed_paths` 之外的文件则逐条 `unexpected_change:<path>`。
+3. `require_test_pass` 时，必须存在成功的 exact required test（`successful_exact_required_test_missing`）。
+4. 若发生过 mutation，成功测试必须发生在最后那次 mutation 之后（`successful_exact_required_test_stale`）。
+5. 没有未解决的 Runtime error。
+
+拒绝是**信息性**的：返回体带 `required_test` 的精确命令，让模型知道该补哪一步。
+Gate 从不判断“用户想要的大概完成了没有”。
+
+### 5. Freshness 只认两种事件
+
+`event_seq` 对所有工具尝试递增，但两个游标只在明确条件下移动：
+
+- `last_mutation_event_seq`：仅当工具定义标了 `workspace_mutation`（`write_file`、`apply_patch`）、
+  已获批准、无失败前缀，且前后 workspace 摘要确实不同。失败、被拒、duplicate、no-op 都不移动。
+- `last_successful_exact_required_test_seq`：仅当 `run_command` 的 command + args + cwd 与 Contract 完全一致，
+  且退出码为 0。
+
+失败的历史测试不留下永久污染：`test FAIL → patch → exact test PASS → finish_task` 最终可以通过，
+因为游标记的是「当前最新有效状态」，不是「历史上有没有失败过」。
+
+### 6. 普通 Final 的行为
+
+- **Contract 生效时**：普通 Final 不算完成。Runtime 追加一条 `CODING_FINISH_PROTOCOL_NOTICE`
+  （“Coding task is still RUNNING / call finish_task”）再问一次模型，状态保持 `RUNNING`。
+- **普通聊天**：完全不变。没有 Contract 时普通 Final 直接结束循环，`finish_task` 即使在 Schema 里可见
+  也只会被 Gate 拒绝并回喂原因，不影响任何状态。
+
+### 7. MAX_AGENT_STEPS 与 Finish 的优先级
+
+`MAX_AGENT_STEPS` 仍数「问了几次模型」，但每个被允许的模型响应都会先完整处理到第一个 CONTROL_FLOW 调用为止。
+因此最后一步上的合法 `finish_task` 优先进入 `FINISHED`，不会被步数上限抢先覆盖；
+若那一步被 Gate 拒绝，已处理完的工具结果仍留在 canonical history，随后状态进入 `LIMIT_REACHED`，
+拒绝记录照常保留。
+
+代价是：Contract 生效且模型反复给普通 Final 时，nudge 会让实际请求数最多接近两倍。
+这是 Phase 21 的设计取舍，不是缺陷。
+
+### 8. Session 持久化
+
+Session version 升到 2，同时接受 1。v1 记录被明确禁止携带 Coding 状态。
+`coding_contract` 与 `task_state` 必须成对出现，缺一即报错，避免存下一个无法解释的状态。
+
+保存的是 canonical messages，不是压缩视图；`build_model_context` 的压缩只作用于发往模型的出站副本。
+旧 Session 缺少 `task_state` 时，`restore_coding_session` 返回 `(None, None)` 并以普通聊天恢复——
+不 crash，也不伪造“测试已通过”。状态不是 `RUNNING` 的 Coding Session 拒绝继续执行。
+
+### 9. Acceptance
+
+`verify_contract` 的判定拆成两条互不替代的线：
+
+- `artifact_passed` 仍由独立 Verifier 决定，它重新执行 Contract 里的固定测试命令，与 Agent 自述无关。
+- `interaction_completed` 在传入 `task_state` 时等于 `status is FINISHED`；未传 `task_state` 的
+  旧调用方（Phase 18–20 评测脚本不驱动 finish 协议）保留「普通 Final + 未触上限」的语义，
+  否则会被记上一个它们从未被告知要调用工具的 `finish_task_not_accepted`。
+
+`accepted` 仍是两者与无 Runtime 异常的组合。Finish Gate 只是 Runtime 内的快速判定，
+独立 Verifier 不因此被绕过。另有 `agent_self_verified` 表示「测试成功且晚于最后一次改动」。
+
+### 10. Completion Hint
+
+required test 通过后的提示从“如果完成请 Final Answer”改为“请调用 `finish_task(summary=...)`”，
+同步更新了 coding task guidance、duplicate notice 和系统提示词。提示只是引导，
+真正完成仍必须走 `finish_task → Gate → FINISHED`。
