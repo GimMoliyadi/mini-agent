@@ -60,6 +60,7 @@ def run_task(task: str, contract: CodingTaskContract | None = None) -> dict:
                 )
                 loop_options["contract"] = contract
                 loop_options["task_state"] = task_state
+                loop_options["verifier_enabled"] = True
             main.run_agent_loop(
                 client,
                 config.model,

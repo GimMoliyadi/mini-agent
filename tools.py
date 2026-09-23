@@ -6,6 +6,7 @@
 """
 
 import os
+import json
 import subprocess
 import sys
 from collections.abc import Callable
@@ -51,6 +52,7 @@ class ToolDefinition:
     preflight: Callable[[dict], None] | None = None
     tool_kind: ToolKind = ToolKind.NORMAL
     workspace_mutation: bool = False
+    uses_runtime_context: bool = False
 
 # 工具的「说明书」。发给模型的不是函数本身，而是这份 JSON 描述；
 # 模型照着它生成一次工具调用请求。
@@ -272,6 +274,15 @@ FINISH_TASK_TOOL = {
             },
             "required": ["summary"],
         },
+    },
+}
+
+INSPECT_CAPABILITIES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "inspect_capabilities",
+        "description": "只读查看当前可调用 Tool 与 Runtime 自身能力及状态；回答能力问题时先调用。",
+        "parameters": {"type": "object", "properties": {}},
     },
 }
 
@@ -840,6 +851,12 @@ def finish_task(summary: str) -> str:
     return summary.strip()
 
 
+def inspect_capabilities(*, runtime_context: dict | None = None) -> str:
+    from capabilities import capability_snapshot
+
+    return json.dumps(capability_snapshot(runtime_context or {}), ensure_ascii=False, separators=(",", ":"))
+
+
 TOOL_REGISTRY = {
     "list_files": ToolDefinition(
         name="list_files",
@@ -890,6 +907,15 @@ TOOL_REGISTRY = {
         workspace_arguments=(),
         operation_path_argument=None,
         tool_kind=ToolKind.CONTROL_FLOW,
+    ),
+    "inspect_capabilities": ToolDefinition(
+        name="inspect_capabilities",
+        schema=INSPECT_CAPABILITIES_TOOL,
+        handler=inspect_capabilities,
+        risk_level=RiskLevel.READ_ONLY,
+        workspace_arguments=(),
+        operation_path_argument=None,
+        uses_runtime_context=True,
     ),
 }
 

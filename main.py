@@ -76,13 +76,17 @@ EXIT_COMMANDS = {"exit", "quit", "q"}
 # 这种合理的验证也一起砍掉。真正拦住重复动作的是重复调用检测。
 SYSTEM_PROMPT = (
     "你是一个运行在命令行里的助手。直接回答用户的问题，尽量简短，不要客套开场。\n"
-    "你有七个工具：list_files 看工作目录里有什么，search_text 按固定字符串递归搜索，"
+    "工具清单由 Runtime 提供：list_files 看工作目录里有什么，search_text 按固定字符串递归搜索，"
     "read_file 读文件内容，"
     "write_file 写入完整文本，apply_patch 对已有文件做唯一的精确局部替换，"
-    "run_command 执行受控的本地开发命令，finish_task 请求结束 Coding Task。\n"
+    "run_command 执行受控的本地开发命令，finish_task 请求结束 Coding Task，"
+    "inspect_capabilities 查看当前 Tool 与 Runtime 能力。\n"
     "run_command 只能使用 command + args 数组，允许 python -m pytest、"
     "python -m unittest、git status、git diff、git log；不要使用 shell 语法、"
     "python -c、pip、PowerShell、cmd 或网络命令。cwd 必须在工作目录内。\n"
+    "用户问当前有哪些工具、能执行什么或是否具有某项 Runtime 能力时，先调用 inspect_capabilities；"
+    "逐项核对 currently_available，不要把注册数量当成可用数量；"
+    "不要搜索工作目录源码来猜 Runtime 能力。普通知识问题无需调用。\n"
     "需要文件内容时去读，不要凭记忆编造；新建文件或确实需要整文件覆盖时用 write_file，"
     "修改已有文件的一小段时可以用 apply_patch。apply_patch 的 old_text 必须恰好匹配一次，"
     "失败时先重新 read_file，不要猜测或模糊修改。\n"
@@ -527,7 +531,7 @@ def limit_result_length(result: str) -> str:
     )
 
 
-def execute_tool_call(call) -> str:
+def execute_tool_call(call, runtime_context: dict | None = None) -> str:
     """执行一次工具调用，返回**模型能读懂的文本**结果。
 
     这一层做的事就三件：按名字查出 ToolDefinition → 调用 handler →
@@ -546,6 +550,8 @@ def execute_tool_call(call) -> str:
         if definition.tool_kind is ToolKind.CONTROL_FLOW:
             return f"{TOOL_FAILURE_PREFIX} 控制流工具必须由 Runtime 专用分发器处理"
         arguments = parse_tool_arguments(call)
+        if definition.uses_runtime_context:
+            return limit_result_length(definition.handler(**arguments, runtime_context=runtime_context))
         return limit_result_length(definition.handler(**arguments))
     except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
         # OSError 涵盖了 FileNotFoundError / PermissionError / IsADirectoryError，
@@ -938,6 +944,8 @@ def counts_as_successful_duplicate(call, result: str) -> bool:
         or is_duplicate_notice(result)
     ):
         return False
+    if call.function.name == "inspect_capabilities":
+        return False  # Its answer may change during the same task.
     if call.function.name == "run_command":
         return trace_exit_code(result) == "0"
     return True
@@ -1047,6 +1055,9 @@ def run_tool_round(
     contract: CodingTaskContract | None = None,
     task_state: TaskState | None = None,
     round_events: list[str] | None = None,
+    recovery: Recovery | None = None,
+    session_active: bool = False,
+    verifier_enabled: bool = False,
 ) -> tuple[object, str, bool] | None:
     """执行这一批工具调用，把「模型提了调用」和「调用结果」都写进历史。
 
@@ -1131,7 +1142,12 @@ def run_tool_round(
             )
             else None
         )
-        result = permission_result if not may_execute else execute_tool_call(call)
+        result = permission_result if not may_execute else execute_tool_call(
+            call,
+            {"contract": contract, "task_state": task_state,
+             "recovery": recovery, "session_active": session_active,
+             "verifier_enabled": verifier_enabled},
+        )
         if may_execute:
             result = add_completion_hint(call, result, required_test)
         mutated = _update_task_state_after_normal_tool(
@@ -1208,6 +1224,8 @@ def run_agent_loop(
     required_test: RequiredTest | None = None,
     contract: CodingTaskContract | None = None,
     task_state: TaskState | None = None,
+    session_active: bool = False,
+    verifier_enabled: bool = False,
 ) -> None:
     """把「问模型 → 执行工具 → 回喂 → 再问」装进循环。
 
@@ -1289,6 +1307,9 @@ def run_agent_loop(
                 contract=contract,
                 task_state=task_state,
                 round_events=round_events,
+                recovery=recovery,
+                session_active=session_active,
+                verifier_enabled=verifier_enabled,
             )
         except Exception as exc:
             _record_runtime_error(task_state, trace, exc)
@@ -1458,6 +1479,7 @@ def main(argv: list[str] | None = None) -> int:
                     trace=trace,
                     contract=coding_contract,
                     task_state=task_state,
+                    session_active=True,
                 )
             except (APIError, ConnectionError, TimeoutError, ApprovalUnavailableError) as exc:
                 # 只捕获「跟外界通信」相关的失败：鉴权、限流、超时、网络不通、审批通道缺失。

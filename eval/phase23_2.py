@@ -155,8 +155,11 @@ def _prepare_workspace(root: Path, baseline: dict, messages: list[dict]) -> tupl
     spec = phase22_5.setup("E", root, register=True)
     contract_data = phase22_5.contract(spec)
     contract = acceptance.CodingTaskContract.from_dict(contract_data)
-    initial_messages = harness._model_messages(contract)
-    if messages[: len(initial_messages)] != initial_messages:
+    initial_messages = [
+        messages[0],
+        {"role": "user", "content": contract.instruction + "\n\n" + acceptance.coding_task_guidance(contract)},
+    ]
+    if messages[0].get("role") != "system" or messages[: len(initial_messages)] != initial_messages:
         raise ValueError("Fixed prefix prompt or Contract differs from the saved run")
     if contract_data["test_command"] != {
         "command": phase23_budget.REQUIRED_TEST[0],
@@ -255,9 +258,10 @@ def _run_recovery(budget: int, scripted_replies: list | None = None) -> dict:
         raise ValueError(f"Fixed prefix executed-call state changed: expected 17, got {len(executed)}")
 
     manifest = _prior_payload()["manifest"]
-    if [item["function"]["name"] for item in main.AVAILABLE_TOOLS] != manifest["tool_names"]:
+    current_tools = {item["function"]["name"]: item for item in main.AVAILABLE_TOOLS}
+    if not set(manifest["tool_names"]) <= current_tools.keys():
         raise ValueError("Available tools differ from the fixed prefix manifest")
-    if main.AVAILABLE_TOOLS != manifest["tool_definitions"]:
+    if [current_tools[name] for name in manifest["tool_names"]] != manifest["tool_definitions"]:
         raise ValueError("Tool definitions differ from the fixed prefix manifest")
 
     config.load_env_file()
@@ -305,7 +309,7 @@ def _run_recovery(budget: int, scripted_replies: list | None = None) -> dict:
     main.WORKSPACE_DIR = root
     tools.WORKSPACE_DIR = root
     try:
-        with patch.object(main, "ask", side_effect=recording_ask):
+        with patch.object(main, "AVAILABLE_TOOLS", manifest["tool_definitions"]), patch.object(main, "ask", side_effect=recording_ask):
             try:
                 if scripted_replies is None:
                     client = main.build_client(model_config)

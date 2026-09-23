@@ -21,7 +21,31 @@
 选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
 两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
 
-## 当前状态：Phase 16
+## 当前状态：Phase 25
+
+### Runtime Capability Introspection
+
+**Runtime Tool Capability ≠ Runtime Feature**。`inspect_capabilities()` 只读返回
+`callable_tools` 与 `runtime_features`：前者从当前 `TOOL_REGISTRY` 生成，报告工具描述、
+风险、审批要求、当前可用性和不可用原因；后者报告 Session、Context、Sandbox、
+Finish Gate、Verifier、verification freshness、stage-aware recovery 等 Runtime 能力，
+并区分 `supported`、`active`、`current_state`。Runtime 能保存 Session，不表示模型能直接调用
+Session Tool；当前没有 rename/move Tool。`run_command` 受现有 command policy 限制，
+不是任意 shell。能力问题优先调用 `inspect_capabilities()`，不靠 sandbox 源码推测。
+
+### Windows 交互式启动
+
+首次在仓库目录创建环境并安装依赖：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+之后在 CMD 输入 `agent`，在 PowerShell 输入 `.\agent`，即进入现有 `main.py` 交互式 CLI。
+`agent.cmd` 使用脚本自身目录定位 `.venv\Scripts\python.exe` 和 `main.py`，不改全局 PATH；
+可从其他当前目录用脚本路径启动。`--resume SESSION_ID` 参数会原样传给正式入口。
+单任务 JSON 入口仍为 `cli.py --task ...`。
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -645,7 +669,7 @@ Acceptance 测试均通过。真实 Provider 最小请求成功，真实 Coding 
   Final → Acceptance Mock 闭环通过，全量 104 项测试通过（1 项 Windows 符号链接测试跳过）。真实模型请求
   因 Provider 连接错误未进入 Agent，未伪造真实调用或 token 结论。
 
-Phase 16 已收尾；下一阶段只做分析，不在本阶段自动开始。
+Phase 25 已加入 Runtime Capability Introspection 和 Windows launcher。
 
 > **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
 > 实际在 Phase 2 就和 `read_file` 一起做掉了。
