@@ -178,10 +178,67 @@ class FinishProtocolTests(unittest.TestCase):
         self.assertEqual(trace.failed_commands, 1)
         self.assertEqual(trace.successful_commands, 1)
         self.assertEqual(trace.recovery_grace, "FAIL")
-        self.assertEqual(trace.final_model_call_limit, 11)
+        self.assertEqual(trace.final_model_call_limit, 15)
         self.assertIs(state.status, acceptance.TaskStatus.FINISHED)
         self.assertFalse(trace.max_steps_reached)
         self.assert_history_is_paired(messages)
+
+    def test_stage_recovery_paths_and_quotas(self):
+        bad_fix = FIXED_CALCULATOR.replace("return a - b", "return a + b")
+        good_fix = FIXED_CALCULATOR + "\n# verified repair\n"
+        scenarios = (
+            ([("edit", good_fix), ("test", None), ("finish", None)], "FINISHED", 11),
+            ([("edit", good_fix), ("finish", None), ("test", None), ("finish", None)], "FINISHED", 12),
+            ([("edit", bad_fix), ("test", None), ("edit", FIXED_CALCULATOR + "\n# second repair\n"), ("test", None), ("finish", None)], "FINISHED", 13),
+            ([("edit", bad_fix), ("test", None), ("edit", bad_fix + "\n# retry\n"), ("test", None)], "LIMIT_REACHED", 12),
+            ([("read", None), ("edit", good_fix), ("test", None), ("finish", None)], "FINISHED", 12),
+            ([("read", None), ("search", None), ("read", None), ("edit", good_fix)], "LIMIT_REACHED", 11),
+            ([("failed_patch", None), ("edit", good_fix), ("test", None), ("finish", None)], "FINISHED", 12),
+            ([("ordinary", None), ("edit", good_fix), ("test", None), ("finish", None)], "FINISHED", 12),
+            ([("read", None), ("search", None), ("edit", good_fix), ("test", None), ("finish", None)], "FINISHED", 13),
+            ([("read", None), ("search", None), ("edit", bad_fix), ("test", None), ("edit", FIXED_CALCULATOR + "\n# final repair\n"), ("test", None), ("finish", None)], "FINISHED", 15),
+            ([("noop", None), ("edit", good_fix), ("test", None), ("finish", None)], "FINISHED", 12),
+        )
+        for index, (actions, expected, calls) in enumerate(scenarios):
+            with self.subTest(case=index):
+                (self.workspace / "calculator.py").write_bytes(
+                    b"def add(a, b):\n    return a - b\n\n\ndef subtract(a, b):\n    return a + b\n"
+                )
+                shutil.rmtree(self.workspace / "__pycache__", ignore_errors=True)
+                state = self.state()
+                replies = self._budget_prefix() + [self._required_reply(f"boundary-{index}")]
+                for position, (action, content) in enumerate(actions):
+                    call_id = f"{index}-{position}"
+                    if action == "edit":
+                        replies.append(tool_reply(call_id, "write_file", {"path": "calculator.py", "content": content}))
+                    elif action == "noop":
+                        replies.append(tool_reply(call_id, "write_file", {"path": "calculator.py", "content": (FIXTURE / "calculator.py").read_text(encoding="utf-8")}))
+                    elif action == "test":
+                        replies.append(self._required_reply(call_id))
+                    elif action == "finish":
+                        replies.append(self._finish_reply())
+                    elif action == "read":
+                        replies.append(tool_reply(call_id, "read_file", {"path": "calculator.py"}))
+                    elif action == "search":
+                        replies.append(tool_reply(call_id, "search_text", {"query": "missing"}))
+                    elif action == "ordinary":
+                        replies.append(tool_reply(call_id, "run_command", {"command": "git", "args": ["status", "--short"]}))
+                    else:
+                        replies.append(tool_reply(call_id, "apply_patch", {"path": "calculator.py", "old_text": "missing text", "new_text": "replacement"}))
+                _, trace = self.run_loop(replies[0], replies[1:], state)
+                self.assertEqual((state.status.value, trace.model_calls), (expected, calls))
+                self.assertLessEqual(trace.model_calls, 15)
+                if index == 1:
+                    self.assertEqual((trace.finish_rejections, trace.finish_successes), (1, 1))
+                    self.assertEqual(trace.recovery_state["finishes"], 1)
+                if index == 6:
+                    self.assertEqual(trace.recovery_state["repairs"], 1)
+                if index == 7:
+                    self.assertEqual(trace.recovery_state["verifications"], 1)
+                if index == 9:
+                    self.assertEqual(trace.recovery_state["stage"], "FINISHED")
+                if index == 10:
+                    self.assertEqual(trace.recovery_state["repairs"], 1)
 
     def test_budget_fresh_pass_grants_one_finish_turn(self):
         self.write_fixed_calculator()
@@ -227,7 +284,7 @@ class FinishProtocolTests(unittest.TestCase):
             ((exact, "Exit code: 1\nTimed out: true", True), (None, 8)),
             ((exact, "Exit code: None\nTimed out: false", True), (None, 8)),
             ((other, fail_result, True), (None, 8)),
-            ((exact, fail_result, True), ("FAIL", 11)),
+            ((exact, fail_result, True), ("FAIL", 15)),
             ((exact, pass_result, True), ("PASS", 9)),
         )
         for last_tool, expected in cases:

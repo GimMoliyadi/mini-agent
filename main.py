@@ -54,6 +54,7 @@ from session import (
     load_task_state,
     save_session,
 )
+from recovery import HARD_CEILING, Recovery
 
 BANNER = "Mini Agent Lab"
 
@@ -214,6 +215,7 @@ class CodingTaskTrace:
     total_tokens: int = 0
     max_steps_reached: bool = False
     recovery_grace: str | None = None
+    recovery_state: dict | None = None
     final_model_call_limit: int = MAX_AGENT_STEPS
     final_answer: str | None = None
     task_status: str | None = None
@@ -326,6 +328,7 @@ class CodingTaskTrace:
             "total_tokens": self.total_tokens,
             "max_steps_reached": self.max_steps_reached,
             "recovery_grace": self.recovery_grace,
+            "recovery_state": self.recovery_state,
             "final_model_call_limit": self.final_model_call_limit,
             "final_answer": self.final_answer,
             "task_status": self.task_status,
@@ -421,7 +424,7 @@ def recovery_grace_limit(
         if test_seq is not None and (mutation_seq is None or test_seq > mutation_seq):
             return "PASS", min(MAX_AGENT_STEPS + 1, 11)
     elif exit_code.lstrip("-").isdigit():
-        return "FAIL", min(MAX_AGENT_STEPS + 3, 11)
+        return "FAIL", HARD_CEILING
     return None, MAX_AGENT_STEPS
 
 
@@ -979,10 +982,10 @@ def _update_task_state_after_normal_tool(
     required_test: RequiredTest | None,
     event_seq: int | None,
     pre_mutation_snapshot: dict[str, str] | None,
-) -> None:
+) -> bool:
     """Record only real mutations and successful exact required tests."""
     if task_state is None or event_seq is None:
-        return
+        return False
 
     if (
         pre_mutation_snapshot is not None
@@ -993,6 +996,11 @@ def _update_task_state_after_normal_tool(
         post_mutation_snapshot = snapshot_workspace(WORKSPACE_DIR)
         if changed_files(pre_mutation_snapshot, post_mutation_snapshot):
             task_state.last_mutation_event_seq = event_seq
+            mutated = True
+        else:
+            mutated = False
+    else:
+        mutated = False
 
     if (
         may_execute
@@ -1001,6 +1009,7 @@ def _update_task_state_after_normal_tool(
         and trace_exit_code(result) == "0"
     ):
         task_state.last_successful_exact_required_test_seq = event_seq
+    return mutated
 
 
 def _record_runtime_error(
@@ -1037,6 +1046,7 @@ def run_tool_round(
     required_test: RequiredTest | None = None,
     contract: CodingTaskContract | None = None,
     task_state: TaskState | None = None,
+    round_events: list[str] | None = None,
 ) -> tuple[object, str, bool] | None:
     """执行这一批工具调用，把「模型提了调用」和「调用结果」都写进历史。
 
@@ -1067,6 +1077,8 @@ def run_tool_round(
             print(f"Tool 结果 > {result}")
             messages.append(tool_result_message(call, result))
             last_tool = (call, result, True)
+            if round_events is not None:
+                round_events.append(classification)
             if trace is not None:
                 event = trace.record_tool(
                     turn or 0,
@@ -1122,7 +1134,7 @@ def run_tool_round(
         result = permission_result if not may_execute else execute_tool_call(call)
         if may_execute:
             result = add_completion_hint(call, result, required_test)
-        _update_task_state_after_normal_tool(
+        mutated = _update_task_state_after_normal_tool(
             task_state,
             definition,
             call,
@@ -1132,6 +1144,17 @@ def run_tool_round(
             event_seq,
             pre_mutation_snapshot,
         )
+        if round_events is not None:
+            if mutated:
+                round_events.append("MUTATION")
+            elif (
+                may_execute
+                and call_matches_required_test(call, required_test)
+                and "Timed out: false" in result.splitlines()
+            ):
+                exit_code = trace_exit_code(result)
+                if exit_code is not None and exit_code.lstrip("-").isdigit():
+                    round_events.append("TEST_PASS" if exit_code == "0" else "TEST_FAIL")
         if may_execute and counts_as_successful_duplicate(call, result):
             # 只有成功执行过的调用才记下来。失败的那次不该被锁定——
             # 模型换个参数重试是合理行为，拦它才是帮倒忙。
@@ -1219,10 +1242,11 @@ def run_agent_loop(
     reply = first_reply
     final_limit = MAX_AGENT_STEPS
     grace_trigger = None
+    recovery: Recovery | None = None
     if trace is not None:
         trace.final_model_call_limit = final_limit
 
-    for step in range(1, min(MAX_AGENT_STEPS + 3, 11) + 1):
+    for step in range(1, HARD_CEILING + 1):
         if trace is not None:
             trace.record_model_turn(step, reply)
         if not reply.message.tool_calls:
@@ -1231,7 +1255,10 @@ def run_agent_loop(
                 print(f"Trace > Turn {step} | action=Final Answer")
             if contract is None:
                 return
-            if step == final_limit:
+            stop_recovery = recovery.observe([], step) if recovery is not None else False
+            if recovery is not None and trace is not None:
+                trace.recovery_state = vars(recovery).copy()
+            if stop_recovery or step == final_limit:
                 task_state.status = TaskStatus.LIMIT_REACHED
                 if trace is not None:
                     trace.mark_max_steps()
@@ -1250,6 +1277,7 @@ def run_agent_loop(
             continue
 
         try:
+            round_events: list[str] = []
             last_tool = run_tool_round(
                 messages,
                 reply.message,
@@ -1260,12 +1288,17 @@ def run_agent_loop(
                 required_test=required_test,
                 contract=contract,
                 task_state=task_state,
+                round_events=round_events,
             )
         except Exception as exc:
             _record_runtime_error(task_state, trace, exc)
             raise
         if task_state is not None and task_state.status is TaskStatus.FINISHED:
+            if recovery is not None:
+                recovery.observe(["FINISH_ACCEPTED"], step)
             if trace is not None:
+                if recovery is not None:
+                    trace.recovery_state = vars(recovery).copy()
                 trace.set_task_state(task_state)
             return
 
@@ -1276,8 +1309,16 @@ def run_agent_loop(
             if trace is not None:
                 trace.recovery_grace = grace_trigger
                 trace.final_model_call_limit = final_limit
+            if grace_trigger == "FAIL":
+                recovery = Recovery()
+                if trace is not None:
+                    trace.recovery_state = vars(recovery).copy()
 
-        if step == final_limit:
+        stop_recovery = recovery.observe(round_events, step) if recovery is not None and step > MAX_AGENT_STEPS else False
+        if recovery is not None and trace is not None:
+            trace.recovery_state = vars(recovery).copy()
+
+        if stop_recovery or step == final_limit:
             if task_state is not None:
                 task_state.status = TaskStatus.LIMIT_REACHED
             if trace is not None:

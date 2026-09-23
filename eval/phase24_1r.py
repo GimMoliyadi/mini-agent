@@ -95,7 +95,7 @@ def _run(mode: str) -> dict:
                 expected_exit = "1" if mode == "FAIL" else "0"
                 expected_seq = 18 if mode == "FAIL" else 19
                 expected_mutation = 17 if mode == "FAIL" else 18
-                expected_limit = 11 if mode == "FAIL" else 9
+                expected_limit = main.HARD_CEILING if mode == "FAIL" else 9
                 if (
                     boundary["model_calls"] != 8
                     or boundary["event_seq"] != expected_seq
