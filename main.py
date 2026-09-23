@@ -213,6 +213,8 @@ class CodingTaskTrace:
     completion_tokens: int = 0
     total_tokens: int = 0
     max_steps_reached: bool = False
+    recovery_grace: str | None = None
+    final_model_call_limit: int = MAX_AGENT_STEPS
     final_answer: str | None = None
     task_status: str | None = None
     finish_attempts: list[dict] = field(default_factory=list)
@@ -323,6 +325,8 @@ class CodingTaskTrace:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "max_steps_reached": self.max_steps_reached,
+            "recovery_grace": self.recovery_grace,
+            "final_model_call_limit": self.final_model_call_limit,
             "final_answer": self.final_answer,
             "task_status": self.task_status,
             "finish_attempts": list(self.finish_attempts),
@@ -390,6 +394,35 @@ def call_matches_required_test(call, required_test: RequiredTest | None) -> bool
         and arguments.get("args", []) == list(args)
         and arguments.get("cwd", ".") == cwd
     )
+
+
+def recovery_grace_limit(
+    step: int,
+    last_tool: tuple[object, str, bool] | None,
+    required_test: RequiredTest | None,
+    task_state: TaskState | None,
+) -> tuple[str | None, int]:
+    """Grant one terminal required-test observation a bounded continuation."""
+    if MAX_AGENT_STEPS != 8 or step != 8 or last_tool is None or task_state is None:
+        return None, MAX_AGENT_STEPS
+    call, result, executed = last_tool
+    if (
+        not executed
+        or not call_matches_required_test(call, required_test)
+        or "Timed out: false" not in result.splitlines()
+    ):
+        return None, MAX_AGENT_STEPS
+    exit_code = trace_exit_code(result)
+    if exit_code is None:
+        return None, MAX_AGENT_STEPS
+    if exit_code == "0":
+        test_seq = task_state.last_successful_exact_required_test_seq
+        mutation_seq = task_state.last_mutation_event_seq
+        if test_seq is not None and (mutation_seq is None or test_seq > mutation_seq):
+            return "PASS", min(MAX_AGENT_STEPS + 1, 11)
+    elif exit_code.lstrip("-").isdigit():
+        return "FAIL", min(MAX_AGENT_STEPS + 3, 11)
+    return None, MAX_AGENT_STEPS
 
 
 def add_completion_hint(
@@ -1004,7 +1037,7 @@ def run_tool_round(
     required_test: RequiredTest | None = None,
     contract: CodingTaskContract | None = None,
     task_state: TaskState | None = None,
-) -> None:
+) -> tuple[object, str, bool] | None:
     """执行这一批工具调用，把「模型提了调用」和「调用结果」都写进历史。
 
     做完之后历史长这样：…assistant(tool_calls), tool(result)。
@@ -1017,9 +1050,11 @@ def run_tool_round(
     注意这里**没有** ask。执行完要不要再问一次模型、问了几次就够，
     是外层循环的事——把「执行」和「决定要不要继续」分开，
     循环才能只写在它该出现的那一处。
+    返回最后一条工具结果及其实际执行状态，供轮次边界判断使用。
     """
     calls = tool_calls_through_control_flow(message)
     messages.append(assistant_tool_call_message(message, calls))
+    last_tool = None
 
     for call in calls:
         print(f"\nAgent 想调用工具：{call.function.name}({call.function.arguments})")
@@ -1031,6 +1066,7 @@ def run_tool_round(
             )
             print(f"Tool 结果 > {result}")
             messages.append(tool_result_message(call, result))
+            last_tool = (call, result, True)
             if trace is not None:
                 event = trace.record_tool(
                     turn or 0,
@@ -1058,6 +1094,7 @@ def run_tool_round(
             print("（重复调用被拦截，未真正执行）")
             print(f"Tool 结果 > {duplicate_notice}")
             messages.append(tool_result_message(call, duplicate_notice))
+            last_tool = (call, duplicate_notice, False)
             if trace is not None:
                 event = trace.record_tool(
                     turn or 0,
@@ -1102,6 +1139,7 @@ def run_tool_round(
 
         print(f"Tool 结果 > {result}")
         messages.append(tool_result_message(call, result))
+        last_tool = (call, result, may_execute and definition is not None)
         if trace is not None:
             if definition is None:
                 approval = "N/A"
@@ -1126,6 +1164,8 @@ def run_tool_round(
             )
             trace.set_task_state(task_state)
             _print_trace_event(event)
+
+    return last_tool
 
 
 def finalize(messages: list[dict], message: ChatCompletionMessage) -> None:
@@ -1177,8 +1217,12 @@ def run_agent_loop(
             trace.set_task_state(task_state)
 
     reply = first_reply
+    final_limit = MAX_AGENT_STEPS
+    grace_trigger = None
+    if trace is not None:
+        trace.final_model_call_limit = final_limit
 
-    for step in range(1, MAX_AGENT_STEPS + 1):
+    for step in range(1, min(MAX_AGENT_STEPS + 3, 11) + 1):
         if trace is not None:
             trace.record_model_turn(step, reply)
         if not reply.message.tool_calls:
@@ -1187,12 +1231,12 @@ def run_agent_loop(
                 print(f"Trace > Turn {step} | action=Final Answer")
             if contract is None:
                 return
-            if step == MAX_AGENT_STEPS:
+            if step == final_limit:
                 task_state.status = TaskStatus.LIMIT_REACHED
                 if trace is not None:
                     trace.mark_max_steps()
                     trace.set_task_state(task_state)
-                print(f"\n[已达到最大步骤数 {MAX_AGENT_STEPS}，Coding Task 未调用 finish_task]")
+                print(f"\n[已达到最大步骤数 {final_limit}，Coding Task 未调用 finish_task]")
                 return
 
             messages.append({"role": "user", "content": CODING_FINISH_PROTOCOL_NOTICE})
@@ -1206,7 +1250,7 @@ def run_agent_loop(
             continue
 
         try:
-            run_tool_round(
+            last_tool = run_tool_round(
                 messages,
                 reply.message,
                 executed,
@@ -1225,13 +1269,21 @@ def run_agent_loop(
                 trace.set_task_state(task_state)
             return
 
-        if step == MAX_AGENT_STEPS:
+        if step == MAX_AGENT_STEPS and grace_trigger is None and contract is not None:
+            grace_trigger, final_limit = recovery_grace_limit(
+                step, last_tool, required_test, task_state
+            )
+            if trace is not None:
+                trace.recovery_grace = grace_trigger
+                trace.final_model_call_limit = final_limit
+
+        if step == final_limit:
             if task_state is not None:
                 task_state.status = TaskStatus.LIMIT_REACHED
             if trace is not None:
                 trace.mark_max_steps()
                 trace.set_task_state(task_state)
-            print(f"\n[已达到最大步骤数 {MAX_AGENT_STEPS}，停止当前任务]")
+            print(f"\n[已达到最大步骤数 {final_limit}，停止当前任务]")
             return
 
         # Keep canonical history intact; only shrink the outbound model view.

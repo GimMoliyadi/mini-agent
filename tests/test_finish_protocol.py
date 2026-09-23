@@ -139,6 +139,118 @@ class FinishProtocolTests(unittest.TestCase):
                 self.assertEqual(message["tool_call_id"], pending.pop(0))
         self.assertEqual(pending, [])
 
+    def _budget_prefix(self) -> list[main.ModelReply]:
+        return [final_reply(f"thinking {turn}") for turn in range(1, 8)]
+
+    def _required_reply(self, call_id: str) -> main.ModelReply:
+        return tool_reply(call_id, "run_command", {"command": "python", "args": REQUIRED_ARGS})
+
+    def _finish_reply(self) -> main.ModelReply:
+        return tool_reply("finish", "finish_task", {"summary": "Fixed and tested calculator."})
+
+    def test_budget_ordinary_turn_eight_stops_and_chat_is_unchanged(self):
+        state = self.state()
+        _, trace = self.run_loop(
+            self._budget_prefix()[0], self._budget_prefix()[1:] + [final_reply("done")], state
+        )
+        self.assertEqual(trace.model_calls, 8)
+        self.assertIs(state.status, acceptance.TaskStatus.LIMIT_REACHED)
+
+        messages = [{"role": "user", "content": "hello"}]
+        chat_trace = main.CodingTaskTrace()
+        with patch.object(main, "ask") as ask_mock:
+            main.run_agent_loop(None, "mock", messages, final_reply("hello"), set(),
+                                main.always_allow, trace=chat_trace)
+        ask_mock.assert_not_called()
+        self.assertEqual(chat_trace.model_calls, 1)
+        self.assertEqual(messages[-1]["content"], "hello")
+
+    def test_budget_fail_grace_finishes_on_eleventh_turn(self):
+        state = self.state()
+        rounds = self._budget_prefix() + [
+            self._required_reply("fail"),
+            tool_reply("patch", "write_file", {"path": "calculator.py", "content": FIXED_CALCULATOR}),
+            self._required_reply("pass"),
+            self._finish_reply(),
+        ]
+        messages, trace = self.run_loop(rounds[0], rounds[1:], state)
+        self.assertEqual(trace.model_calls, 11)
+        self.assertEqual(trace.failed_commands, 1)
+        self.assertEqual(trace.successful_commands, 1)
+        self.assertEqual(trace.recovery_grace, "FAIL")
+        self.assertEqual(trace.final_model_call_limit, 11)
+        self.assertIs(state.status, acceptance.TaskStatus.FINISHED)
+        self.assertFalse(trace.max_steps_reached)
+        self.assert_history_is_paired(messages)
+
+    def test_budget_fresh_pass_grants_one_finish_turn(self):
+        self.write_fixed_calculator()
+        state = self.state()
+        state.event_seq = 1
+        state.last_mutation_event_seq = 1
+        rounds = self._budget_prefix() + [self._required_reply("pass"), self._finish_reply()]
+        _, trace = self.run_loop(rounds[0], rounds[1:], state)
+        self.assertEqual(trace.model_calls, 9)
+        self.assertEqual(trace.recovery_grace, "PASS")
+        self.assertEqual(trace.final_model_call_limit, 9)
+        self.assertIs(state.status, acceptance.TaskStatus.FINISHED)
+
+    def test_budget_stale_pass_and_read_search_do_not_extend(self):
+        for boundary in (
+            self._required_reply("stale"),
+            tool_reply("read", "read_file", {"path": "calculator.py"}),
+            tool_reply("search", "search_text", {"query": "def add"}),
+        ):
+            with self.subTest(tool=boundary.message.tool_calls[0].function.name):
+                state = self.state()
+                if boundary.message.tool_calls[0].id == "stale":
+                    self.write_fixed_calculator()
+                    state.last_mutation_event_seq = 9
+                rounds = self._budget_prefix() + [boundary]
+                _, trace = self.run_loop(rounds[0], rounds[1:] + [self._finish_reply()], state)
+                self.assertEqual(trace.model_calls, 8)
+                self.assertIsNone(trace.recovery_grace)
+                self.assertEqual(trace.final_model_call_limit, 8)
+                self.assertIs(state.status, acceptance.TaskStatus.LIMIT_REACHED)
+
+    def test_budget_only_executed_last_exact_test_qualifies(self):
+        state = self.state()
+        state.event_seq = 2
+        state.last_mutation_event_seq = 1
+        state.last_successful_exact_required_test_seq = 2
+        exact = self._required_reply("exact").message.tool_calls[0]
+        other = tool_call("other", "read_file", {"path": "calculator.py"})
+        pass_result = "Exit code: 0\nTimed out: false"
+        fail_result = "Exit code: 1\nTimed out: false"
+        cases = (
+            ((exact, pass_result, False), (None, 8)),
+            ((exact, "Exit code: 1\nTimed out: true", True), (None, 8)),
+            ((exact, "Exit code: None\nTimed out: false", True), (None, 8)),
+            ((other, fail_result, True), (None, 8)),
+            ((exact, fail_result, True), ("FAIL", 11)),
+            ((exact, pass_result, True), ("PASS", 9)),
+        )
+        for last_tool, expected in cases:
+            with self.subTest(last_tool=last_tool):
+                self.assertEqual(
+                    main.recovery_grace_limit(8, last_tool, self.required_test(), state),
+                    expected,
+                )
+
+    def test_budget_fail_grace_does_not_renew_or_call_twelfth_time(self):
+        state = self.state()
+        rounds = self._budget_prefix() + [
+            self._required_reply("fail-8"),
+            self._required_reply("fail-9"),
+            self._required_reply("fail-10"),
+            self._required_reply("fail-11"),
+        ]
+        _, trace = self.run_loop(rounds[0], rounds[1:] + [self._finish_reply()], state)
+        self.assertEqual(trace.model_calls, 11)
+        self.assertEqual(trace.failed_commands, 4)
+        self.assertIs(state.status, acceptance.TaskStatus.LIMIT_REACHED)
+        self.assertTrue(trace.max_steps_reached)
+
     def test_mock_a_patch_test_finish_is_accepted(self):
         state = self.state()
         messages, trace = self.run_loop(
