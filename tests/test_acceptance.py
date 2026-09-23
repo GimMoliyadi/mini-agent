@@ -151,7 +151,7 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_generated_python_cache_is_not_reported_as_agent_change(self):
         cache = self.workspace / "__pycache__"
-        cache.mkdir()
+        cache.mkdir(exist_ok=True)
         (cache / "test_calculator.cpython-311.pyc").write_bytes(b"cache")
         self.assertEqual(acceptance.snapshot_workspace(self.workspace), self.before)
 

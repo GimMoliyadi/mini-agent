@@ -47,7 +47,7 @@ class NavigationEvalTests(unittest.TestCase):
                 "test_discount.py",
                 "-q",
             ]
-            before = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            before = subprocess.run(command, cwd=root, capture_output=True, text=True, encoding="utf-8")
             self.assertNotEqual(before.returncode, 0)
             target = root / spec.target_file
             target.write_text(
@@ -56,7 +56,7 @@ class NavigationEvalTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            after = subprocess.run(command, cwd=root, capture_output=True, text=True)
+            after = subprocess.run(command, cwd=root, capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(after.returncode, 0, after.stderr)
 
     def test_search_text_finds_symbol_and_error_string_in_fixture(self):
