@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from contextlib import redirect_stdout
 from datetime import datetime
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -35,6 +37,7 @@ REQUIRED_TEST = [
 MUTATION_TOOLS = {"apply_patch", "write_file"}
 READ_SEARCH_TOOLS = {"read_file", "search_text"}
 INFRASTRUCTURE_RETRIES = 1
+PROJECT_PROVIDER_PROXY_ENV = "MINI_AGENT_HTTP_PROXY"
 
 
 def _baseline_run() -> dict:
@@ -83,6 +86,82 @@ def _prepare_manifest(baseline: dict) -> dict:
     }
 
 
+def _provider_child_environment(parent_environment: Mapping[str, str]) -> dict[str, str]:
+    """Return an Eval/Provider environment without changing the caller's environment."""
+    child_environment = dict(parent_environment)
+    project_proxy = child_environment.get(PROJECT_PROVIDER_PROXY_ENV)
+    if project_proxy:
+        child_environment["HTTP_PROXY"] = project_proxy
+        child_environment["HTTPS_PROXY"] = project_proxy
+        child_environment.pop("ALL_PROXY", None)
+    return child_environment
+
+
+def _proxy_diagnostics(environment: Mapping[str, str]) -> dict:
+    diagnostics = {}
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        value = environment.get(name, "")
+        parsed = urlsplit(value)
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        diagnostics[name] = {
+            "configured": bool(value),
+            "scheme": parsed.scheme or None,
+            "loopback": parsed.hostname in ("localhost", "127.0.0.1", "::1"),
+            "port": port,
+        }
+    return diagnostics
+
+
+def _valid_assistant_response(response) -> bool:
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return False
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    return (
+        getattr(message, "role", None) == "assistant"
+        and isinstance(content, str)
+        and bool(content.strip())
+    )
+
+
+def _provider_preflight() -> dict:
+    config.load_env_file()
+    model_config = config.load_config()
+    provider_environment = _provider_child_environment(os.environ)
+    result = {
+        "attempts": 1,
+        "status": "fail",
+        "request_completed": False,
+        "valid_assistant_response": False,
+        "response_text_recorded": False,
+        "model": model_config.model,
+        "provider_scheme": urlsplit(model_config.base_url).scheme,
+        "proxy_settings": _proxy_diagnostics(provider_environment),
+        "sdk_max_retries": 0,
+        "api_key_recorded": False,
+    }
+    try:
+        with patch.dict(os.environ, provider_environment, clear=True):
+            client = main.build_client(model_config).with_options(max_retries=0)
+            try:
+                response = client.chat.completions.create(
+                    model=model_config.model,
+                    messages=[{"role": "user", "content": "Reply OK"}],
+                )
+            finally:
+                client.close()
+        result["request_completed"] = True
+        result["valid_assistant_response"] = _valid_assistant_response(response)
+        result["status"] = "pass" if result["valid_assistant_response"] else "fail"
+    except Exception as exc:
+        result["error_type"] = type(exc).__name__
+    return result
+
+
 def _run_child(steps: int) -> dict:
     root = Path(os.environ["AGENT_WORKSPACE"])
     spec = phase22_5.setup("E", root, register=True)
@@ -97,10 +176,11 @@ def _run_child(steps: int) -> dict:
 
 
 def _run_attempt(steps: int) -> dict:
+    config.load_env_file()
     with tempfile.TemporaryDirectory(prefix=f"phase23-budget-{steps}-") as directory:
         root = Path(directory) / "workspace"
         phase22_5.setup("E", root)
-        environment = {
+        environment = _provider_child_environment({
             **os.environ,
             "AGENT_WORKSPACE": str(root),
             "TOOL_APPROVAL_MODE": "ALLOW",
@@ -108,7 +188,7 @@ def _run_attempt(steps: int) -> dict:
             "PYTHONUTF8": "1",
             "PYTHONIOENCODING": "utf-8",
             "PHASE23_MAX_AGENT_STEPS": str(steps),
-        }
+        })
         completed = subprocess.run(
             [str(harness.PYTHON_BIN), "-m", "eval.phase23_budget", "--child"],
             cwd=harness.PROJECT_ROOT,
@@ -221,9 +301,25 @@ def _exact_required_test(event: dict) -> bool:
     )
 
 
+def _test_name_from_failure(output: str) -> str | None:
+    match = re.search(r"(?:FAIL|ERROR):\s+([\w.]+)", output)
+    return match.group(1) if match else None
+
+
 def _analysis(result: dict) -> dict:
     metrics = result.get("metrics", {})
-    chain = metrics.get("tool_chain", [])
+    trace_events = {
+        event.get("event_seq"): event
+        for event in result.get("trace", {}).get("events", [])
+    }
+    chain = []
+    for event in metrics.get("tool_chain", []):
+        enriched_event = dict(event)
+        trace_event = trace_events.get(event.get("event_seq"), {})
+        for name in ("action", "write_target"):
+            if trace_event.get(name) is not None:
+                enriched_event[name] = trace_event[name]
+        chain.append(enriched_event)
     attempts = [event for event in chain if _exact_required_test(event)]
     failed = next((event for event in attempts if event.get("exit_code") not in (None, 0)), None)
     mutation_events = [
@@ -248,40 +344,122 @@ def _analysis(result: dict) -> dict:
         None,
     )
     next_turn = failed["turn"] + 1 if failed and failed.get("turn") is not None else None
-    assistant_turn_messages = []
-    turn = 0
-    for message in result.get("canonical_history", []):
-        if message.get("role") == "assistant":
-            turn += 1
-            if turn == next_turn:
-                assistant_turn_messages.append(message)
-    next_message = assistant_turn_messages[0] if assistant_turn_messages else None
+    assistant_messages = [
+        message for message in result.get("canonical_history", [])
+        if message.get("role") == "assistant"
+    ]
+    next_message = assistant_messages[next_turn - 1] if next_turn and len(assistant_messages) >= next_turn else None
     next_content = next_message.get("content") if next_message else None
-    failed_result = next((event.get("result", "") for event in attempts if event is failed), "")
-    failure_name = "test_one_percent_boundary"
-    visible_failure_reference = bool(
-        next_content and failure_name in next_content
-    ) or any(
-        failure_name in event.get("arguments", "")
-        or failure_name in event.get("result", "")
-        for event in post_failure[:2]
+    failure_observations = []
+    for failed_event in (event for event in attempts if event.get("exit_code") not in (None, 0)):
+        failure_turn = failed_event.get("turn")
+        following_turn = failure_turn + 1 if failure_turn is not None else None
+        following_message = (
+            assistant_messages[following_turn - 1]
+            if following_turn and len(assistant_messages) >= following_turn
+            else None
+        )
+        following_actions = [
+            event for event in chain
+            if event.get("turn") == following_turn
+            and event.get("event_seq", 0) > failed_event.get("event_seq", 0)
+        ]
+        failure_name = _test_name_from_failure(str(failed_event.get("result", "")))
+        message_evidence = (following_message or {}).get("content") or ""
+        message_evidence += json.dumps(
+            (following_message or {}).get("tool_calls", []), ensure_ascii=False
+        )
+        explicitly_referenced = bool(failure_name and failure_name in message_evidence) or any(
+            failure_name
+            and (
+                failure_name in str(event.get("arguments", ""))
+                or failure_name in str(event.get("result", ""))
+            )
+            for event in following_actions
+        )
+        failure_observations.append({
+            "test_name": failure_name,
+            "failure_turn": failure_turn,
+            "failure_output": failed_event.get("result"),
+            "next_model_turn": following_turn if following_message else None,
+            "next_model_turn_content": (following_message or {}).get("content"),
+            "next_model_turn_actions": following_actions,
+            "next_model_turn_visibly_references_failure": explicitly_referenced,
+        })
+    first_failure_observation = failure_observations[0] if failure_observations else {}
+    failure_name = first_failure_observation.get("test_name")
+    visible_failure_reference = first_failure_observation.get(
+        "next_model_turn_visibly_references_failure", False
+    )
+    later_explanatory_message = next(
+        (
+            (turn, message.get("content"))
+            for turn, message in enumerate(assistant_messages, start=1)
+            if failed and turn > failed.get("turn", 0) and str(message.get("content") or "").strip()
+        ),
+        (None, None),
+    )
+    post_failure_tests = [
+        event for event in attempts
+        if failed and event.get("event_seq", 0) > failed.get("event_seq", 0)
+    ]
+    post_failure_mutations = [
+        event for event in post_failure
+        if event.get("tool") in MUTATION_TOOLS
+    ]
+    accepted = metrics.get("accepted", False)
+    diagnosis_recovery_observed = bool(
+        failed
+        and any(event.get("exit_code") == 0 for event in post_failure_tests)
+        and finish
+        and accepted
     )
     return {
         "first_mutation_turn": mutation_events[0].get("turn") if mutation_events else None,
         "first_required_test_failure_turn": failed.get("turn") if failed else None,
         "failure_output": failed.get("result") if failed else None,
+        "failure_test_name": failure_name,
         "next_model_turn": next_turn if next_message else None,
         "next_model_turn_content": next_content,
         "next_model_turn_actions": [event for event in post_failure if event.get("turn") == next_turn],
         "next_model_turn_visibly_references_failure": visible_failure_reference,
+        "failure_observations": failure_observations,
+        "first_later_explanatory_turn": later_explanatory_message[0],
+        "first_later_explanatory_content": later_explanatory_message[1],
         "post_failure_tool_chain": post_failure,
+        "post_failure_mutations": post_failure_mutations,
+        "post_failure_mutation_targets": [
+            {"turn": event.get("turn"), "tool": event.get("tool"), "target": event.get("write_target")}
+            for event in post_failure_mutations
+        ],
+        "required_test_events": [
+            {
+                "turn": event.get("turn"),
+                "test_name": _test_name_from_failure(str(event.get("result", ""))),
+                "exit_code": event.get("exit_code"),
+                "output": event.get("result"),
+            }
+            for event in attempts
+        ],
+        "post_failure_required_test_attempts": [
+            {
+                "turn": event.get("turn"),
+                "test_name": _test_name_from_failure(str(event.get("result", ""))),
+                "exit_code": event.get("exit_code"),
+                "output": event.get("result"),
+            }
+            for event in post_failure_tests
+        ],
         "first_post_failure_read_or_search": first_read_search,
         "second_mutation": second_mutation,
+        "second_mutation_target": second_mutation.get("write_target") if second_mutation else None,
         "required_test_attempts": len(attempts),
         "required_test_failures": sum(event.get("exit_code") not in (None, 0) for event in attempts),
         "required_test_pass_turns": [event.get("turn") for event in successful_tests],
         "finish_task_turn": finish.get("turn") if finish else None,
-        "accepted": metrics.get("accepted", False),
+        "finish_attempts": metrics.get("finish_task_calls", 0),
+        "accepted": accepted,
+        "diagnosis_recovery_observed": diagnosis_recovery_observed,
         "model_calls": metrics.get("model_calls", result.get("trace", {}).get("model_calls")),
         "tool_calls": metrics.get("tool_calls", result.get("trace", {}).get("tool_calls")),
         "total_tokens": metrics.get("total_tokens", result.get("trace", {}).get("total_tokens")),
@@ -294,6 +472,8 @@ def _analysis(result: dict) -> dict:
 def _event_label(event: dict | None) -> str:
     if not event:
         return "none"
+    if event.get("write_target"):
+        return f"Turn {event.get('turn')} `{event.get('tool')}` target `{event['write_target']}`"
     args = event.get("arguments", "")
     try:
         rendered = json.dumps(json.loads(args), ensure_ascii=False)
@@ -423,34 +603,212 @@ def render_report(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def run_phase23() -> dict:
+def _phase23_1_report_section(payload: dict) -> str:
+    recovery = payload["phase23_1_recovery"]
+    parent_proxy = recovery["proxy_environment"]["parent"]
+    provider_proxy = recovery["proxy_environment"]["provider"]
+    preflight = recovery["provider_preflight"]
+    lines = [
+        "## Phase 23.1 — Provider recovery and budget rerun",
+        "",
+        f"Status: `{recovery['status']}`.",
+        "",
+        "### Provider proxy isolation",
+        "",
+        "The Eval parent proxy environment is recorded separately from the effective Provider child environment:",
+        "",
+        f"- Parent HTTP/HTTPS/ALL: `{parent_proxy['HTTP_PROXY']}` / `{parent_proxy['HTTPS_PROXY']}` / `{parent_proxy['ALL_PROXY']}`",
+        f"- Provider child HTTP/HTTPS/ALL: `{provider_proxy['HTTP_PROXY']}` / `{provider_proxy['HTTPS_PROXY']}` / `{provider_proxy['ALL_PROXY']}`",
+        f"- Project override configured: `{recovery['project_proxy_configured']}`; Codex/global proxy settings changed: `False`.",
+        "",
+        "### Provider preflight",
+        "",
+        f"- Status: `{preflight['status']}`; valid assistant response: `{preflight['valid_assistant_response']}`; completed request: `{preflight['request_completed']}`.",
+        f"- Provider scheme/model: `{preflight['provider_scheme']}` / `{preflight['model']}`; SDK retries: `{preflight['sdk_max_retries']}`.",
+        "- Response text and API key were not recorded. The check accepts any non-empty assistant response; it does not require the text `OK`.",
+        "",
+    ]
+    provenance = recovery.get("historical_proxy_provenance") or {}
+    if provenance.get("phase23_7897_source"):
+        lines.extend([f"- Earlier 7897 source finding: {provenance['phase23_7897_source']}", ""])
+    if recovery.get("preflight_history"):
+        lines.extend([
+            f"Earlier preflight observations retained: {len(recovery['preflight_history'])}; the earlier exact-`OK` mismatch is historical and is not the current acceptance rule.",
+            "",
+        ])
+    baseline = payload["runs"]["8"]["result"]
+    baseline_analysis = _analysis(baseline)
+    lines.extend([
+        "### Budget comparison",
+        "",
+        "| Budget | Run status | Accepted | Model calls | Tool calls | Tokens | Required tests / failures | PASS turn(s) | Finish turn | Max steps reached |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | --- |",
+        f"| 8 | Reused Phase 22.5 baseline | {baseline_analysis['accepted']} | {baseline_analysis['model_calls'] or 0} | {baseline_analysis['tool_calls'] or 0} | {baseline_analysis['total_tokens'] or 0} | {baseline_analysis['required_test_attempts']} / {baseline_analysis['required_test_failures']} | {baseline_analysis['required_test_pass_turns'] or '—'} | {baseline_analysis['finish_task_turn'] or '—'} | {baseline.get('trace', {}).get('max_steps_reached', False)} |",
+    ])
+    for budget in (10, 12):
+        entry = recovery.get("budget_runs", {}).get(str(budget))
+        if not entry:
+            lines.append(f"| {budget} | Not started | — | — | — | — | — | — | — | — |")
+            continue
+        result = entry["result"]
+        analysis = entry.get("analysis", _analysis(result))
+        pass_turns = analysis["required_test_pass_turns"] or "—"
+        if entry.get("valid_real_run"):
+            run_status = "Valid run"
+        elif result.get("infrastructure_failure"):
+            run_status = "Infrastructure failure"
+        else:
+            run_status = "Invalid run"
+        lines.append(
+            f"| {budget} | {run_status} ({entry['attempt_count']} attempt(s)) | {analysis['accepted']} | {analysis['model_calls'] or 0} | {analysis['tool_calls'] or 0} | {analysis['total_tokens'] or 0} | {analysis['required_test_attempts']} / {analysis['required_test_failures']} | {pass_turns} | {analysis['finish_task_turn'] or '—'} | {result.get('trace', {}).get('max_steps_reached', False)} |"
+        )
+    lines.extend(["", "### Diagnosis traces", ""])
+    for budget in (10, 12):
+        entry = recovery.get("budget_runs", {}).get(str(budget))
+        lines.extend([f"#### MAX_AGENT_STEPS={budget}", ""])
+        if not entry:
+            reason = "Provider preflight did not pass" if recovery["status"] == "preflight_failed" else "Not run yet"
+            lines.extend([f"Not started: {reason}.", ""])
+            continue
+        result = entry["result"]
+        analysis = entry.get("analysis", _analysis(result))
+        if result.get("infrastructure_failure"):
+            lines.extend([
+                f"Infrastructure failure: `{result.get('infrastructure_kind')}`; model calls/tool calls/tokens: {analysis['model_calls'] or 0}/{analysis['tool_calls'] or 0}/{analysis['total_tokens'] or 0}.",
+                f"Error types: `{[item.split(':', 1)[0] for item in result.get('runtime_errors', [])]}`.",
+                "",
+            ])
+            continue
+        second_mutation = analysis["second_mutation"]
+        post_failure_reads = [
+            event for event in analysis["post_failure_tool_chain"]
+            if event.get("tool") in READ_SEARCH_TOOLS
+        ]
+        lines.extend([
+            f"- First mutation turn: {analysis['first_mutation_turn']}; first required-test failure turn: {analysis['first_required_test_failure_turn']}.",
+        ])
+        for test_event in analysis["required_test_events"]:
+            if test_event["exit_code"] == 0:
+                lines.append(f"- Required test PASS at turn {test_event['turn']}.")
+            else:
+                observation = next(
+                    (
+                        item for item in analysis["failure_observations"]
+                        if item["failure_turn"] == test_event["turn"]
+                    ),
+                    {},
+                )
+                lines.extend([
+                    f"- Required test failure at turn {test_event['turn']} ({test_event['test_name'] or 'test name unavailable'}):",
+                    "```text",
+                    str(test_event["output"] or "(no failure output)"),
+                    "```",
+                    f"  Immediate next model turn: {observation.get('next_model_turn') or 'none'}; explicitly references the failing test: `{observation.get('next_model_turn_visibly_references_failure', False)}`; actions: `{[_event_label(event) for event in observation.get('next_model_turn_actions', [])]}`.",
+                ])
+        lines.extend([
+            f"- First model turn after the first failure: {analysis['next_model_turn']}; explicitly names the failing test: `{analysis['next_model_turn_visibly_references_failure']}`.",
+            f"- First later explanatory assistant turn: {analysis['first_later_explanatory_turn'] or 'none'}; content: `{analysis['first_later_explanatory_content'] or 'none'}`.",
+            f"- Post-failure list/search/read calls: `{[_event_label(event) for event in post_failure_reads]}`.",
+            f"- Second mutation: {_event_label(second_mutation)}.",
+            f"- All post-failure mutations: `{[_event_label(event) for event in analysis['post_failure_mutations']]}`.",
+            f"- Required-test attempts/failures: {analysis['required_test_attempts']}/{analysis['required_test_failures']}; PASS turn(s): {analysis['required_test_pass_turns'] or 'none'}.",
+            f"- Finish turn/attempts: {analysis['finish_task_turn'] or 'none'}/{analysis['finish_attempts']}; accepted: `{analysis['accepted']}`.",
+            f"- Post-verification extra tool calls: {analysis['post_verification_extra_tool_calls']}; max steps reached: `{result.get('trace', {}).get('max_steps_reached', False)}`.",
+            "",
+        ])
+    if recovery["status"] == "completed":
+        recommendation = (
+            "The 10-step run was accepted after 9 model calls; the 12-step run used its full "
+            "budget and did not finish verification. These single runs do not justify changing "
+            "the Runtime or selecting a new default budget."
+        )
+    elif recovery["status"] == "preflight_failed":
+        recommendation = "Resolve the project Provider proxy or response failure before retrying; no budget run was started."
+    else:
+        recommendation = "Keep Runtime unchanged; review both budget traces before selecting any budget-policy change."
+    lines.extend([
+        "### Current conclusion",
+        "",
+        f"- Diagnosis recovery observed: `{any(entry.get('analysis', {}).get('diagnosis_recovery_observed') for entry in recovery.get('budget_runs', {}).values())}`.",
+        f"- Next step: {recommendation}",
+        "- Full child traces, canonical messages, tool chains, and metrics are retained in `phase23_budget_results.json`.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def _write_phase23_1_outputs(payload: dict) -> None:
+    RESULTS.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    report = REPORT.read_text(encoding="utf-8") if REPORT.exists() else ""
+    marker = "## Phase 23.1 — Provider recovery and budget rerun"
+    if marker in report:
+        report = report.split(marker, 1)[0].rstrip()
+    section = _phase23_1_report_section(payload)
+    REPORT.write_text(f"{report}\n\n{section}", encoding="utf-8")
+
+
+def run_phase23_1() -> dict:
     baseline = _baseline_run()
     manifest = _prepare_manifest(baseline)
-    payload = {
-        "phase": 23,
+    payload = json.loads(RESULTS.read_text(encoding="utf-8"))
+    previous = payload.get("phase23_1_recovery", {})
+    preflight_history = list(previous.get("preflight_history", []))
+    if previous.get("provider_preflight"):
+        preflight_history.append(previous["provider_preflight"])
+
+    provider_environment = _provider_child_environment(os.environ)
+    preflight = _provider_preflight()
+    recovery = {
+        "status": "running" if preflight["status"] == "pass" else "preflight_failed",
         "started_at": datetime.now().isoformat(timespec="seconds"),
-        "manifest": manifest,
-        "network_diagnostics": _network_diagnostics(),
-        "historical_budget_evidence": _historical_budget_evidence(),
-        "runs": {
-            "8": {"valid_real_run": True, "attempt_count": 0, "reused_from": "phase22_5_results.json#results.E", "result": baseline},
-            "10": _run_budget(10),
-            "12": _run_budget(12),
+        "manifest_check": {
+            "task_id": manifest["task_id"],
+            "task_code": manifest["task_code"],
+            "model": manifest["model"],
+            "context_mode": manifest["context_mode"],
+            "approval_mode": manifest["approval_mode"],
+            "initial_messages_match_baseline": manifest["initial_messages_match_baseline"],
         },
+        "project_proxy_configured": bool(os.environ.get(PROJECT_PROVIDER_PROXY_ENV)),
+        "proxy_environment": {
+            "parent": _proxy_diagnostics(os.environ),
+            "provider": _proxy_diagnostics(provider_environment),
+        },
+        "provider_preflight": preflight,
+        "preflight_history": preflight_history,
+        "historical_proxy_provenance": previous.get("proxy_provenance"),
+        "previous_budget_status": previous.get("budget_runs"),
+        "budget_runs": {},
+        "runtime_changed": False,
+        "codex_proxy_configuration_changed": False,
+        "windows_global_proxy_changed": False,
     }
-    payload["status"] = (
-        "completed"
-        if all(payload["runs"][str(budget)]["valid_real_run"] for budget in (10, 12))
-        else "infrastructure_blocked"
-    )
+    payload["phase23_1_recovery"] = recovery
+    _write_phase23_1_outputs(payload)
+    if preflight["status"] != "pass":
+        return payload
+
     for budget in (10, 12):
-        result = payload["runs"][str(budget)]["result"]
-        if not result.get("infrastructure_failure") and result.get("model") != manifest["model"]:
-            raise ValueError(f"Run {budget} model differs from baseline")
-    payload["conclusions"] = _conclusions(payload)
-    RESULTS.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    REPORT.write_text(render_report(payload), encoding="utf-8")
+        entry = _run_budget(budget)
+        entry["analysis"] = _analysis(entry["result"])
+        if entry.get("valid_real_run") and entry["result"].get("model") != manifest["model"]:
+            entry["valid_real_run"] = False
+            entry["validation_error"] = "model differs from Phase 22.5 baseline"
+        recovery["budget_runs"][str(budget)] = entry
+        _write_phase23_1_outputs(payload)
+
+    recovery["status"] = (
+        "completed"
+        if all(recovery["budget_runs"][str(budget)]["valid_real_run"] for budget in (10, 12))
+        else "budget_run_failed"
+    )
+    _write_phase23_1_outputs(payload)
     return payload
+
+
+def run_phase23() -> dict:
+    """Backward-compatible entry point for the Phase 23.1 continuation."""
+    return run_phase23_1()
 
 
 def _conclusions(payload: dict) -> dict:
@@ -494,15 +852,16 @@ def main_cli() -> None:
             result = _run_child(steps)
         print(json.dumps(result, ensure_ascii=False), file=output)
         return
-    payload = run_phase23()
-    for budget in (10, 12):
-        entry = payload["runs"][str(budget)]
+    payload = run_phase23_1()
+    recovery = payload["phase23_1_recovery"]
+    for budget, entry in recovery.get("budget_runs", {}).items():
         metrics = entry["result"].get("metrics", {})
         print(
-            f"[Phase 23 {budget}] accepted={metrics.get('accepted')} "
+            f"[Phase 23.1 {budget}] accepted={metrics.get('accepted')} "
             f"infra={entry['result'].get('infrastructure_failure')} attempts={entry['attempt_count']}",
             file=sys.stderr,
         )
+    print(f"[Phase 23.1 preflight] {recovery['provider_preflight']['status']}", file=sys.stderr)
     print(json.dumps({"results": str(RESULTS), "report": str(REPORT)}, ensure_ascii=False))
 
 

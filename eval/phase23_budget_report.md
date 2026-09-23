@@ -69,3 +69,142 @@ A recovery is supported only when the trace shows that the model received the fa
 - `python -m unittest discover -s tests -p test*.py`: PASS (exit 0)
 - `python -m compileall .`: PASS (exit 0)
 - `git diff --check`: PASS (exit 0)
+
+## Phase 23.1 — Provider recovery and budget rerun
+
+Status: `completed`.
+
+### Provider proxy isolation
+
+The Eval parent proxy environment is recorded separately from the effective Provider child environment:
+
+- Parent HTTP/HTTPS/ALL: `{'configured': True, 'scheme': 'http', 'loopback': True, 'port': 7897}` / `{'configured': True, 'scheme': 'http', 'loopback': True, 'port': 7897}` / `{'configured': True, 'scheme': 'socks5', 'loopback': True, 'port': 7897}`
+- Provider child HTTP/HTTPS/ALL: `{'configured': True, 'scheme': 'http', 'loopback': True, 'port': 9674}` / `{'configured': True, 'scheme': 'http', 'loopback': True, 'port': 9674}` / `{'configured': False, 'scheme': None, 'loopback': False, 'port': None}`
+- Project override configured: `True`; Codex/global proxy settings changed: `False`.
+
+### Provider preflight
+
+- Status: `pass`; valid assistant response: `True`; completed request: `True`.
+- Provider scheme/model: `https` / `sensenova-6.8-flash-lite`; SDK retries: `0`.
+- Response text and API key were not recorded. The check accepts any non-empty assistant response; it does not require the text `OK`.
+
+- Earlier 7897 source finding: The Phase 23 parent launch explicitly assigned the 7897 proxy values under the supplied network instruction; the child inherited them.
+
+Earlier preflight observations retained: 1; the earlier exact-`OK` mismatch is historical and is not the current acceptance rule.
+
+### Budget comparison
+
+| Budget | Run status | Accepted | Model calls | Tool calls | Tokens | Required tests / failures | PASS turn(s) | Finish turn | Max steps reached |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | --- |
+| 8 | Reused Phase 22.5 baseline | False | 8 | 18 | 30421 | 1 / 1 | — | — | True |
+| 10 | Valid run (1 attempt(s)) | True | 9 | 12 | 32973 | 2 / 1 | [8] | 9 | False |
+| 12 | Valid run (1 attempt(s)) | False | 12 | 15 | 47106 | 2 / 2 | — | — | True |
+
+### Diagnosis traces
+
+#### MAX_AGENT_STEPS=10
+
+- First mutation turn: 5; first required-test failure turn: 6.
+- Required test failure at turn 6 (test_decimal_percent):
+```text
+Command: python -m unittest discover -s tests -p test_coupons.py -q
+CWD: C:\Users\30858\AppData\Local\Temp\phase23-budget-10-zbibv16o\workspace
+Exit code: 1
+Timed out: false
+STDOUT:
+<empty>
+STDERR:
+======================================================================
+FAIL: test_decimal_percent (test_coupons.CouponTests.test_decimal_percent)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\30858\AppData\Local\Temp\phase23-budget-10-zbibv16o\workspace\tests\test_coupons.py", line 11, in test_decimal_percent
+    self.assertEqual(discounted_amount(100.0, 0.10), 90.0)
+AssertionError: 99.9 != 90.0
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+FAILED (failures=1)
+
+```
+  Immediate next model turn: 7; explicitly references the failing test: `False`; actions: `['Turn 7 `apply_patch` target `src/pricing/coupons.py`']`.
+- Required test PASS at turn 8.
+- First model turn after the first failure: 7; explicitly names the failing test: `False`.
+- First later explanatory assistant turn: none; content: `none`.
+- Post-failure list/search/read calls: `[]`.
+- Second mutation: Turn 7 `apply_patch` target `src/pricing/coupons.py`.
+- All post-failure mutations: `['Turn 7 `apply_patch` target `src/pricing/coupons.py`']`.
+- Required-test attempts/failures: 2/1; PASS turn(s): [8].
+- Finish turn/attempts: 9/1; accepted: `True`.
+- Post-verification extra tool calls: 0; max steps reached: `False`.
+
+#### MAX_AGENT_STEPS=12
+
+- First mutation turn: 5; first required-test failure turn: 6.
+- Required test failure at turn 6 (test_one_percent_boundary):
+```text
+Command: python -m unittest discover -s tests -p test_coupons.py -q
+CWD: C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace
+Exit code: 1
+Timed out: false
+STDOUT:
+<empty>
+STDERR:
+======================================================================
+FAIL: test_one_percent_boundary (test_coupons.CouponTests.test_one_percent_boundary)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace\tests\test_coupons.py", line 14, in test_one_percent_boundary
+    self.assertEqual(discounted_amount(100.0, 1), 99.0)
+AssertionError: 0.0 != 99.0
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+FAILED (failures=1)
+
+```
+  Immediate next model turn: 7; explicitly references the failing test: `False`; actions: `['Turn 7 `apply_patch` target `src/pricing/coupons.py`']`.
+- Required test failure at turn 10 (test_one_percent_boundary):
+```text
+Command: python -m unittest discover -s tests -p test_coupons.py -q
+CWD: C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace
+Exit code: 1
+Timed out: false
+STDOUT:
+<empty>
+STDERR:
+======================================================================
+FAIL: test_one_percent_boundary (test_coupons.CouponTests.test_one_percent_boundary)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace\tests\test_coupons.py", line 14, in test_one_percent_boundary
+    self.assertEqual(discounted_amount(100.0, 1), 99.0)
+AssertionError: 0.0 != 99.0
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+FAILED (failures=1)
+
+```
+  Immediate next model turn: 11; explicitly references the failing test: `False`; actions: `['Turn 11 `read_file` {"path": "tests/test_coupons.py"}', 'Turn 11 `read_file` {"path": "src/pricing/coupons.py"}']`.
+- First model turn after the first failure: 7; explicitly names the failing test: `False`.
+- First later explanatory assistant turn: 12; content: `
+
+The test `test_one_percent_boundary` expects `discounted_amount(100.0, 1)` to equal 99.0 (i.e., 1 is interpreted as 1%). My threshold `percent > 1` was wrong — it should be `percent < 1` (strictly less than 1) to treat values as fractions; `1` should be treated as whole-percent 1.
+
+`.
+- Post-failure list/search/read calls: `['Turn 11 `read_file` {"path": "tests/test_coupons.py"}', 'Turn 11 `read_file` {"path": "src/pricing/coupons.py"}']`.
+- Second mutation: Turn 7 `apply_patch` target `src/pricing/coupons.py`.
+- All post-failure mutations: `['Turn 7 `apply_patch` target `src/pricing/coupons.py`', 'Turn 8 `apply_patch` target `src/pricing/coupons.py`', 'Turn 9 `apply_patch` target `src/pricing/coupons.py`', 'Turn 12 `apply_patch` target `src/pricing/coupons.py`']`.
+- Required-test attempts/failures: 2/2; PASS turn(s): none.
+- Finish turn/attempts: none/0; accepted: `False`.
+- Post-verification extra tool calls: None; max steps reached: `True`.
+
+### Current conclusion
+
+- Diagnosis recovery observed: `True`.
+- Next step: The 10-step run was accepted after 9 model calls; the 12-step run used its full budget and did not finish verification. These single runs do not justify changing the Runtime or selecting a new default budget.
+- Full child traces, canonical messages, tool chains, and metrics are retained in `phase23_budget_results.json`.
