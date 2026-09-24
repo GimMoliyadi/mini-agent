@@ -620,6 +620,130 @@ class FinishProtocolTests(unittest.TestCase):
             )
         self.assertEqual(state.last_successful_exact_required_test_seq, 4)
 
+    def test_required_test_can_run_again_after_workspace_mutation(self):
+        state = self.state()
+        rounds = self._budget_prefix() + [
+            self._required_reply("fail-8"),
+            tool_reply("repair", "write_file", {
+                "path": "calculator.py", "content": FIXED_CALCULATOR,
+            }),
+            self._required_reply("pass-10"),
+            tool_reply("later-edit", "write_file", {
+                "path": "calculator.py", "content": FIXED_CALCULATOR + "# later edit\n",
+            }),
+            self._required_reply("pass-12"),
+            self._finish_reply(),
+        ]
+        _, trace = self.run_loop(rounds[0], rounds[1:], state)
+        self.assertEqual(trace.model_calls, 13)
+        self.assertIs(state.status, acceptance.TaskStatus.FINISHED)
+        self.assertGreater(
+            state.last_successful_exact_required_test_seq,
+            state.last_mutation_event_seq,
+        )
+
+    def test_reads_and_searches_refresh_after_workspace_mutation(self):
+        state = self.state()
+        messages: list[dict] = []
+        executed: set[tuple[str, str]] = set()
+        observations = (
+            ("read_file", {"path": "calculator.py"}),
+            ("search_text", {"query": "later edit"}),
+            ("list_files", {}),
+        )
+        for index, (name, args) in enumerate(observations):
+            main.run_tool_round(
+                messages, tool_reply(f"before-{index}", name, args).message,
+                executed, main.always_allow, contract=self.contract, task_state=state,
+            )
+
+        original = (self.workspace / "calculator.py").read_text(encoding="utf-8")
+        main.run_tool_round(
+            messages, tool_reply("no-op", "write_file", {
+                "path": "./calculator.py", "content": original,
+            }).message,
+            executed, main.always_allow, contract=self.contract, task_state=state,
+        )
+        main.run_tool_round(
+            messages, tool_reply("still-duplicate", "read_file", {
+                "path": "calculator.py",
+            }).message,
+            executed, main.always_allow, contract=self.contract, task_state=state,
+        )
+        self.assertTrue(main.is_duplicate_notice(messages[-1]["content"]))
+        self.assertIsNone(state.last_mutation_event_seq)
+
+        main.run_tool_round(
+            messages, tool_reply("edit", "write_file", {
+                "path": "calculator.py", "content": FIXED_CALCULATOR + "# later edit\n",
+            }).message,
+            executed, main.always_allow, contract=self.contract, task_state=state,
+        )
+        self.assertIsNotNone(state.last_mutation_event_seq)
+
+        for index, (name, args) in enumerate(observations):
+            main.run_tool_round(
+                messages, tool_reply(f"after-{index}", name, args).message,
+                executed, main.always_allow, contract=self.contract, task_state=state,
+            )
+            self.assertFalse(main.is_duplicate_notice(messages[-1]["content"]))
+            if name != "list_files":
+                self.assertIn("later edit", messages[-1]["content"])
+
+    def test_plain_chat_read_refreshes_only_after_real_write(self):
+        messages: list[dict] = []
+        executed: set[tuple[str, str]] = set()
+        read_args = {"path": "calculator.py"}
+        original = (self.workspace / "calculator.py").read_text(encoding="utf-8")
+
+        for call_id, name, args in (
+            ("first-read", "read_file", read_args),
+            ("no-op", "write_file", {"path": "./calculator.py", "content": original}),
+            ("blocked-read", "read_file", read_args),
+        ):
+            main.run_tool_round(messages, tool_reply(call_id, name, args).message,
+                                executed, main.always_allow)
+        self.assertTrue(main.is_duplicate_notice(messages[-1]["content"]))
+
+        main.run_tool_round(
+            messages, tool_reply("real-write", "write_file", {
+                "path": "calculator.py", "content": FIXED_CALCULATOR + "# fresh\n",
+            }).message, executed, main.always_allow,
+        )
+        main.run_tool_round(
+            messages, tool_reply("fresh-read", "read_file", read_args).message,
+            executed, main.always_allow,
+        )
+        self.assertFalse(main.is_duplicate_notice(messages[-1]["content"]))
+        self.assertIn("# fresh", messages[-1]["content"])
+
+    def test_later_exact_test_failure_invalidates_prior_pass_before_finish(self):
+        state = self.state()
+        messages: list[dict] = []
+        executed: set[tuple[str, str]] = set()
+        test_args = {"command": "python", "args": REQUIRED_ARGS}
+        with patch.object(main, "execute_tool_call", side_effect=(
+            "Exit code: 0\nTimed out: false",
+            "Exit code: 1\nTimed out: false",
+        )):
+            main.run_tool_round(
+                messages, tool_reply("pass", "run_command", test_args).message,
+                executed, main.always_allow, required_test=self.required_test(),
+                contract=self.contract, task_state=state,
+            )
+            main.run_tool_round(
+                messages, multi_tool_reply(
+                    tool_call("fail", "run_command", {**test_args, "cwd": "."}),
+                    tool_call("finish", "finish_task", {"summary": "done"}),
+                ).message,
+                executed, main.always_allow, required_test=self.required_test(),
+                contract=self.contract, task_state=state,
+            )
+        self.assertIsNone(state.last_successful_exact_required_test_seq)
+        self.assertIs(state.status, acceptance.TaskStatus.RUNNING)
+        self.assertIn("successful_exact_required_test_missing",
+                      state.last_finish_rejection["reasons"])
+
     def test_gate_missing_contract_and_runtime_error_are_deterministic(self):
         state = self.state()
         missing = acceptance.evaluate_finish_request(None, state, self.workspace)

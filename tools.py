@@ -19,6 +19,7 @@ from config import (
     MAX_COMMAND_OUTPUT_CHARS,
     MAX_READ_RESULT_CHARS,
     MAX_TOOL_RESULT_CHARS,
+    PROJECT_ROOT,
     WORKSPACE_DIR,
 )
 
@@ -219,6 +220,26 @@ APPLY_PATCH_TOOL = {
     },
 }
 
+RENAME_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "rename_file",
+        "description": (
+            "重命名工作目录内已有文件；source 和 destination 都相对工作目录。"
+            "目标文件若已存在则拒绝，不会覆盖。Markdown 文件改名时保留 .md 扩展名。"
+            "这是有副作用的操作，执行前需要批准。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "已有文件路径，例如 notes/old.md"},
+                "destination": {"type": "string", "description": "新文件路径，例如 notes/new.md"},
+            },
+            "required": ["source", "destination"],
+        },
+    },
+}
+
 RUN_COMMAND_TOOL = {
     "type": "function",
     "function": {
@@ -285,6 +306,31 @@ INSPECT_CAPABILITIES_TOOL = {
         "parameters": {"type": "object", "properties": {}},
     },
 }
+
+INSPECT_PROJECT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "inspect_project",
+        "description": (
+            "只读查看这个 Agent 自身项目的核心源码和说明。省略 path 列出可读文件；"
+            "指定列表中的 path 可分页读取。工作目录文件仍用 read_file。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "列出的项目文件名，例如 tools.py；省略时列目录"},
+                "start_line": {"type": "integer", "minimum": 1, "default": 1},
+                "max_lines": {"type": "integer", "minimum": 1, "default": 100},
+            },
+        },
+    },
+}
+
+_PROJECT_INSPECTION_FILES = frozenset({
+    "README.md", "main.py", "tools.py", "config.py", "capabilities.py",
+    "session.py", "recovery.py", "acceptance.py", "cli.py", "agent.cmd",
+    "requirements.txt",
+})
 
 
 def resolve_inside_workspace(path: str, workspace: str | Path | None = None) -> Path:
@@ -357,10 +403,14 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 100) -> str:
     不吞异常、也不返回错误字符串——「怎么把失败说给模型听」
     是 Phase 3 执行层的职责，工具本身不该知道模型的存在。
     """
+    target = resolve_inside_workspace(path)
+    return _read_file_range(target, path, start_line, max_lines)
+
+
+def _read_file_range(target: Path, path: str, start_line: int, max_lines: int) -> str:
     _validate_positive_line_argument("start_line", start_line)
     _validate_positive_line_argument("max_lines", max_lines)
 
-    target = resolve_inside_workspace(path)
     selected_lines = []
     end_exclusive = start_line + max_lines
     total_lines = 0
@@ -401,6 +451,20 @@ def read_file(path: str, start_line: int = 1, max_lines: int = 100) -> str:
         raise ValueError("读取结果元数据超过单次工具结果上限，无法返回")
 
     return result
+
+
+def inspect_project(
+    path: str | None = None, start_line: int = 1, max_lines: int = 100
+) -> str:
+    """List or read a fixed set of this Agent's project files, never the workspace."""
+    if path is None:
+        return "可读的 Agent 项目文件：\n" + "\n".join(sorted(_PROJECT_INSPECTION_FILES))
+    if not isinstance(path, str) or path not in _PROJECT_INSPECTION_FILES:
+        raise PermissionError("只能读取 inspect_project 列出的项目文件")
+    target = (PROJECT_ROOT / path).resolve()
+    if not target.is_relative_to(PROJECT_ROOT.resolve()):
+        raise PermissionError("项目文件指向项目目录之外，拒绝读取")
+    return _read_file_range(target, path, start_line, max_lines)
 
 
 def list_files(path: str | None = None) -> str:
@@ -605,6 +669,24 @@ def write_file(path: str, content: str) -> str:
     size = len(content.encode("utf-8"))
     state = "已覆盖已有文件" if existed else "已写入新文件"
     return f"已写入 {target.name}（{size} 字节，{state}）"
+
+
+def rename_file(source: str, destination: str) -> str:
+    """Rename one file within the active workspace without replacing a target."""
+    if not source or not destination:
+        raise ValueError("source 和 destination 不能为空")
+    source_path = resolve_inside_workspace(source)
+    destination_path = resolve_inside_workspace(destination)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"源文件不存在：{source}")
+    if source_path == destination_path:
+        raise ValueError("目标文件名与源文件名相同")
+    if destination_path.exists():
+        raise FileExistsError(f"目标已存在，拒绝覆盖：{destination}")
+    if not destination_path.parent.is_dir():
+        raise FileNotFoundError(f"目标目录不存在：{destination_path.parent}")
+    source_path.rename(destination_path)
+    return f"已重命名 {source} → {destination}"
 
 
 def apply_patch(path: str, old_text: str, new_text: str) -> str:
@@ -890,6 +972,15 @@ TOOL_REGISTRY = {
         risk_level=RiskLevel.SIDE_EFFECT,
         workspace_mutation=True,
     ),
+    "rename_file": ToolDefinition(
+        name="rename_file",
+        schema=RENAME_FILE_TOOL,
+        handler=rename_file,
+        risk_level=RiskLevel.SIDE_EFFECT,
+        workspace_arguments=("source", "destination"),
+        operation_path_argument=None,
+        workspace_mutation=True,
+    ),
     "run_command": ToolDefinition(
         name="run_command",
         schema=RUN_COMMAND_TOOL,
@@ -916,6 +1007,14 @@ TOOL_REGISTRY = {
         workspace_arguments=(),
         operation_path_argument=None,
         uses_runtime_context=True,
+    ),
+    "inspect_project": ToolDefinition(
+        name="inspect_project",
+        schema=INSPECT_PROJECT_TOOL,
+        handler=inspect_project,
+        risk_level=RiskLevel.READ_ONLY,
+        workspace_arguments=(),
+        operation_path_argument=None,
     ),
 }
 

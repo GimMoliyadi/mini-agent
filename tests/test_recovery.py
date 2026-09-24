@@ -14,6 +14,13 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(recovery.observe(["MUTATION"], 11))
         self.assertEqual(recovery.stage, "VERIFY_NEEDED")
 
+    def test_later_test_failure_returns_to_repair(self):
+        recovery = Recovery()
+        self.assertFalse(recovery.observe(["MUTATION", "TEST_PASS"], 9))
+        self.assertFalse(recovery.observe(["TEST_FAIL"], 10))
+        self.assertEqual(recovery.stage, "REPAIR_NEEDED")
+        self.assertEqual((recovery.verifications, recovery.nonprogress), (1, 0))
+
     def test_premature_finish_and_multiple_detours_in_one_reply(self):
         recovery = Recovery()
         self.assertFalse(recovery.observe(["READ", "SEARCH"], 9))

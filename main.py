@@ -76,11 +76,17 @@ EXIT_COMMANDS = {"exit", "quit", "q"}
 # 这种合理的验证也一起砍掉。真正拦住重复动作的是重复调用检测。
 SYSTEM_PROMPT = (
     "你是一个运行在命令行里的助手。直接回答用户的问题，尽量简短，不要客套开场。\n"
+    "终端不渲染 Markdown；最终回答用简短标题和普通文本列表，不要输出 Markdown 表格或反引号。\n"
     "工具清单由 Runtime 提供：list_files 看工作目录里有什么，search_text 按固定字符串递归搜索，"
     "read_file 读文件内容，"
     "write_file 写入完整文本，apply_patch 对已有文件做唯一的精确局部替换，"
+    "rename_file 重命名工作目录中的文件，"
     "run_command 执行受控的本地开发命令，finish_task 请求结束 Coding Task，"
     "inspect_capabilities 查看当前 Tool 与 Runtime 能力。\n"
+    "要查看这个 Agent 自身的实现文件时，用 inspect_project 列出并分页读取允许的项目文件；"
+    "普通工作目录文件仍用 list_files/read_file。\n"
+    "用户要操作桌面文件而当前工作目录看不到时，说明需要用 mini start --desktop 新开会话；"
+    "不要在当前工作目录反复搜索同一个桌面文件。\n"
     "run_command 只能使用 command + args 数组，允许 python -m pytest、"
     "python -m unittest、git status、git diff、git log；不要使用 shell 语法、"
     "python -c、pip、PowerShell、cmd 或网络命令。cwd 必须在工作目录内。\n"
@@ -90,6 +96,11 @@ SYSTEM_PROMPT = (
     "需要文件内容时去读，不要凭记忆编造；新建文件或确实需要整文件覆盖时用 write_file，"
     "修改已有文件的一小段时可以用 apply_patch。apply_patch 的 old_text 必须恰好匹配一次，"
     "失败时先重新 read_file，不要猜测或模糊修改。\n"
+    "用户只说修改 Markdown 文件的基本文件名时，重命名后保留 .md 扩展名。\n"
+    "处理改名请求时，旧文件名不存在可能表示已经改名成功；先检查用户指定的新文件名，"
+    "如还要求修改内容，再读取新文件核对内容。若新文件及内容均已符合请求，"
+    "直接报告任务已完成，不要因为旧文件名不存在就重新执行或宣称失败；"
+    "若无法核实，则如实说明未知，不要猜测。\n"
     "用户要求列出工作目录中的文件时，应包含子目录中的文件；list_files 只列一层，"
     "遇到子目录需继续查看，最终列出相对路径。\n"
     "没有读取的文件只能根据名称介绍，不能断言其具体内容、与其他文件相同或哪个版本更精简。\n"
@@ -483,11 +494,11 @@ def log_reply(turn: int, reply: ModelReply) -> None:
     注意这里**没有**任何凭据：模型名、base_url 在启动横幅里已经打过，
     这里只打请求结果本身。不把 API Key 和请求头打进日志。
     """
-    print(f"\n── Turn {turn} ──")
-    print(f"  finish_reason     : {format_field(reply.finish_reason)}")
-    print(f"  prompt_tokens     : {format_field(reply.prompt_tokens)}")
-    print(f"  completion_tokens : {format_field(reply.completion_tokens)}")
-    print(f"  total_tokens      : {format_field(reply.total_tokens)}")
+    print(
+        f"\n── 第 {turn} 轮 · {format_field(reply.finish_reason)} · "
+        f"tokens {format_field(reply.prompt_tokens)}+{format_field(reply.completion_tokens)}"
+        f"={format_field(reply.total_tokens)}"
+    )
 
 
 def parse_tool_arguments(call) -> dict:
@@ -592,6 +603,9 @@ def ask_for_approval(tool_name: str, arguments: dict, operation: str) -> bool:
     print(f"工具：{tool_name}")
     if "path" in arguments:
         print(f"文件：{arguments.get('path', '?')}")
+    if tool_name == "rename_file":
+        print(f"从：{arguments.get('source', '?')}")
+        print(f"到：{arguments.get('destination', '?')}")
     print(f"操作：{operation}")
     try:
         answer = input("是否允许？[y/N] ").strip().lower()
@@ -617,6 +631,9 @@ def approval_callback_for_mode(mode: str, input_func=None) -> ApprovalCallback:
             print(f"工具：{tool_name}")
             if "path" in arguments:
                 print(f"文件：{arguments.get('path', '?')}")
+            if tool_name == "rename_file":
+                print(f"从：{arguments.get('source', '?')}")
+                print(f"到：{arguments.get('destination', '?')}")
             print(f"操作：{operation}")
             answer = input_func("是否允许？[y/N] ").strip().lower()
             return answer in {"y", "yes"}
@@ -643,7 +660,7 @@ def check_tool_permission(call, approval_callback: ApprovalCallback) -> tuple[bo
 
     try:
         arguments = parse_tool_arguments(call)
-        operation = definition.risk_level.value
+        operation = "RENAME" if tool_name == "rename_file" else definition.risk_level.value
         for argument_name in definition.workspace_arguments:
             value = arguments.get(argument_name)
             if value is None:
@@ -991,10 +1008,8 @@ def _update_task_state_after_normal_tool(
     event_seq: int | None,
     pre_mutation_snapshot: dict[str, str] | None,
 ) -> bool:
-    """Record only real mutations and successful exact required tests."""
-    if task_state is None or event_seq is None:
-        return False
-
+    """Detect real mutations and update Coding Task state when present."""
+    mutated = False
     if (
         pre_mutation_snapshot is not None
         and may_execute
@@ -1002,21 +1017,27 @@ def _update_task_state_after_normal_tool(
         and not result.startswith(APPROVAL_DENIED_PREFIX)
     ):
         post_mutation_snapshot = snapshot_workspace(WORKSPACE_DIR)
-        if changed_files(pre_mutation_snapshot, post_mutation_snapshot):
-            task_state.last_mutation_event_seq = event_seq
-            mutated = True
-        else:
-            mutated = False
-    else:
-        mutated = False
+        mutated = bool(changed_files(pre_mutation_snapshot, post_mutation_snapshot))
+
+    if task_state is None or event_seq is None:
+        return mutated
+    if mutated:
+        task_state.last_mutation_event_seq = event_seq
 
     if (
         may_execute
         and not result.startswith(TOOL_FAILURE_PREFIX)
         and call_matches_required_test(call, required_test)
-        and trace_exit_code(result) == "0"
     ):
-        task_state.last_successful_exact_required_test_seq = event_seq
+        exit_code = trace_exit_code(result)
+        if exit_code == "0":
+            task_state.last_successful_exact_required_test_seq = event_seq
+        elif (
+            exit_code is not None
+            and exit_code.lstrip("-").isdigit()
+            and "Timed out: false" in result.splitlines()
+        ):
+            task_state.last_successful_exact_required_test_seq = None
     return mutated
 
 
@@ -1034,14 +1055,38 @@ def _record_runtime_error(
         trace.set_task_state(task_state)
 
 
-def _print_trace_event(event: dict) -> None:
-    print(
-        "Trace > "
-        f"Turn {event['turn']} | tool={event['tool']} | "
-        f"args={event['arguments']} | approval={event['approval']} | "
-        f"result={event['result']} | exit_code={event['exit_code']} | "
-        f"write_target={event['write_target']}"
-    )
+def _print_tool_call(call) -> None:
+    arguments, _ = trace_arguments(call)
+    detail = "" if arguments == "{}" else f" {arguments}"
+    print(f"\n工具调用 · {call.function.name}{detail}")
+
+
+def _print_tool_result(tool_name: str, result: str) -> None:
+    if tool_name == "inspect_capabilities" and not result.startswith(TOOL_FAILURE_PREFIX):
+        try:
+            snapshot = json.loads(result)
+            available = sum(item["currently_available"] for item in snapshot["callable_tools"])
+            total = len(snapshot["callable_tools"])
+            features = len(snapshot["runtime_features"])
+            print(f"  结果 · {available}/{total} 个工具当前可用，{features} 项 Runtime 状态已交给 Agent")
+            return
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    lines = result.splitlines()
+    if tool_name in {"read_file", "inspect_project"} and result.startswith("文件："):
+        print("  结果 · " + "；".join(lines[:3]))
+        return
+    if tool_name == "run_command" and not result.startswith(TOOL_FAILURE_PREFIX):
+        code = trace_exit_code(result)
+        if code is not None:
+            print(f"  结果 · 命令退出码 {code}（输出已交给 Agent）")
+            return
+
+    first_line = next((line for line in lines if line.strip()), "<空结果>")
+    preview = first_line[:180] + ("…" if len(first_line) > 180 else "")
+    suffix = f"（其余 {len(lines) - 1} 行已交给 Agent）" if len(lines) > 1 else ""
+    print(f"  结果 · {preview}{suffix}")
 
 
 def run_tool_round(
@@ -1078,14 +1123,14 @@ def run_tool_round(
     last_tool = None
 
     for call in calls:
-        print(f"\nAgent 想调用工具：{call.function.name}({call.function.arguments})")
+        _print_tool_call(call)
         definition = TOOL_REGISTRY.get(call.function.name)
 
         if definition is not None and definition.tool_kind is ToolKind.CONTROL_FLOW:
             result, classification, event_seq, gate_result = _finish_control_flow_result(
                 call, contract, task_state
             )
-            print(f"Tool 结果 > {result}")
+            _print_tool_result(call.function.name, result)
             messages.append(tool_result_message(call, result))
             last_tool = (call, result, True)
             if round_events is not None:
@@ -1102,7 +1147,6 @@ def run_tool_round(
                     gate_result,
                 )
                 trace.set_task_state(task_state)
-                _print_trace_event(event)
             break
 
         event_seq = task_state.next_event() if task_state is not None else None
@@ -1114,8 +1158,7 @@ def run_tool_round(
             duplicate_notice = (
                 CODING_DUPLICATE_NOTICE if required_test is not None else DUPLICATE_NOTICE
             )
-            print("（重复调用被拦截，未真正执行）")
-            print(f"Tool 结果 > {duplicate_notice}")
+            print("  结果 · 相同调用已成功执行，跳过重复操作")
             messages.append(tool_result_message(call, duplicate_notice))
             last_tool = (call, duplicate_notice, False)
             if trace is not None:
@@ -1128,15 +1171,13 @@ def run_tool_round(
                     event_seq=event_seq,
                 )
                 trace.set_task_state(task_state)
-                _print_trace_event(event)
             continue
 
         may_execute, permission_result = check_tool_permission(call, approval_callback)
         pre_mutation_snapshot = (
             snapshot_workspace(WORKSPACE_DIR)
             if (
-                task_state is not None
-                and may_execute
+                may_execute
                 and definition is not None
                 and definition.workspace_mutation
             )
@@ -1160,6 +1201,9 @@ def run_tool_round(
             event_seq,
             pre_mutation_snapshot,
         )
+        if mutated:
+            # Earlier tool results may no longer describe the changed workspace.
+            executed.clear()
         if round_events is not None:
             if mutated:
                 round_events.append("MUTATION")
@@ -1176,7 +1220,7 @@ def run_tool_round(
             # 模型换个参数重试是合理行为，拦它才是帮倒忙。
             executed.add(fingerprint)
 
-        print(f"Tool 结果 > {result}")
+        _print_tool_result(call.function.name, result)
         messages.append(tool_result_message(call, result))
         last_tool = (call, result, may_execute and definition is not None)
         if trace is not None:
@@ -1202,7 +1246,6 @@ def run_tool_round(
                 event_seq=event_seq,
             )
             trace.set_task_state(task_state)
-            _print_trace_event(event)
 
     return last_tool
 
@@ -1269,8 +1312,6 @@ def run_agent_loop(
             trace.record_model_turn(step, reply)
         if not reply.message.tool_calls:
             finalize(messages, reply.message)
-            if trace is not None:
-                print(f"Trace > Turn {step} | action=Final Answer")
             if contract is None:
                 return
             stop_recovery = recovery.observe([], step) if recovery is not None else False

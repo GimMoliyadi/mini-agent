@@ -30,8 +30,12 @@
 风险、审批要求、当前可用性和不可用原因；后者报告 Session、Context、Sandbox、
 Finish Gate、Verifier、verification freshness、stage-aware recovery 等 Runtime 能力，
 并区分 `supported`、`active`、`current_state`。Runtime 能保存 Session，不表示模型能直接调用
-Session Tool；当前没有 rename/move Tool。`run_command` 受现有 command policy 限制，
+Session Tool；当前有工作区内 `rename_file`，没有任意位置的 move Tool。`run_command` 受现有 command policy 限制，
 不是任意 shell。能力问题优先调用 `inspect_capabilities()`，不靠 sandbox 源码推测。
+
+需要核对具体实现时，`inspect_project()` 可列出并分页读取 Agent 自身的一小组核心项目文件。
+这是只读入口；`.env`、会话、测试产物和项目外文件不在可读列表中。普通任务文件继续通过
+`list_files` / `read_file` 访问 `AGENT_WORKSPACE`，写入和命令执行边界不变。
 
 ### Windows 交互式启动
 
@@ -46,6 +50,27 @@ py -3 -m venv .venv
 `agent.cmd` 使用脚本自身目录定位 `.venv\Scripts\python.exe` 和 `main.py`，不改全局 PATH；
 可从其他当前目录用脚本路径启动。`--resume SESSION_ID` 参数会原样传给正式入口。
 单任务 JSON 入口仍为 `cli.py --task ...`。
+
+快捷命令 `mini start` 从任意目录启动同一个交互入口；`mini start --resume SESSION_ID`
+恢复会话，`mini help` 显示用法。项目内的 `mini.cmd` 是实际分发脚本，用户 PATH 中的
+`~\.local\bin\mini.cmd` 只负责转发到本项目。移动项目目录后需更新该转发脚本。
+
+要处理桌面文件，**新开会话**运行 `mini start --desktop`。此模式把工作区限定为桌面；
+`read_file`、`write_file` 和 `rename_file` 才能看到桌面文件，写入和重命名仍按审批模式处理。
+`rename_file` 拒绝覆盖已有目标文件。普通 `mini start` 仍使用 `demo_workspace`。
+
+终端执行记录只显示工具名、简要参数和结果摘要；`inspect_capabilities` 显示可用工具数量，
+不会把整段 JSON 打满屏幕。完整工具结果仍会交给模型并保存在会话消息中；任务 Trace 数据不变。
+
+Phase 24.4 已加入第 8 次固定 required test 实际 FAIL 后的阶段式恢复控制。
+恢复最多允许 2 次有效修改、2 次固定测试、1 次有效 finish 和 2 次无进展轮，
+总模型调用数不超过 15；普通任务仍限 8 次。两次固定前缀真实验证中，
+一次因无进展额度耗尽而未接受，另一次在第 15 次调用完成并通过独立验收。
+实现、验证结果与复现方式见 [Phase 24.4 报告](eval/phase24_4_report.md)。
+
+Phase 24.5 修复了真实修改后读取、搜索和固定测试被旧重复调用记录拦截的问题。
+两次追加的固定前缀真实运行都在第 11 次调用通过独立验收；
+样本与限制见 [Phase 24.5 报告](eval/phase24_5_report.md)。
 
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
@@ -88,6 +113,7 @@ Runtime 只读取 `risk_level`，不再按 `write_file` 这样的具体工具名
 | `list_files` | 列工作目录一层内容，标 `[f]`/`[d]` 和字节数。`path` 可选，省略就是列根目录 |
 | `write_file` | 写 UTF-8 文本，父目录不存在会自动创建，但只能创建在沙盒内 |
 | `apply_patch` | 对已有 UTF-8 文本做 `old_text → new_text` 精确替换，`old_text` 必须唯一匹配 |
+| `rename_file` | 在当前工作区内重命名已有文件；目标已存在时拒绝覆盖 |
 | `run_command` | 以 `shell=False` 执行白名单内的 Python 测试或 Git 只读命令 |
 | `TOOL_REGISTRY` | 工具名 → `ToolDefinition(name, schema, handler, risk_level)`。新增正式工具只在这里注册 |
 
@@ -669,7 +695,7 @@ Acceptance 测试均通过。真实 Provider 最小请求成功，真实 Coding 
   Final → Acceptance Mock 闭环通过，全量 104 项测试通过（1 项 Windows 符号链接测试跳过）。真实模型请求
   因 Provider 连接错误未进入 Agent，未伪造真实调用或 token 结论。
 
-Phase 25 已加入 Runtime Capability Introspection 和 Windows launcher。
+阶段式恢复及修改后的重复调用刷新已完成 Phase 24.5；四次固定前缀真实验证仍不足以判断通过率或 token 成本的稳定性。
 
 > **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
 > 实际在 Phase 2 就和 `read_file` 一起做掉了。
@@ -833,7 +859,10 @@ Gate 从不判断“用户想要的大概完成了没有”。
 - `last_mutation_event_seq`：仅当工具定义标了 `workspace_mutation`（`write_file`、`apply_patch`）、
   已获批准、无失败前缀，且前后 workspace 摘要确实不同。失败、被拒、duplicate、no-op 都不移动。
 - `last_successful_exact_required_test_seq`：仅当 `run_command` 的 command + args + cwd 与 Contract 完全一致，
-  且退出码为 0。
+  且退出码为 0。较新的固定测试若实际执行且以非零码失败，会清除此游标；后续 PASS 可重新建立。
+
+真实文件修改会清除先前成功的工具调用记录，使相同的读取、搜索和固定测试能针对新内容重新执行；
+失败修改和 no-op 不会清除记录。
 
 失败的历史测试不留下永久污染：`test FAIL → patch → exact test PASS → finish_task` 最终可以通过，
 因为游标记的是「当前最新有效状态」，不是「历史上有没有失败过」。

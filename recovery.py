@@ -26,6 +26,9 @@ class Recovery:
                 self.verifications += 1
                 self.stage = "FINISH_NEEDED" if event == "TEST_PASS" else "REPAIR_NEEDED"
                 advanced = True
+            elif event == "TEST_FAIL" and self.stage == "FINISH_NEEDED":
+                self.stage = "REPAIR_NEEDED"
+                advanced = True
             elif event == "FINISH_ACCEPTED":
                 self.finishes += int(self.stage == "FINISH_NEEDED")
                 self.stage = "FINISHED"

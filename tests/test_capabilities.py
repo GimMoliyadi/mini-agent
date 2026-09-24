@@ -1,5 +1,7 @@
 import json
+import io
 import os
+from contextlib import redirect_stdout
 from pathlib import Path
 import subprocess
 import sys
@@ -27,7 +29,8 @@ class CapabilityTests(unittest.TestCase):
         snapshot = self.snapshot()
         names = {item["name"] for item in snapshot["callable_tools"]}
         self.assertEqual(names, set(tools.TOOL_REGISTRY))
-        self.assertFalse({"rename_file", "move_file"} & names)
+        self.assertIn("rename_file", names)
+        self.assertNotIn("move_file", names)
         for item in snapshot["callable_tools"]:
             definition = tools.TOOL_REGISTRY[item["name"]]
             self.assertEqual(item["risk_level"], definition.risk_level.value)
@@ -79,11 +82,32 @@ class CapabilityTests(unittest.TestCase):
         call = SimpleNamespace(id="inspect", function=SimpleNamespace(name="inspect_capabilities", arguments="{}"))
         reply = SimpleNamespace(tool_calls=[call], content=None)
         messages = []
-        main.run_tool_round(messages, reply, set(), main.always_allow)
+        terminal = io.StringIO()
+        with redirect_stdout(terminal):
+            main.run_tool_round(messages, reply, set(), main.always_allow)
         result = json.loads(messages[-1]["content"])
         self.assertFalse(next(item for item in result["callable_tools"] if item["name"] == "finish_task")["currently_available"])
         self.assertEqual(result["runtime_features"]["Coding Contract"]["active"], False)
         self.assertLessEqual(len(messages[-1]["content"]), main.MAX_TOOL_RESULT_CHARS)
+        self.assertIn("个工具当前可用", terminal.getvalue())
+        self.assertNotIn('"callable_tools"', terminal.getvalue())
+
+    def test_project_inspection_reads_only_core_files(self):
+        listing = tools.inspect_project()
+        self.assertIn("tools.py", listing)
+        self.assertNotIn(".env", listing)
+        self.assertIn("TOOL_REGISTRY", tools.inspect_project("tools.py", max_lines=20))
+        for path in (".env", "sessions/private.json", "../outside.py", "demo_workspace/todo.txt"):
+            with self.assertRaises(PermissionError):
+                tools.inspect_project(path)
+        with self.assertRaises(ValueError):
+            tools.inspect_project("tools.py", start_line=0)
+
+        call = SimpleNamespace(id="source", function=SimpleNamespace(
+            name="inspect_project", arguments=json.dumps({"path": "capabilities.py", "max_lines": 5})))
+        messages = []
+        main.run_tool_round(messages, SimpleNamespace(tool_calls=[call], content=None), set(), main.always_allow)
+        self.assertIn("文件：capabilities.py", messages[-1]["content"])
 
     @unittest.skipUnless(os.name == "nt", "Windows launcher")
     def test_launcher_reaches_formal_interactive_entry_from_another_directory(self):

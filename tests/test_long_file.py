@@ -202,17 +202,17 @@ class MockPaginationTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, output)
                 session_match = re.search(r"Session: ([A-Za-z0-9_-]+)", output)
                 session_id = session_match.group(1) if session_match else None
-                self.assertIn('read_file({"path": "long_notes.md"})', output)
+                self.assertIn('read_file {"path": "long_notes.md"}', output)
                 self.assertIn(
-                    'read_file({"path": "long_notes.md", "start_line": 101, "max_lines": 100})',
+                    'read_file {"max_lines": 100, "path": "long_notes.md", "start_line": 101}',
                     output,
                 )
                 self.assertIn(
-                    'read_file({"path": "long_notes.md", "start_line": 201, "max_lines": 100})',
+                    'read_file {"max_lines": 100, "path": "long_notes.md", "start_line": 201}',
                     output,
                 )
                 self.assertIn(
-                    'read_file({"path": "long_notes.md", "start_line": 301, "max_lines": 100})',
+                    'read_file {"max_lines": 100, "path": "long_notes.md", "start_line": 301}',
                     output,
                 )
                 self.assertIn("TARGET_FACT 的值：phase9-secret-value", output)
