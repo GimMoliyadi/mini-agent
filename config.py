@@ -175,9 +175,7 @@ def load_config() -> LLMConfig:
     if missing:
         raise SystemExit(
             "[错误] 缺少必要的环境变量：" + ", ".join(missing) + "\n"
-            "请复制 .env.example 为 .env 并填入你的 API Key：\n"
-            "  PowerShell : Copy-Item .env.example .env\n"
-            "  CMD        : copy .env.example .env"
+            "请先运行 .\\mini.cmd config 配置 API 地址、模型名和 API Key。"
         )
 
     return LLMConfig(

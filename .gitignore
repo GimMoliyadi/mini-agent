@@ -10,6 +10,8 @@ env/
 
 # 密钥：任何情况下都不要提交 .env
 .env
+.env.*
+!.env.example
 
 # IDE / 编辑器
 .idea/

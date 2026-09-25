@@ -28,14 +28,13 @@
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
-```
-
-在 `.env` 中填入自己的 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`，然后启动：
-
-```powershell
+.\mini.cmd config
 .\mini.cmd start
 ```
+
+`config` 会依次询问 API 地址、模型名和 API Key；密钥输入不回显，配置只保存到本地
+`.env`。以后修改配置仍运行 `.\mini.cmd config`，直接回车可保留已有值。
+如需手动配置，也可以复制 `.env.example` 为 `.env` 并填写这三项。
 
 默认只操作项目内的 `demo_workspace`；文件写入和重命名默认询问批准。运行
 `.\mini.cmd start --desktop` 才会把工作区切换到桌面。`.env` 和本地会话文件已被 Git 忽略。
