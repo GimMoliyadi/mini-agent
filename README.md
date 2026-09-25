@@ -18,8 +18,29 @@
   （OpenAI / DeepSeek / GLM / Kimi / OpenRouter / 本地 Ollama）
 - **不用** LangChain / LangGraph / MCP / 数据库 / RAG / Memory —— 全部自己写，因为要经历它
 
-选 OpenAI 兼容协议的真正原因：`openai` SDK 会自动读取 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`
-两个环境变量，**换服务商只改 `.env`，一行代码都不用动**。
+选 OpenAI 兼容协议的真正原因：程序从 `.env` 读取 `OPENAI_API_KEY`、
+`OPENAI_BASE_URL` 和 `OPENAI_MODEL`，再交给 `openai` SDK；更换兼容服务时只需修改配置。
+
+## 首次使用（Windows）
+
+需要 Python 3.11，以及支持工具调用的 OpenAI 兼容模型。克隆仓库后，在项目目录运行：
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+在 `.env` 中填入自己的 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL`，然后启动：
+
+```powershell
+.\mini.cmd start
+```
+
+默认只操作项目内的 `demo_workspace`；文件写入和重命名默认询问批准。运行
+`.\mini.cmd start --desktop` 才会把工作区切换到桌面。`.env` 和本地会话文件已被 Git 忽略。
+`mini start` 这种省略路径的写法需要自行把项目目录或转发脚本加入 PATH；克隆仓库后
+直接使用上面的 `.\mini.cmd start`。
 
 ## 当前状态：Phase 25
 
@@ -39,25 +60,18 @@ Session Tool；当前有工作区内 `rename_file`，没有任意位置的 move 
 
 ### Windows 交互式启动
 
-首次在仓库目录创建环境并安装依赖：
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-之后在 CMD 输入 `agent`，在 PowerShell 输入 `.\agent`，即进入现有 `main.py` 交互式 CLI。
+首次安装步骤见上方。之后在项目目录运行 `.\mini.cmd start`，或在 CMD 输入
+`agent.cmd`、在 PowerShell 输入 `.\agent.cmd`，即进入现有 `main.py` 交互式 CLI。
 `agent.cmd` 使用脚本自身目录定位 `.venv\Scripts\python.exe` 和 `main.py`，不改全局 PATH；
 可从其他当前目录用脚本路径启动。`--resume SESSION_ID` 参数会原样传给正式入口。
 单任务 JSON 入口仍为 `cli.py --task ...`。
 
-快捷命令 `mini start` 从任意目录启动同一个交互入口；`mini start --resume SESSION_ID`
-恢复会话，`mini help` 显示用法。项目内的 `mini.cmd` 是实际分发脚本，用户 PATH 中的
-`~\.local\bin\mini.cmd` 只负责转发到本项目。移动项目目录后需更新该转发脚本。
+`.\mini.cmd start --resume SESSION_ID` 恢复会话，`.\mini.cmd help` 显示用法。
+需要从任意目录使用时，可通过项目内 `mini.cmd` 的完整路径启动。
 
-要处理桌面文件，**新开会话**运行 `mini start --desktop`。此模式把工作区限定为桌面；
+要处理桌面文件，**新开会话**运行 `.\mini.cmd start --desktop`。此模式把工作区限定为桌面；
 `read_file`、`write_file` 和 `rename_file` 才能看到桌面文件，写入和重命名仍按审批模式处理。
-`rename_file` 拒绝覆盖已有目标文件。普通 `mini start` 仍使用 `demo_workspace`。
+`rename_file` 拒绝覆盖已有目标文件。普通 `.\mini.cmd start` 仍使用 `demo_workspace`。
 
 终端执行记录只显示工具名、简要参数和结果摘要；`inspect_capabilities` 显示可用工具数量，
 不会把整段 JSON 打满屏幕。完整工具结果仍会交给模型并保存在会话消息中；任务 Trace 数据不变。
