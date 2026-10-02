@@ -1,7 +1,8 @@
 import io
 import json
-import sys
+import os
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -9,184 +10,155 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import cli
-import acceptance
-import main
-import tools
 
 
 class CliTests(unittest.TestCase):
-    def invoke(self, loop):
-        client = Mock()
-        with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
-             patch.object(cli.main, "build_client", return_value=client), \
-             patch.object(cli.main, "ask"), patch.object(cli.main, "log_reply"), \
-             patch.object(cli.main, "run_agent_loop", side_effect=loop):
-            result = cli.run_task("test")
-        client.close.assert_called_once()
-        return result
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir()
+        environment = patch.dict(os.environ, {
+            "AGENT_WORKSPACE": str(self.workspace),
+            "MINI_AGENT_STATE_DIR": str(self.root / "state"),
+            "OPENAI_API_KEY": "cli-test-private-key",
+            "OPENAI_BASE_URL": "http://127.0.0.1:1/v1",
+            "OPENAI_MODEL": "offline-test",
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
 
-    def test_completed(self):
-        def loop(client, model, messages, reply, executed, approval_callback, trace=None, **kwargs):
-            messages.append({"role": "assistant", "content": "done"})
-        self.assertEqual(self.invoke(loop)["answer"], "done")
+    def invoke_cli(self, result=None, *, error=None, argv=None):
+        output, logs = io.StringIO(), io.StringIO()
+        runner = Mock(return_value=result, side_effect=error)
+        with patch.object(cli, "run_task", runner), patch.object(cli.sys, "stdout", output), patch.object(cli.sys, "stderr", logs):
+            code = cli.cli(["--task", "测试"] if argv is None else argv)
+        return code, json.loads(output.getvalue()), logs.getvalue(), runner
 
-    def test_incomplete(self):
-        self.assertEqual(self.invoke(lambda *args, **kwargs: None)["status"], "incomplete")
+    def test_run_task_delegates_to_shared_runner_without_reimplementing_runtime(self):
+        contract, record = object(), {"session_id": "example"}
+        result = {"status": "completed", "answer": "完成", "session_id": "example", "budget": {"model_calls": 1}}
+        runner = Mock(return_value=result)
+        fake_main = SimpleNamespace(run_task_with_session=runner)
+        with patch.dict(sys.modules, {"main": fake_main}):
+            self.assertIs(cli.run_task(None, contract, resume_id="example", record=record), result)
+        runner.assert_called_once_with(None, contract=contract, resume_id="example", record=record)
+
+    def test_completed_and_incomplete_keep_shared_runner_status(self):
+        for status, expected in (("completed", 0), ("incomplete", 1), ("failed", 1), ("limit_reached", 1), ("cancelled", 130)):
+            with self.subTest(status=status):
+                result = {"status": status, "answer": "不可据此判断成功", "error": None, "budget": {"exhausted": status == "limit_reached"}}
+                code, payload, _, _ = self.invoke_cli(result)
+                self.assertEqual(code, expected)
+                self.assertEqual(payload, result)
 
     def test_contract_result_contains_independent_acceptance(self):
-        temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_dir.cleanup)
-        workspace = Path(temp_dir.name)
-        (workspace / "calculator.py").write_text(
-            "def add(a, b):\n    return a + b\n\n\ndef subtract(a, b):\n    return a - b\n",
-            encoding="utf-8",
-        )
-        (workspace / "test_calculator.py").write_text(
-            "import unittest\nfrom calculator import add, subtract\n\n"
-            "class CalculatorTests(unittest.TestCase):\n"
-            "    def test_add(self): self.assertEqual(add(2, 3), 5)\n"
-            "    def test_subtract(self): self.assertEqual(subtract(5, 3), 2)\n",
-            encoding="utf-8",
-        )
-        contract = acceptance.CodingTaskContract.from_dict({
-            "task_id": "calculator_fix",
-            "instruction": "修复 calculator.py",
-            "allowed_paths": ["calculator.py"],
-            "test_command": {
-                "command": "python",
-                "args": ["-m", "unittest", "test_calculator", "-q"],
-            },
-        })
+        acceptance = {"accepted": False, "final_test_exit_code": 1, "reasons": ["测试失败"]}
+        result = {"status": "incomplete", "answer": "模型声称完成", "error": "测试失败", "acceptance": acceptance}
+        code, payload, _, _ = self.invoke_cli(result)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["acceptance"], acceptance)
 
-        def loop(client, model, messages, reply, executed, approval_callback, trace=None, **kwargs):
-            self.assertEqual(
-                kwargs["required_test"],
-                ("python", ("-m", "unittest", "test_calculator", "-q"), "."),
-            )
-            self.assertIn("Coding Task 收口规则", messages[0]["content"])
-            task_state = kwargs["task_state"]
-            task_state.event_seq = 2
-            task_state.last_mutation_event_seq = 1
-            task_state.last_successful_exact_required_test_seq = 2
-            task_state.record_finish_attempt("done", True, [])
-            trace.set_task_state(task_state)
+    def test_valid_contract_and_resume_are_forwarded(self):
+        path = self.root / "contract.json"
+        path.write_text(json.dumps({
+            "task_id": "task", "instruction": "修复", "allowed_paths": ["calculator.py"],
+            "test_command": {"command": "python", "args": ["-m", "unittest", "test_calculator", "-q"]},
+        }), encoding="utf-8")
+        code, _, _, runner = self.invoke_cli({"status": "completed"}, argv=["--contract", str(path), "--resume", "saved-session"])
+        self.assertEqual(code, 0)
+        self.assertIsNone(runner.call_args.args[0])
+        self.assertEqual(runner.call_args.kwargs["contract"].instruction, "修复")
+        self.assertEqual(runner.call_args.kwargs["resume_id"], "saved-session")
 
-        original_workspace = cli.main.WORKSPACE_DIR
-        original_tool_workspace = tools.WORKSPACE_DIR
-        cli.main.WORKSPACE_DIR = workspace
-        tools.WORKSPACE_DIR = workspace
-        self.addCleanup(setattr, cli.main, "WORKSPACE_DIR", original_workspace)
-        self.addCleanup(setattr, tools, "WORKSPACE_DIR", original_tool_workspace)
-        client = Mock()
-        with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
-             patch.object(cli, "get_approval_mode", return_value="ALLOW"), \
-             patch.object(cli.main, "build_client", return_value=client), \
-             patch.object(cli.main, "ask"), patch.object(cli.main, "log_reply"), \
-             patch.object(cli.main, "run_agent_loop", side_effect=loop):
-            result = cli.run_task("ignored", contract=contract)
-        self.assertTrue(result["acceptance"]["accepted"])
-        self.assertEqual(result["acceptance"]["final_test_exit_code"], 0)
-        self.assertEqual(result["answer"], "done")
-
-    def test_contract_refuses_ask_without_a_terminal_before_any_model_call(self):
-        temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_dir.cleanup)
-        contract = acceptance.CodingTaskContract.from_dict({
-            "task_id": "calculator_fix",
-            "instruction": "修复 calculator.py",
-            "allowed_paths": ["calculator.py"],
-            "test_command": {
-                "command": "python",
-                "args": ["-m", "unittest", "test_calculator", "-q"],
-                "cwd": ".",
-            },
-        })
-        ask = Mock()
-        build_client = Mock()
-
-        with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
-             patch.object(cli, "get_approval_mode", return_value="ASK"), \
-             patch.object(cli.main, "interactive_approval_available", return_value=False), \
-             patch.object(cli.main, "build_client", build_client), \
-             patch.object(cli.main, "ask", ask):
-            result = cli.run_task("ignored", contract=contract)
-
-        self.assertEqual(result["status"], "failed")
-        self.assertIsNone(result["answer"])
-        self.assertEqual(result["error"], main.NON_INTERACTIVE_APPROVAL_ERROR)
-        self.assertEqual(result["trace"]["model_calls"], 0)
-        ask.assert_not_called()
-        build_client.assert_not_called()
-
-    def test_contract_allows_allow_mode_without_a_terminal(self):
-        temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_dir.cleanup)
-        (Path(temp_dir.name) / "calculator.py").write_text(
-            "def add(a, b):\n    return a + b\n",
-            encoding="utf-8",
-        )
-        contract = acceptance.CodingTaskContract.from_dict({
-            "task_id": "calculator_fix",
-            "instruction": "修复 calculator.py",
-            "allowed_paths": ["calculator.py"],
-            "test_command": {
-                "command": "python",
-                "args": ["-m", "unittest", "test_calculator", "-q"],
-                "cwd": ".",
-            },
-        })
-        original_workspace = cli.main.WORKSPACE_DIR
-        self.addCleanup(setattr, cli.main, "WORKSPACE_DIR", original_workspace)
-        cli.main.WORKSPACE_DIR = Path(temp_dir.name)
-
-        client = Mock()
-        with patch.object(cli, "load_config", return_value=SimpleNamespace(model="test")), \
-             patch.object(cli, "get_approval_mode", return_value="ALLOW"), \
-             patch.object(cli.main, "interactive_approval_available", return_value=False), \
-             patch.object(cli.main, "build_client", return_value=client), \
-             patch.object(cli.main, "ask"), patch.object(cli.main, "log_reply"), \
-             patch.object(cli.main, "run_agent_loop"):
-            result = cli.run_task("ignored", contract=contract)
-
-        client.close.assert_called_once()
-        self.assertEqual(result["status"], "incomplete")
-
-    def test_provider_error(self):
-        self.assertEqual(self.invoke(TimeoutError("timeout"))["status"], "failed")
+    def test_expected_runtime_errors_are_json_and_nonzero(self):
+        for error in (SystemExit("缺少配置"), PermissionError("审批不可用"), TimeoutError("请求超时"), ValueError("预算配置无效"), EOFError("无终端")):
+            with self.subTest(error=type(error).__name__):
+                code, payload, _, _ = self.invoke_cli(error=error)
+                self.assertEqual(code, 1)
+                self.assertEqual(payload["status"], "failed")
+                self.assertIsNone(payload["answer"])
+                self.assertTrue(payload["error"])
 
     def test_cancel(self):
-        self.assertEqual(self.invoke(KeyboardInterrupt())["status"], "cancelled")
+        code, payload, _, _ = self.invoke_cli(error=KeyboardInterrupt())
+        self.assertEqual(code, 130)
+        self.assertEqual(payload["status"], "cancelled")
 
-    def capture_cli_result(self, answer):
-        buffer = io.BytesIO()
-        stdout = io.TextIOWrapper(buffer, encoding="cp936")
+    def test_invalid_arguments_return_json_without_starting_runtime(self):
+        for argv in ([], ["--task", " "], ["--resume", " "], ["--unknown"], ["--task", "x", "--desktop", "--workspace", "x"]):
+            with self.subTest(argv=argv):
+                code, payload, _, runner = self.invoke_cli(argv=argv)
+                self.assertEqual(code, 2)
+                self.assertEqual(payload["status"], "failed")
+                runner.assert_not_called()
+
+    def test_contract_file_and_json_errors_do_not_escape_boundary(self):
+        malformed = self.root / "malformed.json"
+        malformed.write_text("{bad", encoding="utf-8")
+        invalid = self.root / "invalid.json"
+        invalid.write_text("[]", encoding="utf-8")
+        invalid_encoding = self.root / "encoding.json"
+        invalid_encoding.write_bytes(bytes([255]))
+        for path in (self.root / "missing.json", malformed, invalid, invalid_encoding):
+            with self.subTest(path=path):
+                code, payload, _, runner = self.invoke_cli(argv=["--contract", str(path)])
+                self.assertEqual(code, 1)
+                self.assertEqual(payload["status"], "failed")
+                runner.assert_not_called()
+
+    def test_unknown_bug_is_not_converted_to_success(self):
+        with patch.object(cli, "run_task", side_effect=RuntimeError("programming bug")), patch.object(cli.sys, "stdout", io.StringIO()), patch.object(cli.sys, "stderr", io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "programming bug"):
+                cli.cli(["--task", "测试"])
+
+    def test_errors_and_nested_results_are_redacted(self):
+        secret = os.environ["OPENAI_API_KEY"]
+        _, error, _, _ = self.invoke_cli(error=ValueError(f"配置错误 {secret}"))
+        self.assertNotIn(secret, json.dumps(error))
+        _, payload, _, _ = self.invoke_cli({"status": "completed", "answer": secret, "trace": {"events": [{"message": secret}]}})
+        self.assertNotIn(secret, json.dumps(payload))
+
+    def test_runner_logs_go_to_stderr_and_stdout_contains_only_json(self):
+        def runner(*args, **kwargs):
+            print("运行日志")
+            return {"status": "completed", "answer": "完成"}
+        fake_main = SimpleNamespace(run_task_with_session=runner)
+        output, logs = io.StringIO(), io.StringIO()
+        with patch.dict(sys.modules, {"main": fake_main}), patch.object(cli.sys, "stdout", output), patch.object(cli.sys, "stderr", logs):
+            self.assertEqual(cli.cli(["--task", "测试"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["answer"], "完成")
+        self.assertIn("运行日志", logs.getvalue())
+
+    def test_help_remains_standard_argparse_output(self):
+        output = io.StringIO()
+        with patch.object(cli.sys, "stdout", output):
+            with self.assertRaises(SystemExit) as raised:
+                cli.cli(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertIn("--resume", output.getvalue())
+        self.assertNotIn('"status"', output.getvalue())
+
+    def test_unicode_json_and_logs_are_utf8_on_legacy_windows_streams(self):
+        stdout_buffer, stderr_buffer = io.BytesIO(), io.BytesIO()
+        stdout = io.TextIOWrapper(stdout_buffer, encoding="cp936")
+        stderr = io.TextIOWrapper(stderr_buffer, encoding="cp936")
+        answer = "测试全部通过 " + chr(0x2705)
+        def runner(*args, **kwargs):
+            print("日志 " + chr(0x2705))
+            return {"status": "completed", "answer": answer}
+        fake_main = SimpleNamespace(run_task_with_session=runner)
         try:
-            with patch.object(cli, "run_task", return_value={
-                "status": "completed",
-                "answer": answer,
-                "error": None,
-            }), patch.object(cli.sys, "stdout", stdout), patch.object(
-                cli.sys, "argv", ["cli.py", "--task", "test"]
-            ):
-                exit_code = cli.cli()
+            with patch.dict(sys.modules, {"main": fake_main}), patch.object(cli.sys, "stdout", stdout), patch.object(cli.sys, "stderr", stderr):
+                self.assertEqual(cli.cli(["--task", "测试"]), 0)
             stdout.flush()
-            payload = json.loads(buffer.getvalue().decode("utf-8"))
+            stderr.flush()
+            self.assertEqual(json.loads(stdout_buffer.getvalue().decode("utf-8"))["answer"], answer)
+            self.assertIn(chr(0x2705), stderr_buffer.getvalue().decode("utf-8"))
         finally:
             stdout.detach()
-        return exit_code, payload
-
-    def test_unicode_json_output_preserves_content(self):
-        cases = [
-            "OK",
-            "测试全部通过",
-            "测试全部通过 ✅",
-            '{"message": "测试全部通过 ✅", "ok": true}',
-        ]
-        for answer in cases:
-            with self.subTest(answer=answer):
-                exit_code, payload = self.capture_cli_result(answer)
-                self.assertEqual(exit_code, 0)
-                self.assertEqual(payload["answer"], answer)
+            stderr.detach()
 
 
 if __name__ == "__main__":

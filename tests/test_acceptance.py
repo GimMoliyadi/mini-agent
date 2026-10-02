@@ -54,6 +54,9 @@ class AcceptanceTests(unittest.TestCase):
                 last_mutation_event_seq=1,
                 last_successful_exact_required_test_seq=2,
                 initial_snapshot=self.before,
+                verified_snapshot=acceptance.snapshot_workspace(self.workspace),
+                last_test_status="PASS",
+                last_test_count=2,
             ),
         )
         return acceptance.verify_contract(
@@ -63,6 +66,7 @@ class AcceptanceTests(unittest.TestCase):
             task_state=task_state,
             agent_final_answer_present=kwargs.pop("final", True),
             agent_ran_required_test=kwargs.pop("agent_test", True),
+            command_runner=kwargs.pop("command_runner", tools.run_command),
             **kwargs,
         )
 
@@ -211,6 +215,7 @@ class AcceptanceTests(unittest.TestCase):
             self.before,
             agent_final_answer_present=True,
             agent_ran_required_test=True,
+            command_runner=tools.run_command,
         )
         self.assertTrue(result["interaction_completed"])
         self.assertTrue(result["accepted"])
@@ -223,6 +228,7 @@ class AcceptanceTests(unittest.TestCase):
             self.workspace,
             self.before,
             agent_final_answer_present=False,
+            command_runner=tools.run_command,
         )
         self.assertFalse(missing_final["interaction_completed"])
         self.assertIn("agent_final_answer_missing", missing_final["reasons"])

@@ -71,6 +71,7 @@ def _run_child(scenario_name: str) -> dict:
     # Imports happen after AGENT_WORKSPACE is set by the parent process.
     import acceptance
     import main
+    import tools
 
     scenario = SCENARIOS[scenario_name]
     root = Path(os.environ["AGENT_WORKSPACE"]).resolve()
@@ -141,6 +142,7 @@ def _run_child(scenario_name: str) -> dict:
             agent_ran_required_test=metrics["required_test_ran"],
             max_steps_reached=trace.max_steps_reached,
             runtime_exception=runtime_errors[0] if runtime_errors else None,
+            command_runner=tools.run_command,  # 评估入口显式授权隔离 fixture 的固定测试。
         )
         accepted = acceptance_result["accepted"]
     else:

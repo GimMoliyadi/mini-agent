@@ -7,10 +7,12 @@
 
 from dataclasses import dataclass
 import os
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent
-ENV_FILE = PROJECT_ROOT / ".env"
+STATE_DIR = Path(os.environ.get("MINI_AGENT_STATE_DIR", PROJECT_ROOT)).resolve()
+ENV_FILE = STATE_DIR / ".env"
 
 # Agent 唯一允许读写的工作目录（沙盒）。
 # 必须在这里命名，而不是在需要的地方各自写 "demo_workspace"：
@@ -24,6 +26,7 @@ REQUIRED_ENV_VARS = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
 # 单次请求的最长等待秒数。
 # 主要防的是代理配错导致 CLI 无限挂住：超时会报错，无限等待只会让你以为程序死了。
 REQUEST_TIMEOUT_SECONDS = 120
+SDK_MAX_RETRIES = 0
 
 # 单个任务里最多问几次模型，也就是 Agent 循环最多能跑几轮。
 #
@@ -137,13 +140,13 @@ def load_env_file() -> None:
     if not ENV_FILE.is_file():
         return
 
-    lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
+    lines = ENV_FILE.read_text(encoding="utf-8-sig").splitlines()
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
-            print(f"[警告] .env 第 {line_number} 行缺少 '='，已跳过：{line}")
+            print(f"[警告] .env 第 {line_number} 行缺少 '='，已跳过。", file=sys.stderr)
             continue
 
         key, _, value = line.partition("=")

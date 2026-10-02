@@ -2,6 +2,13 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
+.dist/
+.install/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # 虚拟环境（Phase 1 起才会建）
 .venv/
@@ -30,3 +37,13 @@ eval/runs/
 
 # 本地会话持久化文件，可能包含用户的完整对话和工具参数
 sessions/
+/journals/
+.serena/
+.mini-agent/
+.mini-agent-state/
+.state/
+/changes/
+.changes/
+.mini_agent/
+# 自定义 MINI_AGENT_STATE_DIR 位于仓库内时，也必须单独加入忽略规则。
+eval/release-runs/

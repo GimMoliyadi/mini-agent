@@ -366,7 +366,7 @@ class AskApprovalWithoutTtyTests(unittest.TestCase):
         with patch.object(main, "interactive_approval_available", return_value=True), \
              patch("builtins.input", read_input), \
              redirect_stdout(io.StringIO()) as prompt:
-            self.assertTrue(callback("write_file", {"path": "ask.txt"}, "CREATE"))
+            self.assertTrue(callback("write_file", {"path": "ask.txt", "content": "preview"}, "CREATE"))
         read_input.assert_called_once_with("是否允许？[y/N] ")
         self.assertIn("操作：CREATE", prompt.getvalue())
 
@@ -375,7 +375,7 @@ class AskApprovalWithoutTtyTests(unittest.TestCase):
         with patch.object(main, "interactive_approval_available", return_value=True), \
              patch("builtins.input", return_value="n"), \
              redirect_stdout(io.StringIO()):
-            self.assertFalse(callback("write_file", {"path": "ask.txt"}, "CREATE"))
+            self.assertFalse(callback("write_file", {"path": "ask.txt", "content": "preview"}, "CREATE"))
 
     def test_ask_without_terminal_fails_fast_and_never_calls_input(self):
         read_input = Mock(return_value="y")
@@ -383,7 +383,7 @@ class AskApprovalWithoutTtyTests(unittest.TestCase):
         with patch.object(main, "interactive_approval_available", return_value=False), \
              patch("builtins.input", read_input):
             with self.assertRaises(main.ApprovalUnavailableError) as raised:
-                callback("write_file", {"path": "ask.txt"}, "CREATE")
+                callback("write_file", {"path": "ask.txt", "content": "preview"}, "CREATE")
         read_input.assert_not_called()
         self.assertIn("TOOL_APPROVAL_MODE", str(raised.exception))
         self.assertNotIn(main.APPROVAL_DENIED_PREFIX, str(raised.exception))

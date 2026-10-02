@@ -6,7 +6,11 @@
 """
 
 import os
+import io
 import json
+
+import file_safety
+from process_runner import MAX_COMMAND_OUTPUT_BYTES, run_process
 import subprocess
 import sys
 from collections.abc import Callable
@@ -334,28 +338,7 @@ _PROJECT_INSPECTION_FILES = frozenset({
 
 
 def resolve_inside_workspace(path: str, workspace: str | Path | None = None) -> Path:
-    """把模型给的路径解析成绝对路径，并保证它落在工作目录内。
-
-    这是整个项目最重要的一条不变量：Agent 不许碰沙盒之外的任何东西。
-
-    参数名必须是 path，和上面工具声明里的 "path" 保持一致：
-    Phase 3 的执行层把模型给的参数**按名字**当关键字参数传进来，
-    两边名字对不上，工具就永远调不动（Phase 3 实测踩过）。
-
-    必须先 resolve() 再比较。只靠字符串前缀判断会漏掉三种情况：
-     ".." 跳级、符号链接指向外部、模型直接给一个绝对路径。
-    resolve() 会把这三者都还原成真实路径，比较才有意义。
-
-    越界时抛 PermissionError，绝不静默返回空值或改成沙盒内的路径：
-    边界必须显式失败，静默降级等于把它写成装饰。
-    """
-    root = Path(workspace if workspace is not None else WORKSPACE_DIR).resolve()
-    target = (root / path).resolve()
-
-    if not target.is_relative_to(root):
-        raise PermissionError(f"路径越出工作目录，拒绝访问：{path}")
-
-    return target
+    return file_safety.resolve_path(path, workspace if workspace is not None else WORKSPACE_DIR)
 
 
 def _validate_positive_line_argument(name: str, value: int) -> None:
@@ -419,7 +402,7 @@ def _read_file_range(target: Path, path: str, start_line: int, max_lines: int) -
 
     # Scan to EOF so the model gets an accurate total line count, but retain
     # only the requested range that fits as complete lines in the safe budget.
-    with target.open("r", encoding="utf-8") as handle:
+    with io.StringIO(file_safety.read_bounded_bytes(target).decode("utf-8"), newline=None) as handle:
         for line_number, line in enumerate(handle, start=1):
             total_lines = line_number
             if not (start_line <= line_number < end_exclusive) or selection_stopped:
@@ -439,17 +422,14 @@ def _read_file_range(target: Path, path: str, start_line: int, max_lines: int) -
             selected_lines.append(line)
             selected_chars += line_chars
 
-    result = _format_read_result(path, start_line, selected_lines, total_lines)
-
-    # The reserve above covers normal metadata, but a very long path can consume
-    # that reserve. Keep the final guarantee explicit without splitting a line.
+    result = file_safety.redact_text(_format_read_result(path, start_line, selected_lines, total_lines))
     while len(result) > MAX_TOOL_RESULT_CHARS and selected_lines:
         selected_lines.pop()
-        result = _format_read_result(path, start_line, selected_lines, total_lines)
-
+        result = file_safety.redact_text(_format_read_result(path, start_line, selected_lines, total_lines))
+    if not selected_lines and start_line <= total_lines:
+        raise ValueError(f"第 {start_line} 行脱敏后超过单次结果上限，无法用行分页完整返回")
     if len(result) > MAX_TOOL_RESULT_CHARS:
         raise ValueError("读取结果元数据超过单次工具结果上限，无法返回")
-
     return result
 
 
@@ -468,31 +448,44 @@ def inspect_project(
 
 
 def list_files(path: str | None = None) -> str:
-    """列出一层目录内容，返回适合模型阅读的文字。
-
-    只看一层、不递归：递归会把输出撑大，而且模型通常只需要知道
-    「顶层有什么」就能决定下一步读哪个。想看子目录内容，自己再调一次。
-
-    标 [f]/[d] 区分文件和目录，文件大小让模型能判断该不该读。
-    空 path 表示工作目录本身。越界照常被 resolve_inside_workspace 拦下。
-    """
     target = resolve_inside_workspace(path or ".")
     if not target.is_dir():
         raise NotADirectoryError(f"不是一个目录：{path}")
-
-    entries = sorted(target.iterdir(), key=lambda entry: entry.name)
-    if not entries:
-        return f"目录是空的：{path or '.'}"
-
+    entries = []
+    truncated = False
+    with os.scandir(target) as iterator:
+        for index, entry in enumerate(iterator):
+            if index >= MAX_DIRECTORY_ENTRIES:
+                truncated = True
+                break
+            try:
+                resolve_inside_workspace(str(Path(entry.path)))
+            except (PermissionError, OSError):
+                continue
+            kind = "d" if entry.is_dir() else "f"
+            size = "" if kind == "d" else f"  ({entry.stat().st_size} 字节)"
+            entries.append((entry.name, f"[{kind}] {entry.name}{size}"))
+    if not entries and not truncated:
+        return f"目录为空或没有可访问条目：{path or '.'}"
+    header = f"工作目录 {path or '.'} 的内容：\n"
     lines = []
-    for entry in entries:
-        kind = "d" if entry.is_dir() else "f"
-        size = "" if entry.is_dir() else f"  ({entry.stat().st_size} 字节)"
-        lines.append(f"[{kind}] {entry.name}{size}")
+    used = len(header)
+    for _, line in sorted(entries):
+        if used + len(line) + 1 > MAX_TOOL_RESULT_CHARS - len("\n[目录列表已截断]"):
+            truncated = True
+            break
+        lines.append(line)
+        used += len(line) + 1
+    result = header + "\n".join(lines)
+    if truncated:
+        result += "\n[目录列表已截断]"
+    return file_safety.redact_text(result)
 
-    return f"工作目录 {path or '.'} 的内容：\n" + "\n".join(lines)
 
-
+MAX_DIRECTORY_ENTRIES = 1000
+MAX_SEARCH_ENTRIES = 5000
+MAX_SEARCH_FILES = 1000
+MAX_SEARCH_SCAN_BYTES = 16 * 1024 * 1024
 _SEARCH_MAX_RESULTS = 100
 _SEARCH_CONTEXT_LINES = 1
 _SEARCH_SNIPPET_CHARS = 240
@@ -569,161 +562,137 @@ def _search_match_context(lines: list[str], line_number: int, query: str) -> lis
     ]
 
 
-def search_text(query: str, path: str = ".", max_results: int = 20) -> str:
-    """Recursively search UTF-8 text files for a literal string."""
-    if not isinstance(query, str) or not query:
-        raise ValueError("query 不能为空字符串")
-    if (
-        isinstance(max_results, bool)
-        or not isinstance(max_results, int)
-        or max_results < 1
-        or max_results > _SEARCH_MAX_RESULTS
-    ):
-        raise ValueError(
-            f"max_results 必须是 1 到 {_SEARCH_MAX_RESULTS} 之间的整数，当前是：{max_results!r}"
-        )
-
-    root = resolve_inside_workspace(path or ".")
-    if not root.is_dir():
-        raise NotADirectoryError(f"搜索路径不是目录：{path}")
-
-    found: list[tuple[str, int, list[tuple[int, str]]]] = []
-    total_matches = 0
-    for current, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
-        current_path = Path(current)
-        relative_current = current_path.relative_to(WORKSPACE_DIR.resolve())
-        directory_names[:] = [
-            name
-            for name in directory_names
-            if not _search_path_is_ignored(relative_current / name)
-            and (current_path / name).resolve().is_relative_to(WORKSPACE_DIR.resolve())
-        ]
-
-        for file_name in file_names:
-            candidate = current_path / file_name
-            relative_candidate = candidate.relative_to(WORKSPACE_DIR.resolve())
-            if _search_path_is_ignored(relative_candidate):
-                continue
-            try:
-                if not candidate.resolve().is_relative_to(WORKSPACE_DIR.resolve()):
+def _iter_search_files(root: Path, scan: dict):
+    workspace = WORKSPACE_DIR.resolve()
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        with os.scandir(current) as entries:
+            for entry in entries:
+                scan["entries"] += 1
+                if scan["entries"] > MAX_SEARCH_ENTRIES:
+                    scan["truncated"] = True
+                    return
+                candidate = Path(entry.path)
+                relative = candidate.relative_to(workspace)
+                if _search_path_is_ignored(relative):
                     continue
-                with candidate.open("r", encoding="utf-8") as handle:
-                    lines = handle.readlines()
-            except (OSError, UnicodeDecodeError):
-                continue
-            if any("\x00" in line for line in lines):
-                continue
-
-            for line_number, line in enumerate(lines, start=1):
-                if query not in line:
+                try:
+                    safe = resolve_inside_workspace(str(candidate))
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(safe)
+                    elif entry.is_file():
+                        yield safe, relative
+                except (OSError, PermissionError):
                     continue
-                total_matches += 1
-                if len(found) < max_results:
-                    found.append(
-                        (
-                            relative_candidate.as_posix(),
-                            line_number,
-                            _search_match_context(lines, line_number, query),
-                        )
-                    )
 
-    # Build the complete metadata first, then fit whole match blocks into the
-    # shared result budget. This keeps matches_shown/truncated truthful.
+
+def _search_file_lines(candidate: Path, scan: dict) -> list[str] | None:
+    scan["files"] += 1
+    if scan["files"] > MAX_SEARCH_FILES:
+        scan["truncated"] = True
+        return None
+    try:
+        size = candidate.stat().st_size
+        if size > file_safety.MAX_FILE_BYTES:
+            scan["truncated"] = True
+            return None
+        remaining = MAX_SEARCH_SCAN_BYTES - scan["bytes"]
+        if size > remaining:
+            scan["truncated"] = True
+            return None
+        content = file_safety.read_bounded_bytes(candidate, min(remaining, file_safety.MAX_FILE_BYTES))
+        scan["bytes"] += len(content)
+        if b"\x00" in content:
+            return None
+        return content.decode("utf-8").splitlines()
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def _render_search_matches(query: str, path: str, found: list, total_matches: int, scan: dict) -> str:
     selected = []
+    metadata = f"\nscan_truncated: {'true' if scan['truncated'] else 'false'}\nscanned_bytes: {scan['bytes']}"
     for match in found:
         candidate = selected + [match]
-        rendered = _format_search_result(
-            query, path or ".", candidate, total_matches, len(candidate) < total_matches
-        )
-        if len(rendered) > MAX_TOOL_RESULT_CHARS:
+        rendered = _format_search_result(query, path, candidate, total_matches, len(candidate) < total_matches or scan["truncated"])
+        if len(rendered) + len(metadata) > MAX_TOOL_RESULT_CHARS:
             break
         selected.append(match)
-
-    truncated = len(selected) < total_matches
-    result = _format_search_result(query, path or ".", selected, total_matches, truncated)
+    result = _format_search_result(query, path, selected, total_matches, len(selected) < total_matches or scan["truncated"]) + metadata
+    if total_matches == 0:
+        result = f'No matches found for "{query}"\n{result}'
+    result = file_safety.redact_text(result)
     if len(result) > MAX_TOOL_RESULT_CHARS:
         raise ValueError("搜索结果元数据超过单次工具结果上限，无法返回")
-    if total_matches == 0:
-        return f'No matches found for "{query}"\n{result}'
     return result
 
 
+def search_text(query: str, path: str = ".", max_results: int = 20) -> str:
+    if not isinstance(query, str) or not query:
+        raise ValueError("query 不能为空字符串")
+    if isinstance(max_results, bool) or not isinstance(max_results, int) or not 1 <= max_results <= _SEARCH_MAX_RESULTS:
+        raise ValueError(f"max_results 必须是 1 到 {_SEARCH_MAX_RESULTS} 之间的整数")
+    root = resolve_inside_workspace(path or ".")
+    if not root.is_dir():
+        raise NotADirectoryError(f"搜索路径不是目录：{path}")
+    found = []
+    total_matches = 0
+    scan = {"entries": 0, "files": 0, "bytes": 0, "truncated": False}
+    for candidate, relative in _iter_search_files(root, scan):
+        lines = _search_file_lines(candidate, scan)
+        if scan["files"] > MAX_SEARCH_FILES:
+            scan["truncated"] = True
+            break
+        if lines is None:
+            continue
+        for line_number, line in enumerate(lines, start=1):
+            if query in line:
+                total_matches += 1
+                if len(found) < max_results:
+                    found.append((relative.as_posix(), line_number, _search_match_context(lines, line_number, query)))
+    return _render_search_matches(query, path or ".", found, total_matches, scan)
+
+
 def write_file(path: str, content: str) -> str:
-    """把文本写进工作目录内的一个文件，允许覆盖。
-
-    父目录不存在就创建，但校验在创建之前已经做完，所以只会建在沙盒里面。
-    返回文字里带上「已覆盖」还是「新文件」，让覆盖这件事显式可见。
-
-    为什么手写 open 而不是 write_text：Path.write_text 走默认文本模式，
-    在 Windows 上会把 \\n 静默翻译成 \\r\\n——落盘内容比模型给的多了 1 字节/行，
-    返回值里的字节数也就说错了。指定 newline="" 让换行原样落盘，
-    这样「模型写了什么 = 磁盘上有什么 = 我报告的字节数」三者一致。
-    """
+    encoded = file_safety.encode_content(content)
     target = resolve_inside_workspace(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-
     existed = target.is_file()
-    with target.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(content)
-
-    size = len(content.encode("utf-8"))
+    if target.exists():
+        file_safety.read_bounded_bytes(target)
+    with file_safety.file_change({target: encoded}, WORKSPACE_DIR):
+        file_safety.atomic_write_bytes(target, encoded)
     state = "已覆盖已有文件" if existed else "已写入新文件"
-    return f"已写入 {target.name}（{size} 字节，{state}）"
+    return f"已写入 {target.name}（{len(encoded)} 字节，{state}）"
 
 
 def rename_file(source: str, destination: str) -> str:
-    """Rename one file within the active workspace without replacing a target."""
-    if not source or not destination:
-        raise ValueError("source 和 destination 不能为空")
     source_path = resolve_inside_workspace(source)
     destination_path = resolve_inside_workspace(destination)
-    if not source_path.is_file():
-        raise FileNotFoundError(f"源文件不存在：{source}")
+    content = file_safety.read_bounded_bytes(source_path)
     if source_path == destination_path:
         raise ValueError("目标文件名与源文件名相同")
     if destination_path.exists():
         raise FileExistsError(f"目标已存在，拒绝覆盖：{destination}")
     if not destination_path.parent.is_dir():
         raise FileNotFoundError(f"目标目录不存在：{destination_path.parent}")
-    source_path.rename(destination_path)
+    with file_safety.file_change({source_path: None, destination_path: content}, WORKSPACE_DIR):
+        file_safety.rename_no_replace(source_path, destination_path)
     return f"已重命名 {source} → {destination}"
 
 
 def apply_patch(path: str, old_text: str, new_text: str) -> str:
-    """Replace exactly one literal text fragment in an existing UTF-8 file."""
-    if not isinstance(old_text, str) or not old_text:
+    file_safety.encode_content(old_text, "old_text")
+    file_safety.encode_content(new_text, "new_text")
+    if not old_text:
         raise ValueError("old_text 不能为空")
-    if not isinstance(new_text, str):
-        raise ValueError("new_text 必须是字符串")
-    old_text_length = len(old_text)
-    new_text_length = len(new_text)
-
     target = resolve_inside_workspace(path)
-    with target.open("r", encoding="utf-8", newline="") as handle:
-        raw_content = handle.read()
-
-    newline = "\r\n" if "\r\n" in raw_content else "\r" if "\r" in raw_content else "\n"
-    content = raw_content.replace("\r\n", "\n").replace("\r", "\n")
-    old_text = old_text.replace("\r\n", "\n").replace("\r", "\n")
-    new_text = new_text.replace("\r\n", "\n").replace("\r", "\n")
-
-    occurrences = content.count(old_text)
-    if occurrences == 0:
-        raise ValueError("目标文本不存在，文件没有修改")
-    if occurrences > 1:
-        raise ValueError(
-            f"目标文本不唯一，请提供更多上下文（匹配 {occurrences} 次）"
-        )
-
-    updated = content.replace(old_text, new_text, 1)
-    if newline != "\n":
-        updated = updated.replace("\n", newline)
-    with target.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(updated)
-
+    updated = file_safety.patched_content(file_safety.read_bounded_bytes(target), old_text, new_text)
+    with file_safety.file_change({target: updated}, WORKSPACE_DIR):
+        file_safety.atomic_write_bytes(target, updated)
     return (
         f"已应用 patch 到 {path}（replaced occurrence count = 1；"
-        f"old_text length = {old_text_length}；new_text length = {new_text_length}）"
+        f"old_text length = {len(old_text)}；new_text length = {len(new_text)}）"
     )
 
 
@@ -750,19 +719,17 @@ def _reject_shell_syntax(tokens: list[str]) -> None:
 def _reject_workspace_escape_tokens(
     tokens: list[str], workspace: str | Path | None = None
 ) -> None:
-    """Reject path-like command arguments that resolve outside the workspace."""
     for token in tokens:
-        candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
-        if (
-            candidate in {".", ".."}
-            or "/" in candidate
-            or "\\" in candidate
-            or Path(candidate).is_absolute()
-        ):
-            try:
-                resolve_inside_workspace(candidate, workspace)
-            except PermissionError as exc:
-                raise CommandPolicyError(f"命令参数越出工作目录：{token}") from exc
+        if token.startswith("-") and "=" not in token:
+            continue
+        candidate = token.split("=", 1)[1] if token.startswith("-") else token
+        candidate = candidate.split("::", 1)[0]
+        if not candidate:
+            continue
+        try:
+            resolve_inside_workspace(candidate, workspace)
+        except (PermissionError, ValueError) as exc:
+            raise CommandPolicyError(f"命令参数包含禁止访问的路径：{token}") from exc
 
 
 def validate_run_command_arguments(
@@ -771,6 +738,10 @@ def validate_run_command_arguments(
     """Validate the command policy without starting a process."""
     command = arguments.get("command")
     args = arguments.get("args", [])
+    cwd = arguments.get("cwd", ".")
+    if not isinstance(cwd, str) or not cwd:
+        raise CommandPolicyError("cwd 必须是非空字符串")
+    resolve_inside_workspace(cwd, workspace)
     if not isinstance(command, str) or not command:
         raise CommandPolicyError("command 必须是非空字符串")
     if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
@@ -792,7 +763,7 @@ def validate_run_command_arguments(
     if not args or args[0] not in _ALLOWED_GIT_COMMANDS:
         raise CommandPolicyError("git 只允许 status、diff、log 子命令")
     if any(
-        arg in {"-c", "--exec-path", "--config-env", "--output", "-o", "--no-index"}
+        arg in {"-c", "--exec-path", "--config-env", "--output", "-o", "--no-index", "--ext-diff", "--textconv"}
         or arg.startswith("--output=")
         for arg in args[1:]
     ):
@@ -809,35 +780,17 @@ def _decode_process_output(value: object) -> str:
 
 
 def _redact_process_output(value: object) -> str:
-    text = _decode_process_output(value)
-    sensitive_values = {
-        value
-        for key, value in os.environ.items()
-        if value
-        and any(
-            marker in key.upper()
-            for marker in ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
-        )
-    }
-    for sensitive_value in sorted(sensitive_values, key=len, reverse=True):
-        text = text.replace(sensitive_value, "[REDACTED]")
-
-    redacted_lines = []
-    for line in text.splitlines(keepends=True):
-        upper = line.upper()
-        if any(marker in upper for marker in ("OPENAI_API_KEY", "AUTHORIZATION", ".ENV")):
-            redacted_lines.append("[sensitive output redacted]\n")
-        else:
-            redacted_lines.append(line)
-    return "".join(redacted_lines)
+    return file_safety.redact_text(_decode_process_output(value))
 
 
 def _limit_command_output(value: object) -> str:
     text = _redact_process_output(value)
     if len(text) <= MAX_COMMAND_OUTPUT_CHARS:
         return text
+    head_chars = MAX_COMMAND_OUTPUT_CHARS // 2
+    tail_chars = MAX_COMMAND_OUTPUT_CHARS - head_chars
     omitted = len(text) - MAX_COMMAND_OUTPUT_CHARS
-    return text[:MAX_COMMAND_OUTPUT_CHARS] + f"\n[output truncated: omitted {omitted} chars]"
+    return text[:head_chars] + f"\n[output truncated: omitted {omitted} chars]\n" + text[-tail_chars:]
 
 
 def _format_command_result(
@@ -847,83 +800,53 @@ def _format_command_result(
     timed_out: bool,
     stdout: object,
     stderr: object,
+    *,
+    output_limit_exceeded: bool = False,
+    captured_bytes: int = 0,
 ) -> str:
-    return "\n".join(
-        [
-            f"Command: {command}",
-            f"CWD: {cwd}",
-            f"Exit code: {exit_code}",
-            f"Timed out: {'true' if timed_out else 'false'}",
-            "STDOUT:",
-            _limit_command_output(stdout) or "<empty>",
-            "STDERR:",
-            _limit_command_output(stderr) or "<empty>",
-        ]
-    )
+    return file_safety.redact_text("\n".join([
+        f"Command: {command}", f"CWD: {cwd}", f"Exit code: {exit_code}",
+        f"Timed out: {'true' if timed_out else 'false'}",
+        f"Output limit exceeded: {'true' if output_limit_exceeded else 'false'}",
+        f"Captured bytes: {captured_bytes}", "STDOUT:",
+        _limit_command_output(stdout) or "<empty>", "STDERR:",
+        _limit_command_output(stderr) or "<empty>",
+    ]))
 
 
 def run_command(
     command: str,
-    args: list[str] = [],
+    args: list[str] | None = None,
     cwd: str = ".",
     *,
     workspace: str | Path | None = None,
 ) -> str:
-    """Run one allowlisted local development command without a shell."""
-    arguments = {"command": command, "args": args, "cwd": cwd}
-    validate_run_command_arguments(arguments, workspace)
-    if not isinstance(cwd, str):
-        raise ValueError("cwd 必须是字符串")
-
-    target = resolve_inside_workspace(cwd, workspace)
+    args = [] if args is None else args
+    validate_run_command_arguments({"command": command, "args": args, "cwd": cwd}, workspace)
+    root = Path(workspace if workspace is not None else WORKSPACE_DIR).resolve()
+    target = resolve_inside_workspace(cwd, root)
     if not target.is_dir():
         raise NotADirectoryError(f"cwd 不是目录：{cwd}")
-
     command_line = subprocess.list2cmdline([command, *args])
     executable = sys.executable if command.casefold() == "python" else command
+    controlled_args = args
+    if command.casefold() == "git":
+        controlled_args = ["--no-pager", "-c", "core.fsmonitor=false", *args]
+        if args[0] in {"diff", "log"}:
+            controlled_args += ["--no-ext-diff", "--no-textconv"]
     try:
-        completed = subprocess.run(
-            [executable, *args],
-            cwd=str(target),
-            shell=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=COMMAND_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        timeout_stderr = "[命令执行超时]"
-        captured_stderr = _decode_process_output(exc.stderr)
-        if captured_stderr:
-            timeout_stderr += f"\n{captured_stderr}"
-        return _format_command_result(
-            command_line,
-            target,
-            None,
-            True,
-            exc.stdout,
-            timeout_stderr,
-        )
+        result = run_process([executable, *controlled_args], target, workspace=root, timeout_seconds=COMMAND_TIMEOUT_SECONDS, output_limit_bytes=MAX_COMMAND_OUTPUT_BYTES)
     except OSError as exc:
-        return _format_command_result(
-            command_line,
-            target,
-            None,
-            False,
-            "",
-            f"[命令启动失败] {exc}",
-        )
-
-    return _format_command_result(
-        command_line,
-        target,
-        completed.returncode,
-        False,
-        completed.stdout,
-        completed.stderr,
-    )
+        return _format_command_result(command_line, target, None, False, "", f"[命令启动失败] {exc}")
+    stderr = result.stderr
+    if result.timed_out:
+        stderr = b"[command timed out]\n" + stderr
+    if result.output_limit_exceeded:
+        stderr = b"[output byte limit exceeded]\n" + stderr
+    formatted = _format_command_result(command_line, target, result.returncode, result.timed_out, result.stdout, stderr, output_limit_exceeded=result.output_limit_exceeded, captured_bytes=result.captured_bytes)
+    if result.timed_out:
+        formatted += "\n[命令执行超时]"
+    return formatted
 
 
 def finish_task(summary: str) -> str:

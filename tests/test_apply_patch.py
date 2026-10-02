@@ -407,6 +407,7 @@ class ApplyPatchTests(unittest.TestCase):
             agent_final_answer_present=trace.final_answer is not None,
             agent_ran_required_test=trace.successful_commands == 1,
             max_steps_reached=trace.max_steps_reached,
+            command_runner=tools.run_command,  # 本用例显式授权临时 fixture 的固定测试。
         )
         self.assertTrue(result["accepted"], result)
         self.assertEqual(trace.apply_patch_calls, 1)

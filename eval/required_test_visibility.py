@@ -242,6 +242,7 @@ def aggregate_condition(records: list[dict]) -> dict:
 def _run_child() -> dict:
     import acceptance
     import main
+    import tools
 
     scenario = SCENARIOS[SCENARIO_NAME]
     root = Path(os.environ["AGENT_WORKSPACE"]).resolve()
@@ -311,6 +312,7 @@ def _run_child() -> dict:
         agent_ran_required_test=False,
         max_steps_reached=trace.max_steps_reached,
         runtime_exception=runtime_errors[0] if runtime_errors else None,
+        command_runner=tools.run_command,  # 评估入口显式授权隔离 fixture 的固定测试。
     )
     return {
         "scenario": SCENARIO_NAME,

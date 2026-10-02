@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=65.5", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-agent-lab"
+version = "0.1.0"
+description = "单用户本地、具有文件与执行护栏的 OpenAI 兼容 CLI Agent"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["openai==3.15.0"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+]
+
+[project.scripts]
+mini-agent = "launcher:main"
+
+[tool.setuptools]
+py-modules = [
+    "acceptance",
+    "capabilities",
+    "cli",
+    "config",
+    "configure",
+    "diagnostics",
+    "file_safety",
+    "launcher",
+    "main",
+    "process_runner",
+    "recovery",
+    "runtime_guards",
+    "session",
+    "session_cli",
+    "tools",
+]
+include-package-data = false

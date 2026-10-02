@@ -275,10 +275,13 @@ class FinishProtocolTests(unittest.TestCase):
         state.event_seq = 2
         state.last_mutation_event_seq = 1
         state.last_successful_exact_required_test_seq = 2
+        state.last_test_status = "PASS"
+        state.last_test_count = 2
+        state.verified_snapshot = acceptance.snapshot_workspace(self.workspace)
         exact = self._required_reply("exact").message.tool_calls[0]
         other = tool_call("other", "read_file", {"path": "calculator.py"})
-        pass_result = "Exit code: 0\nTimed out: false"
-        fail_result = "Exit code: 1\nTimed out: false"
+        pass_result = "Exit code: 0\nTimed out: false\nRan 2 tests in 0.001s\n\nOK"
+        fail_result = "Exit code: 1\nTimed out: false\nRan 2 tests in 0.001s\n\nFAILED (failures=1)"
         cases = (
             ((exact, pass_result, False), (None, 8)),
             ((exact, "Exit code: 1\nTimed out: true", True), (None, 8)),
@@ -304,7 +307,9 @@ class FinishProtocolTests(unittest.TestCase):
         ]
         _, trace = self.run_loop(rounds[0], rounds[1:] + [self._finish_reply()], state)
         self.assertEqual(trace.model_calls, 11)
-        self.assertEqual(trace.failed_commands, 4)
+        self.assertEqual(trace.failed_commands, 3)
+        self.assertEqual(trace.policy_rejected, 1)
+        self.assertEqual(trace.recovery_state["test_attempts"], 2)
         self.assertIs(state.status, acceptance.TaskStatus.LIMIT_REACHED)
         self.assertTrue(trace.max_steps_reached)
 
@@ -343,6 +348,7 @@ class FinishProtocolTests(unittest.TestCase):
             self.initial_snapshot,
             task_state=state,
             agent_ran_required_test=True,
+            command_runner=tools.run_command,
         )
         self.assertTrue(verdict["artifact_passed"])
         self.assertTrue(verdict["interaction_completed"])
@@ -427,6 +433,9 @@ class FinishProtocolTests(unittest.TestCase):
         state.event_seq = 2
         state.last_mutation_event_seq = 1
         state.last_successful_exact_required_test_seq = 2
+        state.last_test_status = "PASS"
+        state.last_test_count = 2
+        state.verified_snapshot = acceptance.snapshot_workspace(self.workspace)
         message = multi_tool_reply(
             tool_call("finish", "finish_task", {"summary": "done"}),
             tool_call("read-after", "read_file", {"path": "calculator.py"}),
@@ -513,6 +522,9 @@ class FinishProtocolTests(unittest.TestCase):
         state.event_seq = 2
         state.last_mutation_event_seq = 1
         state.last_successful_exact_required_test_seq = 2
+        state.last_test_status = "PASS"
+        state.last_test_count = 2
+        state.verified_snapshot = acceptance.snapshot_workspace(self.workspace)
         messages, trace = self.run_loop(
             final_reply("The code is fixed."),
             [tool_reply("finish", "finish_task", {"summary": "Fixed it."})],
@@ -530,6 +542,9 @@ class FinishProtocolTests(unittest.TestCase):
         state.event_seq = 2
         state.last_mutation_event_seq = 1
         state.last_successful_exact_required_test_seq = 2
+        state.last_test_status = "PASS"
+        state.last_test_count = 2
+        state.verified_snapshot = acceptance.snapshot_workspace(self.workspace)
         _, trace = self.run_loop(
             tool_reply("finish", "finish_task", {"summary": "done"}), [], state, max_steps=1
         )
@@ -590,7 +605,9 @@ class FinishProtocolTests(unittest.TestCase):
         )
         self.assertEqual(state.last_mutation_event_seq, 2)
 
-        with patch.object(main, "execute_tool_call", return_value="Exit code: 0"):
+        with patch.object(main, "execute_tool_call", return_value=(
+            "Exit code: 0\nTimed out: false\nRan 2 tests in 0.001s\n\nOK"
+        )):
             main.run_tool_round(
                 messages,
                 tool_reply(
@@ -723,8 +740,8 @@ class FinishProtocolTests(unittest.TestCase):
         executed: set[tuple[str, str]] = set()
         test_args = {"command": "python", "args": REQUIRED_ARGS}
         with patch.object(main, "execute_tool_call", side_effect=(
-            "Exit code: 0\nTimed out: false",
-            "Exit code: 1\nTimed out: false",
+            "Exit code: 0\nTimed out: false\nRan 2 tests in 0.001s\n\nOK",
+            "Exit code: 1\nTimed out: false\nRan 2 tests in 0.001s\n\nFAILED (failures=1)",
         )):
             main.run_tool_round(
                 messages, tool_reply("pass", "run_command", test_args).message,

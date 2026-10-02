@@ -1,10 +1,154 @@
 # mini-agent-lab
 
+单用户本地 CLI Agent，使用 OpenAI 兼容 SDK，支持受控文件操作、代码定位、测试和独立验收；不使用 Agent 框架、多 Agent、RAG、MCP 或数据库。
+
+> **先了解边界**：只支持受信项目。允许执行 Python 测试不等于操作系统沙箱；测试代码仍可能访问本机与网络。工作区里的文件一旦读取，其内容可能被发送给你配置的模型服务。不要把密钥或生产数据放进工作区。完整说明见 [SECURITY.md](SECURITY.md)。
+
+## 当前用户指南
+
+### 安装与配置
+
+需要 Python >=3.11；本地回归基线是 Python 3.11。首次联网安装依赖由你自行明确执行；离线检查本身不会下载、升级或发布任何包。
+
+Windows PowerShell，在源码根目录运行：
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.lock
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\mini-agent.exe config
+.\.venv\Scripts\mini-agent.exe doctor
+.\.venv\Scripts\mini-agent.exe start
+```
+
+Linux：
+
+```sh
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock
+.venv/bin/python -m pip install .
+.venv/bin/mini-agent config
+.venv/bin/mini-agent doctor
+.venv/bin/mini-agent start
+```
+
+激活虚拟环境后可直接输入 `mini-agent`。Windows 源码启动器 `mini.cmd` / `agent.cmd` 仍保留；统一 Python 入口为 `python launcher.py ...`。安装版不依赖源码当前目录，`mini-agent version` 显示包版本。
+
+`config` 询问 API 地址、模型名和 Key，密钥输入不回显；也可手动复制 `.env.example` 并填写。使用支持工具调用的 OpenAI 兼容模型。普通 `start` 是交互式聊天；`doctor` 只做离线诊断，不发真实模型请求。
+
+依赖锁来自现有虚拟环境：`openai==3.15.0` 与实际默认传递依赖（该 SDK 使用 `httpx2/httpcore2`，不是旧版本的 `httpx/httpcore`）。未联网升级、未虚构哈希。`requirements.txt` 引用同一份锁；包元数据固定 SDK 版本，完整传递版本仍需先安装锁文件。源码构建需要 setuptools 与 wheel；本轮已为项目虚拟环境补齐 wheel 0.48.0 及其 packaging 构建依赖，SDK 与运行依赖锁未升级。检查直接调用 setuptools 构建后端，不依赖另外的 build 前端；检查命令本身不会联网补依赖。
+
+包版本 `0.1.0` 仅为本地打包元数据，尚未发布。仓库没有指定许可证；对外分发前须由权利人决定授权范围。
+
+### 工作区与私有状态
+
+```powershell
+mini-agent start --workspace "C:\path\to\trusted-project"
+mini-agent start --resume SESSION_ID
+mini-agent start --workspace "C:\path\to\trusted-project" --contract "C:\path\to\contract.json"
+mini-agent start --desktop
+```
+
+源码运行默认使用 `demo_workspace/`，状态默认位于源码根；安装版默认使用用户目录下的 `.mini-agent/`，工作区为其中的 `workspace/`。`AGENT_WORKSPACE` 和 `MINI_AGENT_STATE_DIR` 可显式覆盖。状态目录应位于工作区之外，包含本地配置、会话及文件变更记录，不提交 Git。
+
+`--desktop` 选择系统桌面目录，不是只开放某个文件。建议优先使用一个新建的专用目录，而不是桌面或主目录。恢复会话时核对原工作区身份；不能借恢复把一段对话带到另一个工作区并沿用旧测试 PASS。
+
+### 单任务 JSON、会话与撤销
+
+```powershell
+mini-agent task --task "读取资料并说明有哪些待确认事项"
+mini-agent task --contract "C:\path\to\contract.json"
+mini-agent task --resume SESSION_ID --workspace "C:\path\to\trusted-project"
+mini-agent sessions list
+mini-agent sessions show SESSION_ID
+mini-agent sessions export SESSION_ID "C:\path\to\session-export.json"
+mini-agent sessions delete SESSION_ID --yes
+mini-agent undo RUN_ID --workspace "C:\path\to\trusted-project" --yes
+mini-agent doctor --workspace "C:\path\to\trusted-project"
+```
+
+单任务入口的运行说明在 stderr，stdout 是一个 JSON 结果。成功为 0，未完成或失败为 1，参数错误为 2，取消为 130。普通任务的完成不等于产物验收；Coding Contract 使用固定测试、受保护来源、文件差异与显式 finish gate，独立 Acceptance 才决定是否接受。
+
+会话管理支持列出、查看、命名、导出和显式删除；具体参数见 `sessions --help`。管理历史会话不要求原工作区仍然存在。删除只移除会话 JSON，不删除工作文件或 journals 撤销备份。导出会做脱敏，但分享前仍需人工检查。会话包含 canonical 历史、文件内容与工具参数，不是跨会话 Memory。
+
+新会话绑定规范化工作区，使用进程锁和 revision 防止同一会话并发覆盖。旧 v1/v2 会话如果没有工作区信息，必须确认原目录后用 `--resume SESSION_ID --workspace 原目录 --adopt-workspace` 显式绑定；这个选项不能改绑已有工作区。取消、异常或限额后的编码任务可显式恢复，旧测试证据会重新核验。每次执行有独立 run_id 和预算；显式恢复会开启新批次，历史预算保存在会话的 `runs`，最新值也可由 `sessions show` 查看。
+
+文件写入、patch、重命名的前态保存在私有变更记录中，使用任务结果里的 `run_id` 显式 undo。取消或请求失败**不会自动回滚**已完成的修改。undo 不覆盖用户同期编辑，冲突或部分恢复会明确返回；命令执行造成的任意副作用不属于文件撤销范围。撤销记录可能包含完整旧文件，同样不能公开。
+
+### 九类护栏
+
+下表描述本轮已接线并在 Windows / Python 3.11 上验证的实现边界。2026-10-02 的完整离线入口 6/6 通过：主套件收集 399 项，398 通过、1 项因本机符号链接权限跳过；另有两个脚本检查、20 项指标检查、5 项 eval 可靠性测试及语法检查通过。独立打包入口也为 6/6 通过。数字只代表确定性工程回归，不代表真实模型任务成功率。
+
+| 范围 | 当前边界 |
+| --- | --- |
+| 文件路径与隐私 | 统一工作区限制、敏感路径、Windows ADS/设备/UNC/歧义路径和链接处理；文件读入模型仍属于外发 |
+| 文件变更与恢复 | 内容有界、原子写入、审批差异、同期变更前提复核、任务变更记录与冲突拒绝 undo |
+| 命令与进程 | 测试/Git 参数策略、无 shell、最小化子进程环境、输出上限、超时/取消与进程树清理；不是 OS 沙箱 |
+| Coding 验收 | 固定测试来源受保护、非允许路径检测、实际测试数量及跳过/失败识别、修改后测试新鲜度、独立最终验证 |
+| Runtime 预算 | 总时间、工具总数、单批数量、上下文与输出/累计 token 的独立限额，不仅依赖模型步数 |
+| usage 与错误 | 缺失 usage 不填零，已知与估算分开；默认 STOP，错误/取消不伪装完成，不隐式无限重试 |
+| 会话状态 | 原子保存、协议配对、工作区身份与恢复校验、历史证据失效、管理/脱敏导出 |
+| CLI 与诊断 | 统一入口、严格参数、stdout JSON/stderr 日志、明确退出码、离线 doctor、显式 undo |
+| 安装与发布准备 | Python 包/版本/入口、完整扁平模块、已安装依赖锁、隔离离线回归、跨平台 CI、真实发布评测规范 |
+
+ASK 是交互默认。批准副作用前核对文件差异或命令；无交互通道不能自动变成 ALLOW。自动化仅在你已信任的临时项目里显式选择 ALLOW；拒绝路径用 DENY。敏感路径例外只支持精确路径，不可用通配符，例外不等于秘密自动脱敏。
+
+### 环境配置与预算
+
+所有环境项应在启动进程之前设置；不要把真实 Key 写进命令记录或测试输出。
+
+| 环境项 | 用途 / 默认 |
+| --- | --- |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | 模型连接；Key 只存本地私有配置 |
+| `AGENT_WORKSPACE` | 受信文件工作区 |
+| `MINI_AGENT_STATE_DIR` | 工作区外的私有配置、会话与变更记录目录 |
+| `TOOL_APPROVAL_MODE` | `ASK` / `ALLOW` / `DENY`；交互默认 ASK |
+| `CONTEXT_MODE` | `OFF` / `WRITE_ONLY` / `FULL`；默认 WRITE_ONLY，只改变出站视图 |
+| `MINI_AGENT_TASK_TIMEOUT_SECONDS` | 单任务时间限额，默认 300 秒 |
+| `MINI_AGENT_MAX_TOOL_CALLS` | 单任务工具调用上限，默认 64 |
+| `MINI_AGENT_MAX_BATCH_TOOL_CALLS` | 单次响应的工具批次上限，默认 8 |
+| `MINI_AGENT_MAX_CONTEXT_CHARS` | 单次请求上下文字符上限，默认 120000 |
+| `MINI_AGENT_MAX_OUTPUT_TOKENS` | 单次模型输出 token 上限，默认 4096 |
+| `MINI_AGENT_MAX_TOTAL_TOKENS` | 任务累计 token 预算，默认 100000 |
+| `MINI_AGENT_UNKNOWN_USAGE_POLICY` | `STOP` / `ESTIMATE`；缺失 usage 默认 STOP |
+| `MINI_AGENT_ALLOW_SENSITIVE_PATHS` | 显式允许的精确相对路径，分号分隔或 JSON 数组；默认无例外 |
+| `MINI_AGENT_HTTP_PROXY` | 历史 eval 的显式 Provider 代理项；离线检查清空真实代理 |
+
+这些 token 限额不是硬收费保证；服务商可能不返回完整 usage，字符/字节估算不是精确 tokenizer，也不能追回已发出的请求费用。模型调用步数与历史恢复额度仍由 Runtime 控制，不通过任意放大步数掩盖失败。SDK 隐式重试关闭，失败请求保留未知用量，而不是报告零成本。
+
+编码验收快照采用流式 SHA-256，限制为 20000 个目录条目、128 MiB 普通文件内容，并检查任务时限；过大时要求缩小工作区。快照不读取符号链接目标，不接受共享硬链接作为内容验证证据。普通无工具聊天不扫描整个工作区。读取分页以脱敏后的实际字符数重新计算完整行范围；命令摘要保留输出首尾，避免截掉真实测试统计。
+
+### 完整离线回归与构建检查
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check.py
+.\.venv\Scripts\python.exe scripts/check.py --packaging-only
+```
+
+Linux 换为 `.venv/bin/python`。默认完整入口运行 unittest tests、`test_loop`/`test_sandbox` 两个脚本、eval metrics、五项 eval 可靠性测试与全部 Python 语法检查，任何一项失败均聚合非零，后续检查不因为前一项失败而静默略过。
+
+检查只运行于独立临时项目副本：不复制真实 `.env`、sessions、Git、Serena、虚拟环境、私有变更记录或外部链接，不触及原 demo。TMP/TEMP、工作区、状态和用户配置目录均隔离，真实 Key/代理不继承，模型只指向 dummy 回环地址，并限制 Git 上溯。Windows 启动器测试临时复用已有 venv 目录链接，结束时先**只移除链接**，绝不递归删除目标。
+
+`--packaging-only` 仅检查包模块、锁版本与离线依赖闭包，构建 sdist/wheel、离线安装，并从不含源码的目录运行安装入口 `--help`。没有 wheel 等构建工具或依赖时明确非零，不下载补齐。CI 覆盖 Windows/Linux 的 Python 3.11 工程检查；准备依赖阶段需要网络，实际回归阶段离线，不调用付费模型，也没有 publish 步骤。
+
+### 已知验证限制
+
+- 本轮未发起真实模型评测，没有新的自然任务质量、通过率或成本结论。代表性任务与人工判据见 [release_tasks.json](eval/release_tasks.json) 和 [RELEASE_EVAL.md](eval/RELEASE_EVAL.md)，真实开跑需显式确认。
+- 本机完整行为回归与构建安装已经实际通过，包括使用真实 SDK 连接回环假服务的 CLI 工具调用、拒绝、截断和服务异常场景；没有访问外部模型服务。
+- Windows 的一个符号链接测试受权限限制原生跳过，没有人为跳过失败测试。Linux 与远程 CI 尚未实跑，配置存在不代表对应平台已验证。
+- 小 fixture、mock、保护测试来源以及零测试检测均不证明业务测试完整；总结事实与自然任务质量仍需人工验收。
+- Windows/Linux CI 只配置 Python 3.11；其他 Python 版本、极端目录竞态与不可信项目执行不在当前已验证承诺内。
+- 脱敏规则不是所有秘密的识别器；API 服务商的数据留存、账单与取消行为不由本地护栏保证。
+
+## 研发历史（旧行为与旧结果）
+
+以下保留原 Phase 1–25 的研发过程与当时数字。旧文中的“沙盒”、依赖范围、无备份、步骤上限及历史评测结论都是对应历史版本的描述，不是当前安全或发布承诺；当前使用以本指南、SECURITY.md 与实际离线检查为准。
+
 从零手搓一个最小但真正可运行的 CLI Agent。
 
 ## 最终目标
 
-```
+```text
 用户输入任务 → LLM 判断下一步 → 选择工具 → 执行工具 → 结果回喂 LLM
              → 继续判断 → 连续执行多步 → 直到任务完成
 ```
@@ -88,7 +232,7 @@ Phase 24.5 修复了真实修改后读取、搜索和固定测试被旧重复调
 用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
 自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
 
-```
+```text
 用户任务 → list_files（探索）→ read_file（读取）→ write_file / apply_patch / run_command（受控执行）→ 最终回答
 ```
 
@@ -122,7 +266,7 @@ Runtime 只读取 `risk_level`，不再按 `write_file` 这样的具体工具名
 当前正式工具：
 
 | 新增 | 说明 |
-|---|---|
+| --- | --- |
 | `list_files` | 列工作目录一层内容，标 `[f]`/`[d]` 和字节数。`path` 可选，省略就是列根目录 |
 | `write_file` | 写 UTF-8 文本，父目录不存在会自动创建，但只能创建在沙盒内 |
 | `apply_patch` | 对已有 UTF-8 文本做 `old_text → new_text` 精确替换，`old_text` 必须唯一匹配 |
@@ -139,7 +283,7 @@ Phase 6 在同一个循环上叠了三层**互相独立**的防线，解决真�
 「任务已经完成，但 Agent 不知道什么时候该停」：
 
 | 层 | 谁负责 | 机制 |
-|---|---|---|
+| --- | --- | --- |
 | 1. 自己判断 | 模型 | 系统提示词里一句收敛原则：每次拿到工具结果后判断目标是否已满足，满足就直接给最终回答 |
 | 2. 重复调用检测 | 程序（Runtime） | 同一工具名 + 规范化后完全相同的参数，且上一次**成功执行**过 → 不真执行，回喂一条重复提示 |
 | 3. 最大步数 | 程序 | `MAX_AGENT_STEPS`（默认 8），数的是「问了几次模型」，撞线就停并明确告知 |
@@ -184,7 +328,7 @@ cd mini-agent-lab
 
 预期输出（用户只给目标、不给文件名：模型自己选文件、自己写结果）：
 
-```
+```text
 Mini Agent Lab
 模型：mock-model @ http://127.0.0.1:8765/v1
 工作目录：C:\...\mini-agent-lab\demo_workspace（就绪）
@@ -226,13 +370,13 @@ mock 服务器还支持几个触发词，用来手动触发各种分支（不用
 
 | 输入里带上 | 触发什么 |
 | --- | --- |
-| `列文件` | 正常列出工作目录（`[f]` / `[d]` + 字节数）|
+| `列文件` | 正常列出工作目录（`[f]` / `[d]` + 字节数） |
 | `todo.txt` | 正常读到文件 |
 | `越界` | 模型试图读 `../.env`，被沙盒拦下 |
 | `不存在` | 读一个没有的文件 |
 | `坏参数` | 模型给出非法 JSON 参数 |
 | `big_notes.txt` | 读一个大文件，验证结果会被截断到 4000 字符并明说省略了多少 |
-| `写个测试文件` | 正常写进工作目录（自动创建 `notes/`）|
+| `写个测试文件` | 正常写进工作目录（自动创建 `notes/`） |
 | `重复调用` | 对同一文件提两次**完全相同**的调用：第一次真执行，第二次被重复检测拦下并回喂提示 |
 | `写越界` | 模型试图写 `../evil.txt`，被沙盒拦下 |
 | `写绝对路径` | 模型试图写 `C:/evil.txt`，被沙盒拦下 |
@@ -372,7 +516,7 @@ ASCII、中文、emoji 及中文+emoji+JSON 回归验证输出内容完整保留
 
 Phase 13 用一个隔离的 `tests/fixtures/coding_workspace/` 小项目验证有限 Coding Loop：
 
-```
+```text
 read_file → write_file / apply_patch → run_command（测试）→ Tool Result → 再决定 → Final Answer
 ```
 
@@ -400,7 +544,7 @@ Mock C 验证撞上限时停止；一次真实小任务也已读、写、测试�
 
 ## 项目结构
 
-```
+```text
 mini-agent-lab/
 ├── main.py               # 程序入口：聊天循环 + Agent 循环 + 执行工具并回喂模型
 ├── config.py             # 配置：读 .env，产出模型连接信息、沙盒目录、最大步数、结果上限
@@ -447,7 +591,7 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 `main.py` 里连一个工具名都没写，工具集也没有增加。
 
 | 仍然缺失 | 现状 |
-|---|---|
+| --- | --- |
 | 模型的选择不可靠 | 挑哪个文件、读几个、要不要再读，全靠模型判断。它可能漏读关键文件，也可能读了不相干的 |
 | 只拦「完全相同」的重复 | 重复检测认的是工具名 + 规范化参数全等。模型换成不同参数原地打转（读 A、读 B、再读 A 的同类变体）不会被发现，仍只靠步数上限兜住 |
 | 没有 Memory | Session 只恢复同一段 canonical 对话，不做跨 Session 搜索、合并或自动记忆 |
@@ -501,7 +645,7 @@ Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**�
 但同一个任务跑三次，token 消耗是 9,172 / 5,884 / 12,962 —— **最大比最小 2.20 倍**。
 
 | 结论 | 依据 |
-|---|---|
+| --- | --- |
 | 结果稳定 | 8/8 成功，最终回答都在，编造文件 0 次 |
 | 过程不稳定 | 同一任务 token 方差 2.20 倍，模型调用数在 4～6 浮动 |
 | 钱花在哪 | 46,011 token 里 **40,816（88.71%）是 prompt** |
@@ -834,7 +978,7 @@ Gate 拒绝也一样：`finish_task` 后面的 read / run 本轮不执行。它�
 
 `acceptance.TaskState` 是一份极小的持久化生命周期，刻意不用时间戳：
 
-```
+```text
 status                            RUNNING | FINISHED | LIMIT_REACHED | ERROR
 event_seq                         任务内单调逻辑时钟，每个工具尝试消耗一个
 last_mutation_event_seq           真正改变 workspace 的那次事件序号

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 import configure
 
@@ -15,11 +16,12 @@ class ConfigureTests(unittest.TestCase):
     def test_mini_config_reaches_wizard_before_venv_exists(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(__file__).resolve().parents[1]
-            for name in ("mini.cmd", "configure.py", "config.py"):
+            for name in ("mini.cmd", "launcher.py", "cli.py", "configure.py", "file_safety.py"):
                 shutil.copy2(root / name, Path(directory) / name)
             result = subprocess.run(
                 ["cmd", "/c", str(Path(directory) / "mini.cmd"), "config"],
                 stdin=subprocess.DEVNULL,
+                env={**os.environ, "MINI_AGENT_STATE_DIR": directory, "AGENT_WORKSPACE": directory, "TMP": directory, "TEMP": directory},
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -107,6 +109,44 @@ class ConfigureTests(unittest.TestCase):
                     secret_func=lambda prompt: "",
                 )
             self.assertEqual(result, 2)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+
+    def test_invalid_url_port_does_not_save_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".env"
+            for url in ("https://example.com:bad/v1", "https://example.com:99999/v1", "https://example.com:0/v1"):
+                with self.subTest(url=url):
+                    answers = iter((url, "model"))
+                    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        result = configure.configure(path, input_func=lambda prompt: next(answers), secret_func=lambda prompt: "key")
+                    self.assertEqual(result, 2)
+                    self.assertFalse(path.exists())
+
+    def test_atomic_replace_failure_preserves_original_and_removes_temporary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".env"
+            original = "OPENAI_MODEL=old\n"
+            path.write_text(original, encoding="utf-8")
+            values = {key: "new" for key in configure.FIELDS}
+            with patch.object(configure.os, "replace", side_effect=PermissionError("不可写")):
+                with self.assertRaises(PermissionError):
+                    configure.save_config(path, original.splitlines(), values)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            self.assertEqual(sorted(item.name for item in path.parent.iterdir()), [".env"])
+
+    def test_configuration_symlink_is_rejected_before_reading(self):
+        with patch.object(Path, "is_symlink", return_value=True):
+            with self.assertRaises(PermissionError):
+                configure.read_existing(Path("unread-config"))
+
+    def test_cancelled_wizard_preserves_existing_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".env"
+            original = "OPENAI_MODEL=old\n"
+            path.write_text(original, encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaises(EOFError):
+                    configure.configure(path, input_func=Mock(side_effect=EOFError()), secret_func=Mock())
             self.assertEqual(path.read_text(encoding="utf-8"), original)
 
 
