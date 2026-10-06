@@ -53,7 +53,14 @@ def discounted_amount(amount: float, percent: float) -> float:
 def setup(case: str, root: Path, *, register: bool = False) -> fixtures.TaskSpec:
     fixtures.build_fixture(root)
     if case == "E":
-        (root / "tests/test_coupons.py").write_text(DIAGNOSIS_TEST, encoding="utf-8")
+        # The saved Phase 23 baseline was captured with this generated test
+        # using CRLF.  Pin that byte representation so the immutable snapshot
+        # remains reproducible on Linux and Windows.
+        (root / "tests/test_coupons.py").write_text(
+            DIAGNOSIS_TEST,
+            encoding="utf-8",
+            newline="\r\n",
+        )
         base = fixtures.get_task("E")
         spec = fixtures.TaskSpec("E25", "diagnosis_recovery", "A coupon of 10 percent on 200 currently gives 190 instead of 180. Fix the reported behavior, run the required test, and use any failure output to diagnose remaining cases.", base.ground_truth)
     else:

@@ -1,6 +1,6 @@
 # mini-agent-lab
 
-[![CI](https://github.com/GimMoliyadi/mini-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/GimMoliyadi/mini-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/GimMoliyadi/mini-agent/actions/workflows/ci.yml/badge.svg?branch=codex%2Fv1.0.0)](https://github.com/GimMoliyadi/mini-agent/actions/workflows/ci.yml?query=branch%3Acodex%2Fv1.0.0)
 
 **A controlled tool-use coding agent runtime built from scratch.**
 

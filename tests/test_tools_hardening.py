@@ -102,6 +102,23 @@ class ToolsHardeningTests(unittest.TestCase):
                     tools.write_file(name, "must not write")
         self.assertEqual(list(self.workspace.iterdir()), [])
 
+    def test_windows_style_relative_and_drive_paths_are_checked_cross_platform(self):
+        mixed_inside = tools.resolve_inside_workspace(r"notes\..//todo.txt")
+        self.assertEqual(mixed_inside, (self.workspace / "todo.txt").resolve())
+
+        escaping_paths = (
+            r"..\config.py",
+            r"..\..//config.py",
+            r"folder/..\..\config.py",
+            r"C:\Windows\win.ini",
+            r"C:/Windows/win.ini",
+            r"\\server\share\secret.txt",
+        )
+        for path in escaping_paths:
+            with self.subTest(path=path):
+                with self.assertRaises(PermissionError):
+                    tools.resolve_inside_workspace(path)
+
     def test_read_write_patch_and_search_have_file_size_limits(self):
         target = self.workspace / "large.txt"
         target.write_bytes(b"x" * (file_safety.MAX_FILE_BYTES + 1))

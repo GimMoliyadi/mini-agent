@@ -54,8 +54,12 @@ def _validate_path_syntax(path: str) -> None:
     windows = PureWindowsPath(path)
     if path.startswith(("\\\\", "//")) or windows.drive.startswith("\\\\"):
         raise PermissionError("拒绝 Windows 设备路径或 UNC 路径")
+    if windows.drive and not windows.root:
+        raise PermissionError("拒绝 Windows ADS 或盘符相对路径")
+    if windows.drive and os.name != "nt":
+        raise PermissionError("拒绝当前平台上的 Windows 盘符路径")
     relative_text = path[len(windows.drive):] if windows.drive else path
-    if ":" in relative_text or (windows.drive and not windows.root):
+    if ":" in relative_text:
         raise PermissionError("拒绝 Windows ADS 或盘符相对路径")
     for component in relative_text.replace("\\", "/").split("/"):
         if component in {"", ".", ".."}:
@@ -84,7 +88,10 @@ def is_sensitive_path(relative_path: Path | str) -> bool:
 def resolve_path(path: str, workspace: str | Path) -> Path:
     _validate_path_syntax(path)
     root = Path(workspace).resolve()
-    lexical = Path(os.path.abspath(root / path))
+    # Treat Windows separators as path separators on POSIX too.  Otherwise
+    # ``..\\config.py`` would be a literal in-workspace filename on Linux.
+    normalized_path = path.replace("\\", "/")
+    lexical = Path(os.path.abspath(root / normalized_path))
     target = lexical.resolve()
     if not lexical.is_relative_to(root) or not target.is_relative_to(root):
         raise PermissionError(f"路径越出工作目录，拒绝访问：{path}")

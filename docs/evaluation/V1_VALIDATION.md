@@ -1,12 +1,14 @@
 # v1.0 local validation and release gates
 
-Validated on Windows, 2026-10-05. These are local results; they do not claim a
-successful remote GitHub Actions run or live-model semantic quality.
+Initial hardening checks were validated on Windows, 2026-10-05. The offline
+matrix, lint, type check and Benchmark v1 were rerun after cross-platform fixes
+on 2026-10-07. These local results do not claim a successful remote GitHub
+Actions run or live-model semantic quality.
 
 | Check | Result |
 | --- | --- |
-| `python scripts/check.py`, Python 3.11.9 | 6/6 stages; 479 tests, 478 passed and one platform-condition skip |
-| `python scripts/check.py`, Python 3.13.7 | 6/6 stages; 479 tests, 478 passed and one platform-condition skip |
+| `python scripts/check.py`, Python 3.11.9 | 6/6 stages; 482 tests, 481 passed and one platform-condition skip |
+| `python scripts/check.py`, Python 3.13.7 | 6/6 stages; 482 tests, 481 passed and one platform-condition skip |
 | `python scripts/check.py --packaging-only` | 6/6; real sdist/wheel, offline wheel install, installed help/version/sessions |
 | `python -m ruff check mini_agent benchmark examples tests scripts` | Passed |
 | `python -m mypy` | Passed, 27 production source files |
@@ -42,6 +44,13 @@ or class exports. After restoring four private helper re-exports, the focused
 The repeated benchmark exposed same-size, rapid source edits reusing stale
 bytecode. Controlled test processes now use an independent, unwritten bytecode
 prefix. A regression creates a stale cache and proves the rerun reads the new source.
+
+The first remote CI run exposed three platform assumptions: backslash paths
+on POSIX, Windows short temporary-directory names, and generated fixture
+newlines differing from the saved byte snapshot. Path checks now handle both
+separator styles, the test harness resolves its temporary root before building
+child environments, and the historical recovery fixture pins its recorded CRLF
+bytes. Existing assertions and immutable baseline evidence remain intact.
 
 The runtime lint/type scope is the package, current benchmark, examples, tests and
 release scripts. A broader exploratory lint run found 12 existing lint issues in

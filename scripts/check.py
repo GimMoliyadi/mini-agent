@@ -105,7 +105,9 @@ def remove_venv_link(link: Path) -> None:
 
 @contextmanager
 def isolated_project(source: Path):
-    temporary_root = Path(tempfile.mkdtemp(prefix="mini-agent-check-"))
+    # Windows runners can supply an 8.3 TEMP path; fixtures and runtime must
+    # share the same canonical root before subprocess environments are built.
+    temporary_root = Path(tempfile.mkdtemp(prefix="mini-agent-check-")).resolve()
     root = temporary_root / "project"
     link = None
     try:

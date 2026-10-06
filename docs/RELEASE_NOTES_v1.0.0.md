@@ -11,4 +11,4 @@ A controlled tool-use coding agent runtime built from scratch.
 
 The benchmark distinguishes deterministic runtime acceptance from model quality and manual review. The workspace sandbox and command policy do not provide OS isolation. v1 adds no RAG, memory subsystem, planner, reflection subsystem, or multi-agent runtime.
 
-See `docs/evaluation/V1_VALIDATION.md` for the exact locally verified checks and any remaining release gates. A tag must identify the validated committed tree, not an older commit with uncommitted changes.
+See the [validation record](https://github.com/GimMoliyadi/mini-agent/blob/v1.0.0/docs/evaluation/V1_VALIDATION.md) for local checks and [GitHub Actions](https://github.com/GimMoliyadi/mini-agent/actions/workflows/ci.yml?query=branch%3Acodex%2Fv1.0.0) for remote results.

@@ -25,6 +25,9 @@ READ_ESCAPING_PATHS = [
     "..\\config.py",                    # Windows 分隔符，效果完全一样
     "../.env",                          # 里面是 API Key，绝对不能读
     "C:\\Windows\\win.ini",             # 模型直接给 Windows 绝对路径
+    "C:/Windows/win.ini",                # 盘符路径也必须跨平台拒绝
+    "..\\..//config.py",                 # 混合分隔符不能绕过上级目录检查
+    "\\\\server\\share\\secret.txt",     # UNC 路径
     "/etc/passwd",                      # 模型按 POSIX 习惯给绝对路径
     "../demo_workspace/../config.py",   # 绕一圈再出去
     "..\\..\\..\\Users\\30858\\secret",  # 多级跳出到用户目录
@@ -35,6 +38,8 @@ WRITE_ESCAPING_PATHS = [
     "../evil.txt",
     "..\\evil.txt",
     "C:\\Windows\\evil.txt",
+    "C:/Windows/evil.txt",
+    "..\\..//evil.txt",
     "../.env",                          # 试图改写 API Key
 ]
 
