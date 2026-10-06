@@ -14,7 +14,7 @@ DESKTOP_FOLDER_ID = "b4bfcc3a-db2c-424c-b029-7fe99a87c641"
 
 
 def get_desktop_path() -> Path:
-    if os.name != "nt":
+    if sys.platform != "win32":
         desktop = Path.home() / "Desktop"
         if not desktop.is_dir():
             raise FileNotFoundError("桌面目录不存在，请使用 --workspace 指定目录。")

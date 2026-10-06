@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import uuid
 
@@ -249,7 +250,7 @@ def _storage_lock(session_id: str, kind: str):
             handle.flush()
         handle.seek(0)
         try:
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             else:
@@ -261,7 +262,7 @@ def _storage_lock(session_id: str, kind: str):
             yield
         finally:
             handle.seek(0)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

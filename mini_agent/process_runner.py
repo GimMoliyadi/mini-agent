@@ -6,6 +6,7 @@ import math
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -96,6 +97,8 @@ class _OutputCapture:
 
 class _WindowsJob:
     def __init__(self):
+        if sys.platform != "win32":
+            raise RuntimeError("Windows Job Objects 仅支持 Windows")
         from ctypes import wintypes
 
         class BasicLimits(ctypes.Structure):
@@ -127,6 +130,8 @@ class _WindowsJob:
             raise error
 
     def attach_and_resume(self, process: subprocess.Popen) -> None:
+        if sys.platform != "win32":
+            raise RuntimeError("Windows Job Objects 仅支持 Windows")
         handle = ctypes.c_void_p(int(getattr(process, "_handle")))
         if not self.kernel.AssignProcessToJobObject(self.handle, handle):
             raise ctypes.WinError(ctypes.get_last_error())
@@ -138,6 +143,8 @@ class _WindowsJob:
             raise OSError(f"无法恢复受控子进程：NTSTATUS {status}")
 
     def close(self) -> None:
+        if sys.platform != "win32":
+            return
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
@@ -156,7 +163,7 @@ def _close_process_handles(process: subprocess.Popen) -> None:
 
 
 def _start_process(argv: list[str], cwd: Path, environment: dict) -> tuple[subprocess.Popen, _WindowsJob | None]:
-    job = _WindowsJob() if os.name == "nt" else None
+    job = _WindowsJob() if sys.platform == "win32" else None
     options = {"creationflags": _WINDOWS_CREATE_SUSPENDED} if job else {"start_new_session": True}
     process = None
     try:

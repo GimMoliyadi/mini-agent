@@ -11,7 +11,7 @@ Actions run or live-model semantic quality.
 | `python scripts/check.py`, Python 3.13.7 | 6/6 stages; 482 tests, 481 passed and one platform-condition skip |
 | `python scripts/check.py --packaging-only` | 6/6; real sdist/wheel, offline wheel install, installed help/version/sessions |
 | `python -m ruff check mini_agent benchmark examples tests scripts` | Passed |
-| `python -m mypy` | Passed, 27 production source files |
+| `python -m mypy --platform linux` / `--platform win32` | Passed, 27 production source files |
 | Clean Python 3.11 editable installation | Passed without system site packages |
 | Clean Python 3.13 locked editable/development installation | Passed without system site packages |
 | `scripts/verify_quickstart.py` in both clean environments | Config, version, doctor, start, sessions, task passed using a local HTTP provider |
