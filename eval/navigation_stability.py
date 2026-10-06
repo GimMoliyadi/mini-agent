@@ -17,7 +17,7 @@ SCENARIO_NAMES = (
     "large_symbol_coding",
 )
 PLANNED_RUNS = (2, 3)
-PRIOR_FAILURES_FILE = EVAL_DIR / "navigation_stability_prior_failures.json"
+PRIOR_FAILURES_FILE = (EVAL_DIR.parent / "docs" / "experiments" / "navigation_stability_prior_failures.json")
 
 
 def _parse_arguments(raw: str) -> dict:
@@ -193,7 +193,7 @@ def _make_payload(baseline: list[dict], new_runs: list[dict], prior_failures: li
 
 
 def run_stability() -> dict:
-    baseline_payload = json.loads((EVAL_DIR / "navigation_results.json").read_text(encoding="utf-8"))
+    baseline_payload = json.loads(((EVAL_DIR.parent / "docs" / "experiments" / "navigation_results.json")).read_text(encoding="utf-8"))
     baseline = [
         _baseline_record(item)
         for item in baseline_payload["results"]
@@ -204,7 +204,7 @@ def run_stability() -> dict:
     replacement_used = {scenario: False for scenario in SCENARIO_NAMES}
 
     def checkpoint(status: str) -> None:
-        (EVAL_DIR / "navigation_stability_results.json").write_text(
+        ((EVAL_DIR.parent / "docs" / "experiments" / "navigation_stability_results.json")).write_text(
             json.dumps(_make_payload(baseline, new_runs, prior_failures, status), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -233,7 +233,7 @@ def run_stability() -> dict:
                 new_runs.append(_normalise_run(replacement_raw, run_index, attempt_index=2))
                 checkpoint("running")
     payload = _make_payload(baseline, new_runs, prior_failures, "complete")
-    (EVAL_DIR / "navigation_stability_results.json").write_text(
+    ((EVAL_DIR.parent / "docs" / "experiments" / "navigation_stability_results.json")).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return payload

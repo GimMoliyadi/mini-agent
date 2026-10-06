@@ -222,7 +222,7 @@ def run_all() -> dict:
         "results": results,
         "workspace_final_state": "每个场景使用临时 fixture，源工作目录未修改",
     }
-    output = EVAL_DIR / "navigation_results.json"
+    output = (EVAL_DIR.parent / "docs" / "experiments" / "navigation_results.json")
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
 

@@ -21,7 +21,7 @@ import tools
 from . import phase22_5, phase22_harness as harness, phase23_2, phase23_budget
 
 
-OUTPUT = Path(__file__).with_name("phase24_1r_results.json")
+OUTPUT = (Path(__file__).resolve().parents[1] / "docs" / "experiments" / "phase24_1r_results.json")
 
 
 def _saved_replies(prefix: list[dict], mode: str) -> list[main.ModelReply]:

@@ -1,2 +1,2 @@
-# 开发、CI 与安装使用同一份已安装版本锁；更新必须显式重新验证。
--r requirements.lock
+# Compatibility entry; pyproject.toml is the source of direct dependencies.
+-e .

@@ -23,7 +23,7 @@ from .required_test_visibility_stability import (
 
 
 RECOVERY_RUNS = (7, 8, 9)
-RESULTS_PATH = EVAL_DIR / "required_test_visibility_recovery_results.json"
+RESULTS_PATH = (EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_recovery_results.json")
 REPORT_PATH = EVAL_DIR / "REQUIRED_TEST_VISIBILITY_RECOVERY_REPORT.md"
 
 
@@ -65,10 +65,10 @@ def _chain_reproduced(records):
 
 def _load_sources():
     phase19_payload = json.loads(
-        (EVAL_DIR / "required_test_visibility_results.json").read_text(encoding="utf-8")
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).read_text(encoding="utf-8")
     )
     phase195_payload = json.loads(
-        (EVAL_DIR / "required_test_visibility_stability_results.json").read_text(
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_stability_results.json")).read_text(
             encoding="utf-8"
         )
     )

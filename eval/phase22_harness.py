@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 EVAL_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = EVAL_DIR.parent
-RESULTS_PATH = EVAL_DIR / "phase22_results.json"
+RESULTS_PATH = (EVAL_DIR.parent / "docs" / "experiments" / "phase22_results.json")
 REPORT_PATH = EVAL_DIR / "phase22_report.md"
 PYTHON_BIN = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 CHILD_TIMEOUT_SECONDS = 900

@@ -533,7 +533,7 @@ def render_report(payload: dict) -> str:
 
 def run_phase19() -> dict:
     stability = json.loads(
-        (EVAL_DIR / "navigation_stability_results.json").read_text(encoding="utf-8")
+        ((EVAL_DIR.parent / "docs" / "experiments" / "navigation_stability_results.json")).read_text(encoding="utf-8")
     )
     control = [
         normalise_run(item["raw_result"], item["run_index"], "control")
@@ -544,7 +544,7 @@ def run_phase19() -> dict:
 
     def checkpoint(status: str) -> None:
         payload = _payload(control, treatment, status)
-        (EVAL_DIR / "required_test_visibility_results.json").write_text(
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
@@ -560,7 +560,7 @@ def run_phase19() -> dict:
         checkpoint("running")
 
     payload = _payload(control, treatment, "complete")
-    (EVAL_DIR / "required_test_visibility_results.json").write_text(
+    ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (EVAL_DIR / "REQUIRED_TEST_VISIBILITY_REPORT.md").write_text(
@@ -572,7 +572,7 @@ def run_phase19() -> dict:
 def refresh_existing_results() -> dict:
     """Re-normalise saved raw runs without starting another Agent process."""
     current = json.loads(
-        (EVAL_DIR / "required_test_visibility_results.json").read_text(encoding="utf-8")
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).read_text(encoding="utf-8")
     )
     control = [
         normalise_run(record["raw_result"], record["run"], "control")
@@ -583,7 +583,7 @@ def refresh_existing_results() -> dict:
         for record in current["treatment"]["runs"]
     ]
     payload = _payload(control, treatment, current.get("status", "complete"))
-    (EVAL_DIR / "required_test_visibility_results.json").write_text(
+    ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (EVAL_DIR / "REQUIRED_TEST_VISIBILITY_REPORT.md").write_text(

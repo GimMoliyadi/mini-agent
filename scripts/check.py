@@ -183,8 +183,12 @@ def check_metadata(root: Path) -> int:
     errors = []
     if set(modules) != source_modules or len(modules) != len(set(modules)):
         errors.append(f"py-modules 不一致：缺少 {sorted(source_modules - set(modules))}；无源码 {sorted(set(modules) - source_modules)}")
-    if metadata["project"]["scripts"].get("mini-agent") != "launcher:main":
-        errors.append("CLI 入口必须为 mini-agent=launcher:main")
+    if metadata["project"]["scripts"].get("mini-agent") != "mini_agent.launcher:main":
+        errors.append("CLI 入口必须为 mini-agent=mini_agent.launcher:main")
+    packages = metadata["tool"]["setuptools"]["packages"]
+    for package in packages:
+        if not (root / package.replace(".", "/") / "__init__.py").is_file():
+            errors.append(f"包缺少 __init__.py：{package}")
     lock_lines = {
         line.strip() for line in (root / "requirements.lock").read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")

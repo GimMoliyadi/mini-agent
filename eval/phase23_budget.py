@@ -25,9 +25,9 @@ import main
 
 
 EVAL_DIR = Path(__file__).resolve().parent
-RESULTS = EVAL_DIR / "phase23_budget_results.json"
+RESULTS = (EVAL_DIR.parent / "docs" / "experiments" / "phase23_budget_results.json")
 REPORT = EVAL_DIR / "phase23_budget_report.md"
-BASELINE = EVAL_DIR / "phase22_5_results.json"
+BASELINE = (EVAL_DIR.parent / "docs" / "experiments" / "phase22_5_results.json")
 TASK = "A coupon of 10 percent on 200 currently gives 190 instead of 180. Fix the reported behavior, run the required test, and use any failure output to diagnose remaining cases."
 REQUIRED_TEST = [
     "python",
@@ -265,9 +265,9 @@ def _network_diagnostics() -> dict:
 
 
 def _historical_budget_evidence() -> dict:
-    phase22 = json.loads((EVAL_DIR / "phase22_results.json").read_text(encoding="utf-8"))
+    phase22 = json.loads(((EVAL_DIR.parent / "docs" / "experiments" / "phase22_results.json")).read_text(encoding="utf-8"))
     phase22_metrics = [run.get("metrics", {}) for run in phase22.get("results", [])]
-    phase22_5 = json.loads((EVAL_DIR / "phase22_5_results.json").read_text(encoding="utf-8"))
+    phase22_5 = json.loads(((EVAL_DIR.parent / "docs" / "experiments" / "phase22_5_results.json")).read_text(encoding="utf-8"))
     return {
         "phase22_budget": phase22.get("max_agent_steps"),
         "phase22_runs": len(phase22_metrics),

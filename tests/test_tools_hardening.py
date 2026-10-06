@@ -150,6 +150,16 @@ class ToolsHardeningTests(unittest.TestCase):
         self.assertIn(str(self.workspace), decoded)
         self.assertEqual(result.captured_bytes, len(result.stdout) + len(result.stderr))
 
+    def test_process_runner_rejects_cwd_outside_workspace(self):
+        outside = self.workspace.parent
+        with self.assertRaises(PermissionError):
+            process_runner.run_process(
+                [sys.executable, "-c", "pass"],
+                outside,
+                workspace=self.workspace,
+                timeout_seconds=5,
+            )
+
     def test_true_combined_byte_budget_bounds_stdout_and_stderr(self):
         code = "import os; os.write(1, ('界'*2000).encode()); os.write(2, b'y'*6000)"
         result = process_runner.run_process([sys.executable, "-c", code], self.workspace, workspace=self.workspace, timeout_seconds=5, output_limit_bytes=1024)

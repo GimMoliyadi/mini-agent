@@ -11,7 +11,7 @@ if __name__ == "__main__":
     run = int(sys.argv[1])
     if run not in {1, 2}:
         raise ValueError("Run must be 1 or 2")
-    output = Path(__file__).with_name(f"phase24_5_results_{run}.json")
+    output = (Path(__file__).resolve().parents[1] / "docs" / "experiments" / f"phase24_5_results_{run}.json")
     if output.exists():
         raise FileExistsError(output)
 

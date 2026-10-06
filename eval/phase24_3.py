@@ -139,7 +139,7 @@ def main() -> None:
     assert simulate(["EDIT", "TEST_PASS", "TEST_FAIL"]).stage == "STOPPED"
     print(f"Ceiling check: accepted finish at call {HARD_CEILING}; detour and finish retries bounded")
 
-    saved = json.loads(Path(__file__).with_name("phase24_2_results.json").read_text(encoding="utf-8"))
+    saved = json.loads((Path(__file__).resolve().parents[1] / "docs" / "experiments" / "phase24_2_results.json").read_text(encoding="utf-8"))
     expected = {1: ("FINISH_NEEDED", 11), 2: ("VERIFY_NEEDED", 11), 3: ("FINISHED", 11)}
     for slot in saved["runs"]:
         events = trace_events(slot)

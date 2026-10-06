@@ -25,9 +25,9 @@ import tools
 
 
 EVAL_DIR = Path(__file__).resolve().parent
-RESULTS = EVAL_DIR / "phase23_2_results.json"
+RESULTS = (EVAL_DIR.parent / "docs" / "experiments" / "phase23_2_results.json")
 REPORT = EVAL_DIR / "phase23_2_report.md"
-PRIOR_RESULTS = EVAL_DIR / "phase23_budget_results.json"
+PRIOR_RESULTS = (EVAL_DIR.parent / "docs" / "experiments" / "phase23_budget_results.json")
 RECOVERY_BUDGETS = (2, 4)
 INFRASTRUCTURE_RETRIES = 1
 RECOVERY_BUDGET_ENV = "PHASE23_2_RECOVERY_BUDGET"

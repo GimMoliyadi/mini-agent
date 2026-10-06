@@ -18,6 +18,9 @@ class ConfigureTests(unittest.TestCase):
             root = Path(__file__).resolve().parents[1]
             for name in ("mini.cmd", "launcher.py", "cli.py", "configure.py", "file_safety.py"):
                 shutil.copy2(root / name, Path(directory) / name)
+            # The entry shims now load the standard-library-only package modules.
+            shutil.copytree(root / "mini_agent", Path(directory) / "mini_agent",
+                            ignore=shutil.ignore_patterns("__pycache__"))
             result = subprocess.run(
                 ["cmd", "/c", str(Path(directory) / "mini.cmd"), "config"],
                 stdin=subprocess.DEVNULL,

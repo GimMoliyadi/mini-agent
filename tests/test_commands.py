@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 import main  # noqa: E402
 import tools  # noqa: E402
 from config import MAX_COMMAND_OUTPUT_CHARS  # noqa: E402
+from mini_agent.result import ToolResult  # noqa: E402
 from process_runner import ProcessResult  # noqa: E402
 
 
@@ -56,11 +57,19 @@ class ControlledCommandTests(unittest.TestCase):
         self.assertIn("run_command", {item["function"]["name"] for item in tools.AVAILABLE_TOOLS})
 
     def test_allow_and_shell_false_execute_successfully(self):
+        (tools.WORKSPACE_DIR / "test_smoke.py").write_text(
+            "import unittest\nclass Smoke(unittest.TestCase):\n"
+            "    def test_smoke(self):\n        self.assertEqual(1 + 1, 2)\n",
+            encoding="utf-8",
+        )
         with patch("process_runner.subprocess.Popen", wraps=subprocess.Popen) as start:
             result = tools.run_command("python", ["-m", "unittest", "-q"])
         self.assertIn("Exit code: 0", result)
         self.assertIn("Timed out: false", result)
-        self.assertIn("Ran 0 tests", result)
+        self.assertIn("Ran 1 test", result)
+        self.assertIsInstance(result, ToolResult)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.code, "command_succeeded")
         self.assertFalse(start.call_args.kwargs["shell"])
         self.assertEqual(start.call_args.args[0][0], sys.executable)
         self.assertEqual(start.call_args.args[0][1:3], ["-m", "unittest"])
@@ -91,6 +100,10 @@ class ControlledCommandTests(unittest.TestCase):
             ("python", ["-m", "pytest", "x.py", "&&", "del", "x"]),
             ("python", ["-m", "pytest", "../outside.py"]),
             ("git", ["diff", ".env"]), ("git", ["diff", "--ext-diff"]),
+            ("git", ["status", "--git-dir=.git"]),
+            ("git", ["status", "--work-tree=."]),
+            ("git", ["status", "--upload-pack=git-upload-pack"]),
+            ("git", ["status", "-C", "."]),
         ]
         with patch("process_runner.subprocess.Popen") as start:
             for command, args in rejected:
@@ -128,6 +141,8 @@ class ControlledCommandTests(unittest.TestCase):
         self.assertIn("Exit code: 3", result)
         self.assertIn("test failed", result)
         self.assertIn("Timed out: false", result)
+        self.assertEqual(result.status, "command_failed")
+        self.assertEqual(result.code, "exit_nonzero")
 
     def test_long_stdout_is_truncated(self):
         with patch("tools.run_process", return_value=ProcessResult(0, b"x" * (MAX_COMMAND_OUTPUT_CHARS + 100), b"")):

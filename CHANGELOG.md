@@ -1,5 +1,16 @@
 # 变更记录
 
+## 1.0.0
+
+- 正式定位为 controlled tool-use coding agent runtime，保留现有行为与兼容入口。
+- Python package、安装式 CLI、MIT LICENSE、离线 CI、Ruff 与 Mypy。
+- 内部 ToolResult 状态和可选脱敏 JSONL；模型仍使用现有文本工具协议。
+- 最小子进程环境、路径与 Git 参数回归、测试重跑的 bytecode 新鲜度。
+- 36 题重复 Benchmark v1、端到端 Demo、精简 README 与历史档案。
+
+发布说明见 [RELEASE_NOTES_v1.0.0.md](docs/RELEASE_NOTES_v1.0.0.md)，
+实测及剩余门禁见 [V1_VALIDATION.md](docs/evaluation/V1_VALIDATION.md)。
+
 ## 0.1.0（未发布）
 
 这是首次添加本地 Python 包元数据的版本号，不是已发布的 PyPI 版本，也不是对历史研发阶段重新编号。
@@ -26,4 +37,5 @@
 
 ## 历史研发记录
 
-Phase 1–25 的研发过程、旧行为及当时的实测数字保留在 README 的“研发历史”部分以及 `REAL_RUN_LOG.md`、`eval/` 历史报告。旧数字只适用于原任务、原配置和原版本。
+Phase 1–25 的研发过程保留在 `docs/development-history/`、
+`docs/evaluation/REAL_RUN_LOG.md` 与 `docs/experiments/`。旧数字只适用于原任务、原配置和原版本。

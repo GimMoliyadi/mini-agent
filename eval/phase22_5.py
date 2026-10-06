@@ -17,7 +17,7 @@ from . import phase22_fixtures as fixtures
 from . import phase22_harness as harness
 
 
-RESULTS = Path(__file__).with_name("phase22_5_results.json")
+RESULTS = (Path(__file__).resolve().parents[1] / "docs" / "experiments" / "phase22_5_results.json")
 REPORT = Path(__file__).with_name("phase22_5_report.md")
 SOURCE_PATHS = tuple(path for path in fixtures._BASE_FILES if path.startswith("src/") and not path.endswith("/__init__.py"))
 CASES = {

@@ -30,7 +30,7 @@ GUIDANCE_TEXT = (
     "After your final code modification, run the required test command to verify the final workspace state before finishing."
 )
 PLANNED_TREATMENT_RUNS = (1, 2, 3)
-RESULTS_PATH = EVAL_DIR / "post_mutation_verification_guidance_results.json"
+RESULTS_PATH = (EVAL_DIR.parent / "docs" / "experiments" / "post_mutation_verification_guidance_results.json")
 REPORT_PATH = EVAL_DIR / "POST_MUTATION_VERIFICATION_GUIDANCE_REPORT.md"
 
 
@@ -253,10 +253,10 @@ def aggregate_guidance_records(records):
 
 def _load_control_records():
     phase19 = json.loads(
-        (EVAL_DIR / "required_test_visibility_results.json").read_text(encoding="utf-8")
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).read_text(encoding="utf-8")
     )
     recovery = json.loads(
-        (EVAL_DIR / "required_test_visibility_recovery_results.json").read_text(
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_recovery_results.json")).read_text(
             encoding="utf-8"
         )
     )

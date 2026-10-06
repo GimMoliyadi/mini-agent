@@ -1,0 +1,14 @@
+include LICENSE README.md SECURITY.md CHANGELOG.md requirements.txt requirements.lock .env.example
+include agent.cmd mini.cmd
+recursive-include scripts *.py
+recursive-include tests *.py *.json
+recursive-include eval *.py
+include eval/tasks.json eval/release_tasks.json
+recursive-include benchmark *.py
+include benchmark/README.md benchmark/fixtures/README.md benchmark/reports/benchmark-v1.md
+include benchmark/tasks/manifest.json
+include benchmark/reports/benchmark-v1.json
+recursive-include examples *.py *.jsonl
+recursive-include docs *.md *.json
+include .github/workflows/ci.yml
+global-exclude *.pyc
