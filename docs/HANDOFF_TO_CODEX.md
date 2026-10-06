@@ -1162,7 +1162,7 @@ Phase 19 专项测试与全量回归通过：全量 `117` 项通过、`1` 项 Wi
 
 ```powershell
 $env:PYTHONPATH = (Join-Path (Get-Location) "eval")
-C:\Users\30858\mini-agent-lab\.venv\Scripts\python.exe -m eval.required_test_visibility_recovery
+<workspace>\.venv\Scripts\python.exe -m eval.required_test_visibility_recovery
 ```
 
 不要直接运行 `python eval\required_test_visibility_recovery.py`；该路径不会自动把 repo root

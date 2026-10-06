@@ -54,10 +54,8 @@ also emits existing docstring escape warnings there; syntax compilation passes.
   are authoritative at [GitHub Actions](https://github.com/GimMoliyadi/mini-agent/actions).
   This local record does not assert a remote job outcome. Linux/macOS Quick
   Start has not been run locally.
-- Commit and push were explicitly authorized on 2026-10-06. The `v1.0.0` tag
-  must point to the validated committed tree after all remote CI jobs succeed.
-- Independent delegated review stopped at an account usage limit. The default
-  ChatGPT collaboration project is not bound, so no ChatGPT review is claimed.
+- The `v1.0.0` tag must point to the validated committed tree after all remote
+  CI jobs succeed.
 - Semantic/manual review and live-provider quality remain unverified.
 - Docker execution is not implemented; path sandbox and command policy do not
   provide OS isolation. This release remains for trusted local projects.
