@@ -7,7 +7,7 @@ from pathlib import Path
 from .required_test_visibility import EVAL_DIR, EXACT_REQUIRED_TEST
 
 
-RESULTS_PATH = EVAL_DIR / "post_mutation_verification_results.json"
+RESULTS_PATH = (EVAL_DIR.parent / "docs" / "experiments" / "post_mutation_verification_results.json")
 REPORT_PATH = EVAL_DIR / "POST_MUTATION_VERIFICATION_REPORT.md"
 
 
@@ -126,10 +126,10 @@ def aggregate_records(records):
 
 def _load_valid_treatments():
     phase19 = json.loads(
-        (EVAL_DIR / "required_test_visibility_results.json").read_text(encoding="utf-8")
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).read_text(encoding="utf-8")
     )
     recovery = json.loads(
-        (EVAL_DIR / "required_test_visibility_recovery_results.json").read_text(
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_recovery_results.json")).read_text(
             encoding="utf-8"
         )
     )

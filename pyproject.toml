@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=65.5", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-agent-lab"
+version = "1.0.0"
+description = "A controlled tool-use coding agent runtime built from scratch"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = ["openai==3.15.0"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+]
+
+[project.scripts]
+mini-agent = "mini_agent.launcher:main"
+
+[project.optional-dependencies]
+dev = ["ruff>=0.9,<1", "mypy>=1.14,<2", "setuptools>=65.5", "wheel"]
+
+[tool.setuptools]
+py-modules = [
+    "acceptance",
+    "awareness",
+    "awareness_cli",
+    "capabilities",
+    "cli",
+    "config",
+    "configure",
+    "diagnostics",
+    "file_safety",
+    "launcher",
+    "main",
+    "process_runner",
+    "recovery",
+    "runtime_guards",
+    "session",
+    "session_cli",
+    "tools",
+]
+include-package-data = false
+packages = ["mini_agent", "mini_agent.tools"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["tests/fixtures", "demo_workspace", "docs", ".venv"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"mini_agent/runtime.py" = ["F401", "E402"] # Runtime re-exports the legacy main API.
+"mini_agent/tools/registry.py" = ["F401"] # Single registry also exports the old tools API.
+"tests/*.py" = ["E402"] # Tests add the source checkout before compatibility imports.
+
+[tool.mypy]
+python_version = "3.11"
+files = ["mini_agent"]
+follow_imports = "silent"
+check_untyped_defs = true
+ignore_missing_imports = true

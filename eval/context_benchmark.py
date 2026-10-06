@@ -17,7 +17,7 @@ import main as agent_main  # noqa: E402
 import tools  # noqa: E402
 
 
-OUTPUT_JSON = EVAL_DIR / "context_benchmark.json"
+OUTPUT_JSON = (EVAL_DIR.parent / "docs" / "experiments" / "context_benchmark.json")
 OUTPUT_MARKDOWN = EVAL_DIR / "CONTEXT_BENCHMARK.md"
 MODES = ("OFF", "WRITE_ONLY", "FULL")
 

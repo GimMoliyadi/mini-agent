@@ -232,7 +232,7 @@ class SessionTests(unittest.TestCase):
             patch.object(main, "get_context_mode", return_value="WRITE_ONLY"),
             patch.object(main, "ask", return_value=first_reply),
             patch.object(main, "log_reply"),
-            patch.object(main, "run_agent_loop") as run_loop,
+            patch.object(main, "run_agent_loop", return_value="incomplete") as run_loop,
             patch.object(main, "save_session") as save,
             patch("builtins.input", side_effect=["continue", "exit"]),
         ):
@@ -241,7 +241,10 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(run_loop.call_args.kwargs["contract"], contract)
         self.assertEqual(run_loop.call_args.kwargs["task_state"].as_dict(), state.as_dict())
         self.assertEqual(record["task_state"], state.as_dict())
-        save.assert_called_once_with(record)
+        self.assertEqual(save.call_count, 3)
+        for arguments, keywords in save.call_args_list:
+            self.assertEqual(arguments, (record,))
+            self.assertEqual(keywords, {})
         client.close.assert_called_once()
 
     def test_legacy_session_loads_but_cannot_resume_coding_without_state(self):

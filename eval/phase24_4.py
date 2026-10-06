@@ -7,7 +7,7 @@ import sys
 from .phase24_1r import _run
 
 
-OUTPUT = Path(__file__).with_name("phase24_4_results.json")
+OUTPUT = (Path(__file__).resolve().parents[1] / "docs" / "experiments" / "phase24_4_results.json")
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from .required_test_visibility import (
 
 PLANNED_RUNS = (4, 5, 6)
 BASELINE_COMMIT = "e6ed38a"
-RESULTS_PATH = EVAL_DIR / "required_test_visibility_stability_results.json"
+RESULTS_PATH = (EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_stability_results.json")
 REPORT_PATH = EVAL_DIR / "REQUIRED_TEST_VISIBILITY_STABILITY_REPORT.md"
 
 
@@ -99,7 +99,7 @@ def aggregate_stability(phase19_records, new_records):
 
 def _load_phase19_records():
     payload = json.loads(
-        (EVAL_DIR / "required_test_visibility_results.json").read_text(encoding="utf-8")
+        ((EVAL_DIR.parent / "docs" / "experiments" / "required_test_visibility_results.json")).read_text(encoding="utf-8")
     )
     treatment = [
         record

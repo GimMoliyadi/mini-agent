@@ -71,6 +71,7 @@ def _run_child(scenario_name: str) -> dict:
     # Imports happen after AGENT_WORKSPACE is set by the parent process.
     import acceptance
     import main
+    import tools
 
     scenario = SCENARIOS[scenario_name]
     root = Path(os.environ["AGENT_WORKSPACE"]).resolve()
@@ -141,6 +142,7 @@ def _run_child(scenario_name: str) -> dict:
             agent_ran_required_test=metrics["required_test_ran"],
             max_steps_reached=trace.max_steps_reached,
             runtime_exception=runtime_errors[0] if runtime_errors else None,
+            command_runner=tools.run_command,  # 评估入口显式授权隔离 fixture 的固定测试。
         )
         accepted = acceptance_result["accepted"]
     else:
@@ -220,7 +222,7 @@ def run_all() -> dict:
         "results": results,
         "workspace_final_state": "每个场景使用临时 fixture，源工作目录未修改",
     }
-    output = EVAL_DIR / "navigation_results.json"
+    output = (EVAL_DIR.parent / "docs" / "experiments" / "navigation_results.json")
     output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
 

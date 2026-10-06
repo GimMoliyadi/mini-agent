@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 EVAL_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = EVAL_DIR.parent
-RESULTS_PATH = EVAL_DIR / "phase22_results.json"
+RESULTS_PATH = (EVAL_DIR.parent / "docs" / "experiments" / "phase22_results.json")
 REPORT_PATH = EVAL_DIR / "phase22_report.md"
 PYTHON_BIN = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 CHILD_TIMEOUT_SECONDS = 900
@@ -452,6 +452,7 @@ def _verify(contract, root: Path, before: dict[str, str], state, messages, trace
         agent_ran_required_test=_agent_ran_required_test(messages, trace.summary(), contract),
         max_steps_reached=trace.max_steps_reached,
         runtime_exception=state.unresolved_runtime_error,
+        command_runner=tools.run_command,  # 评估入口显式授权隔离 fixture 的固定测试。
     )
 
 
@@ -860,7 +861,10 @@ def run_local_harness_validation() -> dict:
             build_fixture(root)
             before = acceptance.snapshot_workspace(root)
             apply_ground_truth_fix(root, spec)
-            verdict = acceptance.verify_contract(contract, root, before)
+            verdict = acceptance.verify_contract(
+                contract, root, before,
+                command_runner=tools.run_command,  # 离线校验显式授权临时 fixture 的固定测试。
+            )
             verifier_results.append(verdict["artifact_passed"])
         checks["ground_truth_and_verifier"] = all(verifier_results)
 

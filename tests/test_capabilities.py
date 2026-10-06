@@ -113,9 +113,9 @@ class CapabilityTests(unittest.TestCase):
     def test_launcher_reaches_formal_interactive_entry_from_another_directory(self):
         with tempfile.TemporaryDirectory() as cwd:
             result = subprocess.run(["cmd", "/c", str(ROOT / "agent.cmd"), "--help"],
-                                    cwd=cwd, capture_output=True, text=True, timeout=20)
+                                    cwd=cwd, capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Run the interactive Mini Agent", result.stdout)
+        self.assertIn("--workspace", result.stdout)
         self.assertIn("--resume", result.stdout)
 
 

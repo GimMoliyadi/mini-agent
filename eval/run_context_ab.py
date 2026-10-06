@@ -17,7 +17,7 @@ import run_eval  # noqa: E402
 
 MODES = ("OFF", "WRITE_ONLY", "FULL")
 TASK_IDS = ("task_1", "task_2", "task_3")
-OUTPUT_JSON = EVAL_DIR / "context_ab_results.json"
+OUTPUT_JSON = (EVAL_DIR.parent / "docs" / "experiments" / "context_ab_results.json")
 OUTPUT_MARKDOWN = EVAL_DIR / "CONTEXT_AB.md"
 
 

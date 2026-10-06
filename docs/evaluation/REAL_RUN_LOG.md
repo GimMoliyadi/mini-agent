@@ -370,10 +370,10 @@ subprocess。
 
 | Agent Turn | Tool Call | command / args | cwd | risk | approval | subprocess | exit | timed_out |
 |---|---|---|---|---|---|---|---:|---|
-| 2 | `run_command` | `git` / `["log", "--oneline", "-20"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | `ALLOW` | 是 | 0 | false |
-| 3 | `run_command` | `git` / `["show", "--stat", "2a0ac8e"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | 未到达（Command Policy 拒绝） | 否 | N/A | false |
-| 4 | `run_command` | `python` / `["-m", "pytest", "tests/test_long_file.py", "-v"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | `ALLOW` | 是 | 1 | false |
-| 5 | `run_command` | `python` / `["-m", "unittest", "tests.test_long_file", "-v"]` | `C:\Users\30858\mini-agent-lab` | `EXECUTION` | `ALLOW` | 是 | 0 | false |
+| 2 | `run_command` | `git` / `["log", "--oneline", "-20"]` | `<workspace>` | `EXECUTION` | `ALLOW` | 是 | 0 | false |
+| 3 | `run_command` | `git` / `["show", "--stat", "2a0ac8e"]` | `<workspace>` | `EXECUTION` | 未到达（Command Policy 拒绝） | 否 | N/A | false |
+| 4 | `run_command` | `python` / `["-m", "pytest", "tests/test_long_file.py", "-v"]` | `<workspace>` | `EXECUTION` | `ALLOW` | 是 | 1 | false |
+| 5 | `run_command` | `python` / `["-m", "unittest", "tests.test_long_file", "-v"]` | `<workspace>` | `EXECUTION` | `ALLOW` | 是 | 0 | false |
 
 ### Tool Result 摘要
 
@@ -542,7 +542,7 @@ OK
 真实任务原文：`修复 calculator.py，让对应测试全部通过。完成后告诉我改了什么。`
 
 真实 fixture 位于临时 `AGENT_WORKSPACE`：
-`C:\Users\30858\AppData\Local\Temp\mini-agent-coding-c6b340c0142c4376a7f947976c3866ba`
+`<temp>\mini-agent-coding-c6b340c0142c4376a7f947976c3866ba`
 
 模型没有被告知 bug 所在行、正确代码或工具顺序，实际链路为：
 
@@ -653,7 +653,7 @@ Contract 文件：`tests/fixtures/coding_contract.json`
 任务 instruction：`修复 calculator.py，让对应测试通过。完成后告诉我改了什么。`
 
 真实 workspace：
-`C:\Users\30858\AppData\Local\Temp\mini-agent-phase14-real-5fa0fc8182af40358114fe9afdc30df0\coding_workspace`
+`<temp>\mini-agent-phase14-real-5fa0fc8182af40358114fe9afdc30df0\coding_workspace`
 
 模型没有被告知正确代码，实际链路：
 
@@ -1050,7 +1050,7 @@ Acceptance 仍只依据最终 changed_files 与固定测试。
 隔离运行目录：
 
 ```text
-C:\Users\30858\AppData\Local\Temp\mini-agent-phase16-real-f5a5a063059646f0a11c63f1d8ef9086
+<temp>\mini-agent-phase16-real-f5a5a063059646f0a11c63f1d8ef9086
 ```
 
 Provider 请求前先按交接环境检查发现 `127.0.0.1:7897` 无监听；第一次尝试停在 SDK 初始化，
