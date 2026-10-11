@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from .command import run_command
 from .filesystem import apply_patch, list_files, read_file, rename_file, search_text, write_file
 from .introspection import inspect_capabilities, inspect_project
+from .navigation import find_files, inspect_python_symbols
 from ..result import ToolResult
 
 
@@ -39,6 +40,18 @@ class SearchTextInput(BaseModel):
     query: str
     path: str = "."
     max_results: int = 20
+
+
+class FindFilesInput(BaseModel):
+    pattern: str = "*.py"
+    path: str = "."
+    max_results: int = 50
+
+
+class InspectPythonSymbolsInput(BaseModel):
+    path: str
+    query: str = ""
+    max_results: int = 50
 
 
 class WriteFileInput(BaseModel):
@@ -230,6 +243,22 @@ def build_tools(
                 metadata=_metadata(
                     risk="execute", mutation=False, workspace_arguments=("cwd",)
                 ),
+            ),
+            _make_tool(
+                name="find_files",
+                description="递归按文件名或相对路径模式搜索文件（如 *.py、*test*）；返回相对路径，不读取文件正文。",
+                handler=find_files,
+                workspace=root,
+                args_schema=FindFilesInput,
+                metadata=_metadata(risk="read", mutation=False, workspace_arguments=("path",)),
+            ),
+            _make_tool(
+                name="inspect_python_symbols",
+                description="静态解析指定 Python 文件，返回类、函数、方法及其定义起止行号，可按名称过滤。",
+                handler=inspect_python_symbols,
+                workspace=root,
+                args_schema=InspectPythonSymbolsInput,
+                metadata=_metadata(risk="read", mutation=False, workspace_arguments=("path",)),
             ),
             _make_tool(
                 name="inspect_project",
