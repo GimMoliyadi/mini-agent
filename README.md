@@ -119,6 +119,21 @@ flowchart LR
 `mutation_paths` 由 `BoundaryMiddleware` 用于审批、contract 路径检查和前置条件
 校验。
 
+## 开发任务能力（下一轮迭代）
+
+原有的文件读取、全文搜索、补丁修改和测试执行之外，`run_command` 现在支持：
+`python -m pytest/unittest/ruff/mypy/compileall/build`、工作区内 `python path/to/script.py`
+以及只读的 `git status/diff/log/ls-files`。
+
+这让 Coding Agent 能实际运行仓库内的 Python 脚本、静态检查和构建步骤，而不是只会改代码和跑单元测试。
+命令仍使用现有的无 shell 进程执行器、工作区限定、超时和输出上限；
+默认 `ASK` 审批对执行工具仍然生效。这不是操作系统隔离：**仅用于受信任项目**。
+`pip install` 不在默认命令列表中，依赖安装应在开发者管理的虚拟环境完成。
+
+项目导航工具同样使用已有的工作区保护：`find_files(pattern, path)` 递归列出匹配路径，
+`inspect_python_symbols(path, query)` 通过 Python AST 定位类、函数、方法和行号，
+不执行被分析代码。两者都限制扫描范围和结果长度，避免把整个项目直接塞进模型上下文。
+
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
@@ -144,8 +159,10 @@ SQLite saver 保存图节点状态和写入记录，因而可以在 HTTP 错误�
 ## 安全边界与限制
 
 - 文件工具只允许规范化后的工作区路径，并限制敏感路径、链接和文件大小。
-- `run_command` 使用 `shell=False`，只允许 `python -m pytest`、`python -m unittest`
-  和只读 `git status/diff/log` 形态，并限制 cwd、超时、输出和子进程环境。
+- `run_command` 使用 `shell=False`，允许工作区内的 `python script.py`、
+  `python -m pytest/unittest/ruff/mypy/compileall/build` 以及只读的
+  `git status/diff/log/ls-files`，同时限制 cwd、超时、输出和子进程环境；
+  不允许 `python -c`、`pip install` 或任意 shell 命令。
 - 工作区和命令策略不是 OS sandbox。受信测试代码仍可能访问当前用户可访问的
   文件、网络和解释器能力；执行不可信项目应另外使用无密钥容器或虚拟机。
 - Trace 默认只保留当前进程内存事件；设置 `MINI_AGENT_TRACE_JSONL` 才会追加
