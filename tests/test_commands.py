@@ -89,7 +89,7 @@ class ControlledCommandTests(unittest.TestCase):
     def test_standard_python_developer_commands_use_existing_process_runner(self) -> None:
         # 本地模型可以执行格式检查、类型检查、编译检查和打包构建；
         # 与 unittest/pytest 一样，命令仍经非 shell 的受控 process runner。
-        with patch.object(tools, "run_process", return_value=ProcessResult(0, b"ok\\n", b"")) as run:
+        with patch.object(tools, "run_process", return_value=ProcessResult(0, b"ok\n", b"")) as run:
             for module, extra in (
                 ("ruff", ["check", "."]),
                 ("mypy", ["."]),
@@ -102,7 +102,7 @@ class ControlledCommandTests(unittest.TestCase):
         self.assertEqual(run.call_count, 4)
 
     def test_python_entrypoint_executes_workspace_script(self) -> None:
-        (self.workspace / "smoke.py").write_text("print('script ran')\\n", encoding="utf-8")
+        (self.workspace / "smoke.py").write_text("print('script ran')\n", encoding="utf-8")
         result = tools.run_command("python", ["smoke.py"])
         self.assertEqual(result.status, "success")
         self.assertIn("script ran", result.text)
@@ -116,7 +116,7 @@ class ControlledCommandTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_git_ls_files_remains_read_only(self) -> None:
-        with patch.object(tools, "run_process", return_value=ProcessResult(0, b"file.py\\n", b"")):
+        with patch.object(tools, "run_process", return_value=ProcessResult(0, b"file.py\n", b"")):
             result = tools.run_command("git", ["ls-files"])
             self.assertIn("file.py", result.text)
 
