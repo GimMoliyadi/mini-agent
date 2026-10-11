@@ -24,6 +24,8 @@ class LangChainToolsTests(unittest.TestCase):
                 "apply_patch",
                 "rename_file",
                 "run_command",
+                "find_files",
+                "inspect_python_symbols",
                 "inspect_project",
                 "inspect_capabilities",
             ],
