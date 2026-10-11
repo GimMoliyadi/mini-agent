@@ -13,7 +13,6 @@ from pathlib import Path
 from mini_agent import sandbox as file_safety
 from mini_agent.config import MAX_TOOL_RESULT_CHARS
 from .filesystem import (
-    MAX_SEARCH_ENTRIES,
     MAX_SEARCH_FILES,
     _active_workspace,
     _iter_search_files,
@@ -84,7 +83,7 @@ class _Definitions(ast.NodeVisitor):
         self.stack: list[str] = []
         self.rows: list[tuple[int, int, str, str]] = []
 
-    def _visit_scope(self, node: ast.AST, kind: str) -> None:
+    def _visit_scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, kind: str) -> None:
         name = getattr(node, "name")
         qualified = ".".join([*self.stack, name])
         self.rows.append((node.lineno, node.end_lineno or node.lineno, kind, qualified))
