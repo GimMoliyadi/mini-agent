@@ -86,6 +86,40 @@ class ControlledCommandTests(unittest.TestCase):
             tools.run_command("git", ["log", "-1"])
         self.assertEqual(run.call_count, 3)
 
+    def test_standard_python_developer_commands_use_existing_process_runner(self) -> None:
+        # 本地模型可以执行格式检查、类型检查、编译检查和打包构建；
+        # 与 unittest/pytest 一样，命令仍经非 shell 的受控 process runner。
+        with patch.object(tools, "run_process", return_value=ProcessResult(0, b"ok\\n", b"")) as run:
+            for module, extra in (
+                ("ruff", ["check", "."]),
+                ("mypy", ["."]),
+                ("compileall", ["-q", "."]),
+                ("build", []),
+            ):
+                with self.subTest(module=module):
+                    result = tools.run_command("python", ["-m", module, *extra])
+                    self.assertEqual(result.status, "success")
+        self.assertEqual(run.call_count, 4)
+
+    def test_python_entrypoint_executes_workspace_script(self) -> None:
+        (self.workspace / "smoke.py").write_text("print('script ran')\\n", encoding="utf-8")
+        result = tools.run_command("python", ["smoke.py"])
+        self.assertEqual(result.status, "success")
+        self.assertIn("script ran", result.text)
+
+    def test_python_entrypoint_refuses_missing_or_escaping_scripts(self) -> None:
+        with patch.object(tools, "run_process") as run:
+            for name in ("missing.py", "../outside.py", "/tmp/outside.py", "-c"):
+                with self.subTest(name=name):
+                    with self.assertRaises((ValueError, PermissionError)):
+                        tools.run_command("python", [name])
+        run.assert_not_called()
+
+    def test_git_ls_files_remains_read_only(self) -> None:
+        with patch.object(tools, "run_process", return_value=ProcessResult(0, b"file.py\\n", b"")):
+            result = tools.run_command("git", ["ls-files"])
+            self.assertIn("file.py", result.text)
+
     def test_cwd_escape_is_rejected_before_starting_process(self) -> None:
         with patch("process_runner.subprocess.Popen") as start:
             with self.assertRaises(PermissionError):
