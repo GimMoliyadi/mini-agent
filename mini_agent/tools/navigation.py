@@ -16,6 +16,7 @@ from .filesystem import (
     MAX_SEARCH_FILES,
     _active_workspace,
     _iter_search_files,
+    _search_path_is_ignored,
     resolve_inside_workspace,
 )
 
@@ -118,6 +119,8 @@ def inspect_python_symbols(
     _limit(max_results, name="max_results")
     root = _active_workspace(workspace)
     target = resolve_inside_workspace(path, root)
+    if _search_path_is_ignored(target.relative_to(root)):
+        raise PermissionError("代码导航禁止读取缓存、虚拟环境和其它索引排除目录")
     content = file_safety.read_bounded_bytes(target).decode("utf-8-sig")
     tree = ast.parse(content, filename=path)
     visitor = _Definitions()
