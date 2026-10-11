@@ -62,15 +62,15 @@ class NavigationTests(unittest.TestCase):
 
     def test_nested_function_scopes_are_not_class_methods(self) -> None:
         (self.root / "src" / "nested.py").write_text(
-            "def outer():\\n"
-            "    def inner():\\n"
-            "        pass\\n"
-            "    class Local:\\n"
-            "        def member(self):\\n"
-            "            def helper():\\n"
-            "                pass\\n"
-            "            return helper()\\n"
-            "    return Local()\\n",
+            "def outer():\n"
+            "    def inner():\n"
+            "        pass\n"
+            "    class Local:\n"
+            "        def member(self):\n"
+            "            def helper():\n"
+            "                pass\n"
+            "            return helper()\n"
+            "    return Local()\n",
             encoding="utf-8",
         )
         output = inspect_python_symbols("src/nested.py", workspace=self.root)
