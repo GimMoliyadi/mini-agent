@@ -82,6 +82,8 @@ def find_files(
 class _Definitions(ast.NodeVisitor):
     def __init__(self) -> None:
         self.stack: list[str] = []
+        # Distinguish class scopes from function scopes: a nested function is not a method.
+        self.class_scopes: list[bool] = []
         self.rows: list[tuple[int, int, str, str]] = []
 
     def _visit_scope(self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, kind: str) -> None:
@@ -89,18 +91,22 @@ class _Definitions(ast.NodeVisitor):
         qualified = ".".join([*self.stack, name])
         self.rows.append((node.lineno, node.end_lineno or node.lineno, kind, qualified))
         self.stack.append(name)
-        self.generic_visit(node)
-        self.stack.pop()
+        self.class_scopes.append(kind == "class")
+        try:
+            self.generic_visit(node)
+        finally:
+            self.class_scopes.pop()
+            self.stack.pop()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._visit_scope(node, "class")
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        kind = "method" if self.stack else "function"
+        kind = "method" if self.class_scopes and self.class_scopes[-1] else "function"
         self._visit_scope(node, kind)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        kind = "async method" if self.stack else "async function"
+        kind = "async method" if self.class_scopes and self.class_scopes[-1] else "async function"
         self._visit_scope(node, kind)
 
 
