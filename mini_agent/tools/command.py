@@ -28,8 +28,8 @@ def _active_workspace(workspace: str | Path | None = None) -> Path:
 
 
 _COMMAND_SHELL_SYNTAX = frozenset("&|;><`\r\n")
-_ALLOWED_PYTHON_MODULES = frozenset({"pytest", "unittest"})
-_ALLOWED_GIT_COMMANDS = frozenset({"status", "diff", "log"})
+_ALLOWED_PYTHON_MODULES = frozenset({"pytest", "unittest", "ruff", "mypy", "compileall", "build"})
+_ALLOWED_GIT_COMMANDS = frozenset({"status", "diff", "log", "ls-files"})
 
 
 class CommandPolicyError(ValueError):
@@ -82,15 +82,25 @@ def validate_run_command_arguments(
         raise CommandPolicyError(f"不允许执行命令：{command}")
 
     if normalized_command == "python":
-        if len(args) < 2 or args[0] != "-m" or args[1] not in _ALLOWED_PYTHON_MODULES:
-            raise CommandPolicyError("python 只允许执行 python -m pytest 或 python -m unittest")
-        if any(arg == "-c" or arg.startswith("-c") for arg in args):
-            raise CommandPolicyError("禁止 python -c 任意执行代码")
-        _reject_workspace_escape_tokens(args[2:], root)
-        return
+        # 依赖安装与任意解释器参数仍禁止：不能让工具无意覆盖 Agent 自己的虚拟环境。
+        # 受信工作区内的 .py 入口可以运行，以支持真正的代码开发与调试闭环。
+        if args[:1] == ["-m"] and len(args) >= 2 and args[1] in _ALLOWED_PYTHON_MODULES:
+            _reject_workspace_escape_tokens(args[2:], root)
+            return
+        if args and not args[0].startswith("-") and args[0].lower().endswith(".py"):
+            # 先验证脚本文件本身，防止绝对路径/软链接穿出工作区。
+            script = resolve_inside_workspace(args[0], root)
+            if not script.is_file():
+                raise CommandPolicyError("Python 脚本必须是工作区内存在的 .py 文件")
+            _reject_workspace_escape_tokens(args[1:], root)
+            return
+        raise CommandPolicyError(
+            "python 仅允许运行工作区内 .py 文件或 pytest/unittest/ruff/mypy/compileall/build 模块；"
+            "不允许 -c、pip 或任意解释器选项"
+        )
 
     if not args or args[0] not in _ALLOWED_GIT_COMMANDS:
-        raise CommandPolicyError("git 只允许 status、diff、log 子命令")
+        raise CommandPolicyError("git 只允许 status、diff、log、ls-files 子命令")
     if any(
         arg in {"-c", "--exec-path", "--config", "--config-env", "--git-dir", "--work-tree", "--upload-pack", "--receive-pack", "--output", "-o", "--no-index", "--ext-diff", "--textconv", "-C"}
         or arg.startswith(("--output=", "--exec-path=", "--git-dir=", "--work-tree=", "--config=", "--config-env=", "--upload-pack=", "--receive-pack="))
