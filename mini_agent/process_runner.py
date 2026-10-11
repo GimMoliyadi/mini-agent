@@ -12,6 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 MAX_COMMAND_OUTPUT_BYTES = 64 * 1024
 _WINDOWS_CREATE_SUSPENDED = 0x00000004
@@ -115,8 +116,10 @@ class _WindowsJob:
                 (name, wintypes.DWORD) for name in ("page_faults", "total_processes", "active_processes", "terminated_processes")
             ]
 
-        self.accounting_type = Accounting
-        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.accounting_type: type[ctypes.Structure] = Accounting
+        # ctypes.WinDLL/WinError 只在 Windows 存在。用动态访问防止 Linux
+        # 上的 mypy 将整个跨平台模块判为不可检查，运行时仍只在 win32 实例化。
+        self.kernel: Any = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
         self.kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         self.kernel.CreateJobObjectW.restype = wintypes.HANDLE
         self.kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
@@ -129,13 +132,13 @@ class _WindowsJob:
         self.kernel.QueryInformationJobObject.restype = wintypes.BOOL
         self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         self.kernel.CloseHandle.restype = wintypes.BOOL
-        self.handle = self.kernel.CreateJobObjectW(None, None)
+        self.handle: Any = self.kernel.CreateJobObjectW(None, None)
         if not self.handle:
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())
         limits = ExtendedLimits()
         limits.basic.flags = _WINDOWS_KILL_ON_JOB_CLOSE
         if not self.kernel.SetInformationJobObject(self.handle, _WINDOWS_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)):
-            error = ctypes.WinError(ctypes.get_last_error())
+            error = getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())
             self.close()
             raise error
 
@@ -144,7 +147,7 @@ class _WindowsJob:
             raise RuntimeError("Windows Job Objects 仅支持 Windows")
         handle = ctypes.c_void_p(int(getattr(process, "_handle")))
         if not self.kernel.AssignProcessToJobObject(self.handle, handle):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())
         resume = ctypes.WinDLL("ntdll").NtResumeProcess
         resume.argtypes = [ctypes.c_void_p]
         resume.restype = ctypes.c_long
@@ -164,12 +167,12 @@ class _WindowsJob:
         # owned job, not only its parent, before reporting command cleanup done.
         try:
             if not self.kernel.TerminateJobObject(self.handle, 1):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())
             deadline = time.monotonic() + PROCESS_CLEANUP_TIMEOUT_SECONDS
             while True:
                 accounting = self.accounting_type()
                 if not self.kernel.QueryInformationJobObject(self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
-                    raise ctypes.WinError(ctypes.get_last_error())
+                    raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())
                 if not accounting.active_processes:
                     return
                 if time.monotonic() >= deadline:
