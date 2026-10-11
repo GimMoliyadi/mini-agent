@@ -60,6 +60,26 @@ class NavigationTests(unittest.TestCase):
         self.assertIn("symbols_total: 1", filtered)
         self.assertNotIn("async function serve", filtered)
 
+    def test_nested_function_scopes_are_not_class_methods(self) -> None:
+        (self.root / "src" / "nested.py").write_text(
+            "def outer():\\n"
+            "    def inner():\\n"
+            "        pass\\n"
+            "    class Local:\\n"
+            "        def member(self):\\n"
+            "            def helper():\\n"
+            "                pass\\n"
+            "            return helper()\\n"
+            "    return Local()\\n",
+            encoding="utf-8",
+        )
+        output = inspect_python_symbols("src/nested.py", workspace=self.root)
+        self.assertIn("function outer.inner", output)
+        self.assertIn("method outer.Local.member", output)
+        self.assertIn("function outer.Local.member.helper", output)
+        self.assertNotIn("method outer.inner", output)
+        self.assertNotIn("method outer.Local.member.helper", output)
+
     def test_symbol_parser_does_not_execute_code(self) -> None:
         (self.root / "src" / "bad.py").write_text(
             "raise RuntimeError('should never run')\n\nclass Safe:\n    pass\n", encoding="utf-8"
