@@ -54,7 +54,7 @@ def save_config(path: Path, lines: list[str], values: dict[str, str]) -> None:
 
 
 def collect_values(values: dict[str, str], input_func, secret_func) -> dict[str, str]:
-    from file_safety import redact_text
+    from .sandbox import redact_text
 
     values = dict(values)
     if values.get("OPENAI_API_KEY") == "sk-your-key-here":
@@ -94,7 +94,7 @@ def configuration_error(values: dict[str, str]) -> str | None:
 
 def configure(path: Path | None = None, input_func=input, secret_func=getpass.getpass) -> int:
     if path is None:
-        from launcher import prepare_environment
+        from .launcher import prepare_environment
 
         state, _ = prepare_environment()
         path = state / ".env"
@@ -118,7 +118,7 @@ if __name__ == "__main__":
         print("\n已取消，配置未更改。", file=sys.stderr)
         raise SystemExit(130)
     except (OSError, UnicodeError, ValueError) as exc:
-        from file_safety import redact_text
+        from .sandbox import redact_text
 
         print(redact_text(f"配置保存失败：{exc}"), file=sys.stderr)
         raise SystemExit(1)

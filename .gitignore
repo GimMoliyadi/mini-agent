@@ -40,6 +40,7 @@ eval/runs/
 # 本地会话持久化文件，可能包含用户的完整对话和工具参数
 sessions/
 /journals/
+/checkpoints/
 .serena/
 .mini-agent/
 .mini-agent-state/

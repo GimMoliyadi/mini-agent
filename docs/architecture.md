@@ -1,0 +1,236 @@
+# v2 架构说明
+
+本文描述当前代码，而不是未来规划。v2 把通用的模型与工具循环交给
+LangChain/LangGraph，把工作区安全、命令策略、审批和 Coding Contract 验收保留
+在 mini-agent 的业务层。入口目前只有同步 API；`async`、streaming、memory、web
+和 multi-agent 没有作为公开能力实现。
+
+## 运行时装配
+
+`mini_agent.runtime.AgentApplication` 是应用装配边界。进入上下文时依次完成：
+
+1. `mini_agent.persistence.checkpoint_store` 打开
+   `SqliteSaver`，数据库位于 `{state_dir}/.mini-agent/checkpoints/v2.sqlite3`。
+2. `mini_agent.tools.registry.build_tools(workspace)` 创建绑定到当前工作区的
+   LangChain `StructuredTool` 列表，并拒绝重复工具名。
+3. 根据 `TOOL_APPROVAL_MODE` 加入 `HumanInTheLoopMiddleware`（`ASK` 时）、
+   `BoundaryMiddleware`、`ContextMiddleware`、`VerificationMiddleware` 和
+   `ModelCallLimitMiddleware`。
+4. `mini_agent.models.create_model` 创建 `ChatOpenAI`，把
+   `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL` 和请求超时注入模型。
+5. 通过 `langchain.agents.create_agent` 编译 graph，并把模型、工具、业务状态
+   schema、系统提示、middleware 和 checkpointer 接到一起。
+
+```mermaid
+flowchart TD
+    CLI[mini.cmd / mini-agent] --> L[mini_agent.launcher]
+    L --> S[Settings + workspace]
+    S --> A[AgentApplication]
+    A --> C[ChatOpenAI]
+    A --> G[create_agent / CompiledStateGraph]
+    G --> M[ContextMiddleware]
+    G --> B[BoundaryMiddleware]
+    G --> H[HumanInTheLoopMiddleware]
+    G --> V[VerificationMiddleware]
+    G --> T[StructuredTool registry]
+    T --> P[filesystem / command policy / sandbox]
+    P --> W[trusted workspace]
+    G --> DB[SqliteSaver]
+```
+
+`create_agent` 负责基础的 model → tool → model 循环，不再由项目维护第二套
+工具调用 ID 配对或手写 while loop。业务 middleware 只处理横切约束：上下文
+投影、权限与前置条件、审批、验收和资源额度。
+
+## 状态与一次运行
+
+`mini_agent.state.TaskState` 扩展 LangChain `AgentState`，保留框架的
+`messages` reducer，并增加这些业务事实：
+
+| 字段 | 用途 |
+| --- | --- |
+| `workspace` | 会话绑定的规范化工作区；恢复时必须相同 |
+| `task_id` | 一次任务和 journal 的身份 |
+| `contract` | 可选 Coding Contract 的序列化内容 |
+| `initial_snapshot` | 任务开始时的工作区摘要 |
+| `task_start` | 本任务在消息状态中的起点 |
+| `preconditions` | 模型提出写操作后记录的文件前置条件 |
+| `verification` | 最终验收结果 |
+| `status` | `running`、`completed` 或 `incomplete` 等任务状态 |
+
+新任务调用 `app.run(task, thread_id=...)` 时会拒绝空任务和仍有 pending step 的
+旧线程，然后写入用户消息、工作区绑定、任务 ID 和初始快照。LangGraph 在节点
+执行期间保存消息、工具调用、工具结果和这些业务字段。调用方必须为每条会话使用
+合法且稳定的 `thread_id`；当前实现限制为 1 到 100 个字母、数字、下划线或连字符。
+
+恢复调用 `app.run(None, thread_id=...)`：
+
+- 没有 checkpoint 会返回错误，不会把旧 JSON 会话误当作可执行状态；
+- 有待审批中断且没有 decisions 时，只返回当前待审批信息；
+- 有待审批决策时，把 `Command(resume={"decisions": decisions})` 交给同一个
+  graph 和同一个 thread；
+- 没有 pending node 时只读取最终状态，不重复调用模型。
+
+HTTP 错误、模型限额或进程中断会返回 `failed`/`cancelled`，同时保留最近一次
+已提交的 graph checkpoint，因而可以用同一个 `thread_id` 重试。checkpoint 中的
+状态是最后一次已提交节点的事实；一次模型请求失败后，业务 `status` 可能仍是
+`running`，调用方应优先展示本次返回的 `error`，恢复成功后再显示最终状态。
+
+## 工具注入与结构化结果
+
+`build_tools` 是唯一的模型可见工具注册表。每个工具由 Pydantic 输入模型描述，
+工作区通过闭包/partial 注入，模型不会获得 `workspace` 参数。当前工具集合：
+
+| 工具 | 风险 | 变更 | 作用 |
+| --- | --- | --- | --- |
+| `list_files` | read | 否 | 列出工作区内一层目录 |
+| `read_file` | read | 否 | 读取有界 UTF-8 文本 |
+| `search_text` | read | 否 | 递归搜索固定字符串 |
+| `write_file` | write | 是 | 原子写入完整文件 |
+| `apply_patch` | write | 是 | 唯一精确替换文本 |
+| `rename_file` | write | 是 | 不覆盖目标的重命名 |
+| `run_command` | execute | 否* | 运行受控的无 shell 命令 |
+| `inspect_project` | read | 否 | 读取项目白名单源码 |
+| `inspect_capabilities` | read | 否 | 返回工具和 runtime 能力元数据 |
+
+`*` `run_command` 的 registry 元数据不是文件 mutation；它仍可能通过受控测试产
+生副作用，风险级别为 `execute`，并受命令白名单、cwd、输出和超时限制。Coding
+Contract 的最终工作区快照会检查命令造成的额外文件变化。
+
+工具 handler 的结果经过 `_tool_artifact` 适配为
+`(content, artifact)`。`ToolResult` 的 `status`、`code` 和 `metadata` 进入
+`ToolMessage.artifact`，文本进入模型上下文。这样模型仍能阅读简洁结果，UI、
+验收和 Trace 可以依据结构化状态判断成功、拒绝、命令失败或超时，而不必解析
+自然语言前缀。
+
+`BoundaryMiddleware` 在工具执行前：
+
+- 验证会话工作区与当前 Settings 一致；
+- 在 `DENY` 模式拒绝非 read 工具；
+- 对 Coding Contract 的 mutation path 做相对路径检查；
+- 使用模型提出 tool call 时的前置条件阻止并发/同期改动覆盖；
+- 为 mutation 建立 task journal，并把工具状态和耗时发给 `Events`。
+
+文件路径安全和命令策略仍位于 `mini_agent.sandbox`、
+`mini_agent.tools.filesystem` 和 `mini_agent.tools.command`，不由 LangChain
+middleware 代替。应用层策略是工作区边界，不是操作系统隔离。
+
+## 上下文、资源额度与验收
+
+`ContextMiddleware` 只改变送给模型的消息视图：工具文本超过上限时截断并清除
+其 artifact，较早历史按预算裁剪；checkpoint 仍保留完整消息和 artifact。当前
+同步入口把 `RunBudget` 放入 context variable，middleware 和进程 runner 共同检查：
+
+- 单任务时限、模型请求数和工具调用数；
+- 单批工具数量；
+- 上下文字符、单次输出 token 和累计 token；
+- 缺失 provider usage 时的 `STOP` 或 `ESTIMATE` 策略。
+
+模型返回没有完整 usage 时，默认保守停止后续模型调用；UTF-8 字节或字符估算是
+资源保护手段，不是 provider 计费 token 的精确值。
+
+没有 Coding Contract 时，`VerificationMiddleware.after_agent` 只要求最终 AI
+回答存在且没有未解决工具错误。带 Contract 时，middleware 会把允许路径、指定
+测试和测试新鲜度注入模型指导；最终回答过早到达时会追加验收反馈，让 graph 继续
+处理。`verify_contract` 再独立检查工作区快照、允许变更、测试退出码/摘要和测试
+是否发生在最后一次 mutation 之后。
+
+## HITL 响应与 UI seam
+
+默认 `TOOL_APPROVAL_MODE=ASK`。runtime 为 risk 不是 `read` 的工具装配
+`HumanInTheLoopMiddleware`，当前允许的决策是 `approve` 和 `reject`。应用通过
+`get_state(config)` 读取中断，把每个 action 的名称、参数、描述和 review config
+放在 JSON 结果的 `interrupts` 中：
+
+```json
+{
+  "session_id": "abc123",
+  "status": "interrupted",
+  "interrupts": [
+    {
+      "action_requests": [
+        {"name": "apply_patch", "args": {"path": "app.py"}, "description": "..."}
+      ],
+      "review_configs": [
+        {"action_name": "apply_patch", "allowed_decisions": ["approve", "reject"]}
+      ]
+    }
+  ],
+  "pending_nodes": ["HumanInTheLoopMiddleware.after_model"]
+}
+```
+
+CLI/Web UI 只需要把当前动作按顺序映射为
+`{"type": "approve"}` 或 `{"type": "reject"}`，再用相同 `thread_id` 调用
+resume。不要另存一份待执行 tool call，也不要在 UI 中重新调用 handler。未来
+如果暴露 LangGraph `GraphOutput` v2，应固定一种输出版本；当前公开
+`AgentApplication` 已经把中断折叠为上面的稳定 JSON seam。
+
+## 持久化与副作用语义
+
+`mini_agent.persistence.checkpoint_store` 使用同步
+`langgraph.checkpoint.sqlite.SqliteSaver`，连接由 `AgentApplication` context
+manager 打开和关闭，并启用 WAL。私有状态路径是：
+
+```text
+{state_dir}/.env
+{state_dir}/.mini-agent/checkpoints/v2.sqlite3
+{state_dir}/.mini-agent/checkpoints/v2.sqlite3-wal
+{state_dir}/.mini-agent/checkpoints/v2.sqlite3-shm
+{state_dir}/.mini-agent/journals/{task_id}.json
+```
+
+SQLite saver 保存 graph state/checkpoint writes，不保存一个外部系统的事务。若
+写文件、命令或未来的 MCP 调用已经发出但应用在收到响应前退出，恢复无法推断该
+副作用是否已发生，因此不能承诺 exactly-once。当前文件 mutation 通过原子替换、
+前置条件和 journal 降低风险；外部适配应自行提供幂等键、状态查询或人工确认。
+
+工作区快照跳过 `.git`、`.venv`、`venv`、`node_modules` 和 `.mini-agent`。这会
+避免状态文件污染 Coding Contract 的 changed-files 结果，但不意味着状态内容不
+敏感。会话消息可能含文件正文、路径和工具参数，状态目录必须是本机私有位置。
+
+## 同步 API 与扩展点
+
+最小程序化调用：
+
+```python
+from pathlib import Path
+
+from mini_agent.runtime import AgentApplication
+from mini_agent.settings import Settings
+
+settings = Settings.load(Path("trusted-project"), Path(".mini-agent"))
+with AgentApplication(settings) as app:
+    result = app.run("读取 README 并总结", thread_id="demo-session")
+```
+
+测试或集成层可以注入兼容 LangChain chat model 的 `model=`，也可以通过
+`extra_tools=` 加入额外工具；工具名必须唯一，额外工具仍应提供 `risk`、
+`mutation` 等 metadata 并接受 Boundary policy 的约束。新的工作区工具应优先
+进入 `build_tools` 和统一 Pydantic schema，而不是在 CLI 里旁路调用 handler。
+
+当前没有 `AgentApplication.ainvoke`、streaming UI 或 AsyncSqliteSaver seam。异步
+和流式能力要在同步结果、错误、HITL 和 checkpoint 语义稳定后另行设计。
+
+一次实际模型验收已验证这条同步装配链路：17.13 秒内完成 5 次模型调用和 9 次
+工具调用，账面 total tokens 为 14,208；任务修改 `calculator.py` 与 `notes.txt`，
+指定测试通过，独立 verifier 返回 `accepted`。该记录证明一次端到端运行可达，
+不构成 provider 或模型质量基准。
+
+## 规划边界
+
+后续扩展按以下顺序评估：
+
+1. **MCP tool adapter 与独立 RAG-chain adapter**：把外部工具和检索结果接入
+   `StructuredTool`/policy 层；RAG 数据源保持独立，不把 RAG 和记忆或 checkpoint
+   schema 合并。
+2. **规划型 StateGraph**：只有需要规划 → 执行 → 测试 → 验收的条件分支、Recovery
+   跳转、并行子图或外部事件等待时再引入；`create_agent` 仍作为节点/子图负责
+   基础模型工具循环。
+3. **Async/Streaming 公共接口**：为异步模型和 `AsyncSqliteSaver` 单独验证
+   生命周期、取消和 UI 事件契约后再发布。
+4. **Memory、web、multi-agent 和长期 Store**：暂缓，先明确权限、数据保留、
+   跨会话隔离和审计边界，不通过扩大短期 checkpoint 解决。
+
+上游 API、版本基线和实际读取过的源码链接见
+[`docs/framework-references.md`](framework-references.md)。

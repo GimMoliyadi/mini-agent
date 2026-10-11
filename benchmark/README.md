@@ -1,5 +1,9 @@
 # Benchmark v1
 
+> 历史档案：以下报告与命令对应 v1 自研 Runtime。v2 已移除旧实验驱动；
+> 当前回归使用 `python scripts/check.py`，演示使用 `python examples/offline_coding_demo.py`。
+> 原版可在迁移前提交 `13e6132` 查看。迁移说明见 [docs/migration.md](../docs/migration.md)。
+
 Benchmark v1 is a provider-free regression suite for the controlled tool-use
 coding agent runtime. It contains 36 repeatable tasks and runs each task in a
 fresh temporary workspace through the production Agent Loop, Tool Registry,

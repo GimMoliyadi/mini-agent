@@ -1,253 +1,208 @@
 # mini-agent-lab
 
-[![CI](https://github.com/GimMoliyadi/mini-agent/actions/workflows/ci.yml/badge.svg?branch=codex%2Fv1.0.0)](https://github.com/GimMoliyadi/mini-agent/actions/workflows/ci.yml?query=branch%3Acodex%2Fv1.0.0)
+一个面向受信任本地项目的受控 coding agent。v2 使用 LangChain 的
+`create_agent` 组装标准工具循环，使用 LangGraph 保存会话状态、处理中断和
+恢复；文件安全、命令白名单、审批策略和任务验收仍由本项目负责。
 
-**A controlled tool-use coding agent runtime built from scratch.**
+当前公开入口是同步的 Windows/package CLI。传输测试使用本地、脚本化的
+OpenAI-compatible HTTP 服务验证了模型请求、工具调用、文件修改、错误返回和
+SQLite 恢复。真实模型也已完成一次文件与代码维护验收：5 次模型调用、9 次工具
+调用，指定测试与独立验收通过；完整证据和复现步骤见 [迁移与验证记录](docs/migration.md)。
 
-Built directly on the SDK to expose and test tool dispatch, approvals, and
-completion rules rather than delegate those decisions to LangChain.
+## 安装与配置
 
-An OpenAI-compatible model searches a trusted workspace, makes bounded edits,
-runs allowlisted tests and requests verified completion. Explicit controls
-cover approvals, paths, sessions, context, Coding Contracts and recovery.
-
-> **Run:** `pip install -e .` then `mini-agent config` and `mini-agent start`.
-> **Eval:** 36 scripted tasks × 2: 56 accepted and 16 expected rejections.
-> Runtime regression evidence; live model quality remains unmeasured. Report:
-> [`benchmark/reports/benchmark-v1.md`](benchmark/reports/benchmark-v1.md).
-> **Limit:** the file sandbox and command policy do not provide OS-level
-> isolation; live model quality still requires separate review.
-
-## Overview
-
-A single-user local agent with a directly implemented Agent Loop, one Tool
-Registry and explicit execution boundaries. v1.0 focuses on engineering
-hardening and portfolio readiness, preserving the existing runtime behavior.
-
-## Why this project
-
-The project exists to make the control boundary visible. LangChain or a
-similar framework can shorten the first prototype, but it would hide the
-decisions this repository is meant to demonstrate: how tool calls are paired
-with results, how paths and commands are authorized, how a session resumes,
-how a test is proved fresh after a mutation, and how an independent verifier
-rejects an unsafe or incomplete result. The runtime uses the OpenAI-compatible
-SDK directly and keeps the registry, loop, and acceptance rules in the
-repository.
-
-## Architecture
-
-```mermaid
-flowchart TD
-    U[User] --> L[Agent Loop]
-    L --> M[LLM]
-    M --> T[Tool Calls]
-    T --> P[Permission / Sandbox]
-    P --> R[Tool Registry]
-    R --> W[Workspace]
-    W --> V[Verifier / Finish Gate]
-    V --> L
-```
-
-The runtime is split into small modules under [`mini_agent/`](mini_agent/):
-`runtime.py` owns orchestration, `agent.py` owns the model-facing loop,
-`tools/registry.py` is the single tool registry, `sandbox.py` and
-`permissions.py` enforce execution boundaries, `session.py` persists explicit
-sessions, `verifier.py` checks the final artifact, and `trace.py` records
-optional in-memory or JSONL events. The old top-level imports remain
-compatibility shims while callers migrate to the package.
-
-## Core capabilities
-
-- Native OpenAI-compatible tool calling with legal assistant/tool message
-  pairing and bounded model turns.
-- File listing, literal search, bounded reads, exact patches, writes, and
-  renames under a normalized workspace path boundary.
-- Command execution with `shell=False`, an allowlist, workspace-limited `cwd`,
-  timeout and output caps, and a minimal child-process environment.
-- Explicit `ASK`, `ALLOW`, and `DENY` approval modes with fail-fast behavior
-  when an interactive approval channel is unavailable.
-- Coding Contracts that protect required tests and allowed mutation paths;
-  `finish_task` is accepted only after a fresh required-test pass.
-- Session resume, bounded context, recovery after a limit or interruption,
-  and an independent final Verifier.
-- Structured internal tool results while preserving the existing text tool
-  message protocol for the model.
-- Optional JSONL trace output with redacted argument summaries, statuses,
-  durations, usage, approvals, mutations, and verifier outcomes.
-
-## Quick Start
-
-Requires Python 3.11 or newer. From a clean checkout:
+需要 Python 3.11 或更高版本。Windows 从源码目录运行：
 
 ```powershell
 py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -c requirements.lock -e ".[dev]"
+.\mini.cmd config
+```
+
+`config` 交互式写入 `OPENAI_BASE_URL`、`OPENAI_MODEL` 和
+`OPENAI_API_KEY`。配置文件位于状态目录的 `.env`，不会写入模型请求参数，也不
+应提交到 Git。状态目录由 `MINI_AGENT_STATE_DIR` 决定；源码 checkout 默认使用
+项目目录以保持现有 `.env` 约定，安装后的默认位置是用户目录下的
+`.mini-agent`。需要切换位置时，在运行命令前设置变量：
+
+```powershell
+$env:MINI_AGENT_STATE_DIR = "$HOME\.mini-agent"
+.\mini.cmd config
+```
+
+也可以直接使用安装后的入口：
+
+```powershell
 .\.venv\Scripts\mini-agent.exe config
-.\.venv\Scripts\mini-agent.exe start
 ```
 
-On Linux or macOS:
+Linux/macOS 使用等价的 `python3.11 -m venv .venv`、`.venv/bin/pip` 和
+`.venv/bin/mini-agent`。模型配置仍使用同名环境变量；`OPENAI_BASE_URL` 必须
+指向兼容 Chat Completions 的服务地址。
 
-```sh
-python3.11 -m venv .venv
-.venv/bin/python -m pip install -e .
-.venv/bin/mini-agent config
-.venv/bin/mini-agent start
-```
+## 常用命令
 
-`config` stores the API address, model name, and key in local private state;
-`start` opens the interactive loop. For a one-shot JSON task, use:
+选择工作目录后启动交互式会话：
 
 ```powershell
-.\.venv\Scripts\mini-agent.exe task --task "Fix the pricing calculation and run its test" --workspace C:\path\to\trusted-project
+.\mini.cmd start --workspace C:\path\to\trusted-project
 ```
 
-The offline diagnostics command does not call a model:
+一次性任务以一行 JSON 输出结果，适合脚本和 Web UI：
 
 ```powershell
-.\.venv\Scripts\mini-agent.exe doctor --workspace C:\path\to\trusted-project
+.\mini.cmd task `
+  --task "修复计算逻辑并运行测试" `
+  --workspace C:\path\to\trusted-project
 ```
 
-The compatibility launchers `mini.cmd` and `agent.cmd` remain available on
-Windows, but the installed `mini-agent` entry point is the standard interface.
-
-## Example workflow
-
-The two-minute, provider-free demo uses the existing scripted Agent Loop on a
-temporary fixture:
+JSON 结果包含 `session_id`、`task_id`、`status`、`answer`、`interrupts`、
+`pending_nodes`、`trace` 和 `error`。副作用工具处于 `ASK` 审批模式时，命令会
+返回 `status: "interrupted"` 和完整的审批动作；批准或拒绝使用同一个会话：
 
 ```powershell
-.\.venv\Scripts\python.exe examples\offline_coding_demo.py
+.\mini.cmd task --resume SESSION_ID --approve --workspace C:\path\to\trusted-project
+.\mini.cmd task --resume SESSION_ID --reject  --workspace C:\path\to\trusted-project
 ```
 
-It traces this complete path:
+`--approve` 和 `--reject` 只处理当前 checkpoint 中的待审批动作，恢复时仍会
+重新校验工作区和工具前置条件。`ALLOW` 适用于已信任的临时项目，`DENY` 会拒绝
+副作用工具；默认 `ASK` 不会静默放宽审批。
+
+Coding Contract 通过 JSON 文件限定允许修改的相对路径和验收测试：
+
+```json
+{
+  "task_id": "fix-calculator",
+  "instruction": "修复 calculator.py 的加法错误",
+  "allowed_paths": ["calculator.py"],
+  "test_command": {"command": "python", "args": ["-m", "pytest", "-q"], "cwd": "."},
+  "require_test_pass": true
+}
+```
+
+运行 contract：
+
+```powershell
+.\mini.cmd task --contract C:\path\to\contract.json --workspace C:\path\to\trusted-project
+```
+
+`doctor --workspace PATH` 只检查本地路径和配置存在性，不访问模型；`sessions`
+读取 SQLite checkpoint，`sessions --legacy` 只列出历史 JSON 文件；`version` 返回
+包版本。Windows 下 `agent.cmd` 仍是调用 `mini.cmd start` 的兼容包装器。
+
+## v2 架构
+
+```mermaid
+flowchart LR
+    CLI[mini.cmd / mini-agent] --> Settings[Settings + workspace]
+    Settings --> App[AgentApplication]
+    App --> Model[ChatOpenAI<br/>OpenAI-compatible HTTP]
+    App --> Graph[create_agent<br/>CompiledStateGraph]
+    Graph --> MW[Context / Boundary / HITL / Verification middleware]
+    Graph --> Tools[StructuredTool registry]
+    Tools --> FS[filesystem + command policy]
+    FS --> Work[trusted workspace]
+    Graph --> SQLite[SqliteSaver<br/>state/.mini-agent/checkpoints/v2.sqlite3]
+```
+
+应用装配发生在 `mini_agent.runtime.AgentApplication`：它读取
+`mini_agent.settings.Settings`，调用 `mini_agent.models.create_model`，通过
+`mini_agent.tools.registry.build_tools` 得到唯一的模型可见工具集合，再把模型、
+工具、middleware 和 `SqliteSaver` 交给 `langchain.agents.create_agent`。完整模块
+职责、状态字段和扩展边界见 [`docs/architecture.md`](docs/architecture.md)。
+
+工具适配层使用 LangChain `StructuredTool` 和 Pydantic 参数模型。工作区以绑定
+参数注入 handler，不出现在模型 schema 中；工具返回
+`content_and_artifact`，其中 `ToolResult` 的状态、错误码和元数据留在
+`ToolMessage.artifact`。`risk`、`mutation`、`workspace_arguments` 和
+`mutation_paths` 由 `BoundaryMiddleware` 用于审批、contract 路径检查和前置条件
+校验。
+
+## 状态、恢复与副作用边界
+
+同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
 
 ```text
-user goal → search/read → first patch → required test fails
-           → recovery patch → required test passes → finish gate
-           → independent verifier accepts
+{state_dir}/.env
+{state_dir}/.mini-agent/checkpoints/v2.sqlite3
+{state_dir}/.mini-agent/journals/{task_id}.json
+{state_dir}/trace.jsonl              # 仅在设置 MINI_AGENT_TRACE_JSONL 时
 ```
 
-The demo uses no API key and writes only a redacted example trace at
-[`examples/example_trace.jsonl`](examples/example_trace.jsonl). The reusable
-offline regression suite is [`benchmark/`](benchmark/README.md):
+工作区快照会跳过 `.git`、`.venv`、`venv`、`node_modules` 和 `.mini-agent` 等生成
+目录，避免 SQLite 和 journal 污染任务验收。状态目录应放在工作区之外，并设置
+合适的本机权限；会话消息和 journal 可能包含文件内容与工具参数，不能当作秘密
+保险箱。
+
+SQLite saver 保存图节点状态和写入记录，因而可以在 HTTP 错误、进程退出或 HITL
+中断后按同一 `thread_id` 继续。它只证明图状态已写入；如果外部副作用已经发出
+但还没有收到回执，checkpoint 不能证明该副作用没有发生，也不能提供 exactly-once
+语义。写工具因此依赖原子文件写入、前置条件、journal 和恢复时复核；对外部系统
+的适配仍需要幂等键、结果查询或人工确认。
+
+## 安全边界与限制
+
+- 文件工具只允许规范化后的工作区路径，并限制敏感路径、链接和文件大小。
+- `run_command` 使用 `shell=False`，只允许 `python -m pytest`、`python -m unittest`
+  和只读 `git status/diff/log` 形态，并限制 cwd、超时、输出和子进程环境。
+- 工作区和命令策略不是 OS sandbox。受信测试代码仍可能访问当前用户可访问的
+  文件、网络和解释器能力；执行不可信项目应另外使用无密钥容器或虚拟机。
+- Trace 默认只保留当前进程内存事件；设置 `MINI_AGENT_TRACE_JSONL` 才会追加
+  脱敏后的事件。Trace 不是完整会话记录。
+- 当前没有公开的异步/`ainvoke` 或 streaming API。`AgentApplication` 是同步
+  API seam；需要实时 UI 时先消费 JSON 结果和 `interrupts`，不要猜测内部 graph
+  节点。
+- memory、web browsing、multi-agent、长期 Store 和通用 MCP/RAG 连接尚未并入
+  v2。框架不会把 checkpoint 当长期知识库。
+
+## 验证
+
+开发依赖安装后运行：
 
 ```powershell
-python benchmark/run_benchmark.py --repetitions 2 --output benchmark/reports/benchmark-v1.json
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m mypy
+# 推荐统一入口：在不含真实配置的临时副本中运行全部检查。
+.\.venv\Scripts\python.exe scripts/check.py
 ```
 
-## Evaluation
+`tests/test_transport.py` 启动临时本地 HTTP provider，覆盖多步
+list/search/read/apply/read/final、HTTP 错误后的可恢复 checkpoint，以及
+`mini.cmd task` JSON 子进程路径；测试不会读取真实 `.env` 或访问外部模型。
 
-Benchmark v1 contains 36 tasks covering repository navigation, file search,
-precise and multi-file edits, test failure and repair, long files, wrong paths,
-permission rejection, illegal modifications, incomplete work, finish gates,
-duplicate calls, and recovery. It uses six fixture defects plus navigation
-and policy schedules; these are
-36 runtime regression tasks, not 36 independent real-world coding problems.
-The two-repetition [report](benchmark/reports/benchmark-v1.md)
-has 72 deterministic scripted rows:
+另有一次实际模型验收作为同步链路的烟雾证据：运行 17.13 秒，5 次模型调用、
+9 次工具调用、14,208 total tokens，修改了 `calculator.py` 和 `notes.txt`，指定
+测试通过，独立 verifier 返回 `accepted`。这是一条受控验收记录，不代表模型质量
+基准或长期 provider 稳定性。
 
-| Metric | Result |
-| --- | ---: |
-| Acceptance Rate | 0.7778 |
-| Positive Acceptance Rate | 1.0 |
-| Median Model Calls | 6 |
-| Median Tool Calls | 6 |
-| Median Tokens | `null` (scripted usage unavailable) |
-| P95 Tokens | `null` (scripted usage unavailable) |
-| Max-step Rate | 0.2222 |
-| Unexpected Modification Rate | 0.0556 |
-| Runtime Error Rate | 0.0 |
+## 依赖与研究基线
 
-These numbers are runtime regression evidence from scripted replies, not live
-model success rates. Acceptance includes intentional negative controls; the
-positive rate excludes those expected rejections. Token values are local
-accounting estimates shown only as a separate diagnostic field in the report;
-the published token metrics remain `null` when scripted provider usage is
-unknown. Tasks marked for manual review remain separate from the deterministic
-oracle, and no machine rule is treated as semantic quality of 100%. Historical provider observations live under
-[`docs/evaluation/`](docs/evaluation/README.md) and are not merged into this
-table.
+当前工程约束 LangChain 1.x 兼容组：`langchain>=1.4.4,<1.5`、
+`langchain-core>=1.6.9,<2`（由 LangChain 约束）、`langchain-openai>=1.7.0,<1.8`、
+`langgraph>=1.2.14,<1.3`、`langgraph-checkpoint-sqlite>=3.1.1,<3.2`。
+源码提交、稳定 API 约束、HITL 和 SqliteSaver 参考见
+[`docs/framework-references.md`](docs/framework-references.md)。升级应重新验证
+整组依赖，不要只升级 `langchain`。
 
-The 16 expected rejection rows account for every max-step result. The four
-unexpected-modification rows deliberately change protected test files; none
-of the 56 positive rows modifies an unapproved path. Semantic review remains
-pending separately.
+## 路线图
 
-## Security model
+按优先级排列：
 
-Three boundaries have different meanings:
+1. 增加 MCP tool adapter 和独立的 RAG-chain adapter，把外部工具/检索接到现有
+   `StructuredTool` 与 policy 边界；RAG 数据源和 checkpoint 不合并，检索结果也
+   不直接写入任务状态 schema。
+2. 当规划、测试、验收、恢复需要显式分支时，再增加以 `create_agent` 为节点或子图
+   的 `StateGraph` workflow；基础工具循环继续由 `create_agent` 托管。
+3. 在同步 API 的状态和错误语义稳定后，再公开 async/streaming seam，并为
+   `AsyncSqliteSaver` 单独验证生命周期。
+4. memory、web、multi-agent 和跨会话长期 Store 延后到明确的权限、保留周期和
+   数据边界方案确定后；它们不会通过扩大 checkpoint schema 临时加入。
 
-1. **Workspace path sandbox** normalizes paths and prevents file tools from
-   escaping the configured workspace. It also filters sensitive directories
-   and protects snapshots used by the verifier.
-2. **Command policy** accepts only specific command forms, passes argument
-   arrays with `shell=False`, restricts `cwd`, applies time and output caps,
-   and gives subprocesses a minimal environment. It is a policy boundary,
-   not a shell replacement.
-3. **OS-level process isolation** is outside the current runtime. The file
-   sandbox and command policy do **not** equal an operating-system sandbox:
-   project code still runs with the current user's privileges and may access
-   resources that the policy does not model. Use a disposable trusted
-   workspace and a separate OS/container boundary for untrusted code.
-
-Regression tests cover path traversal, environment leakage, dangerous Git
-   arguments, approvals, command limits, session identity, and verifier scope.
-   Secrets and complete private file contents are excluded from traces; a
-   workspace file read by the model can still be sent to the configured model
-   provider, as described in [`SECURITY.md`](SECURITY.md).
-
-## Limitations
-
-- The runtime is designed for a trusted local project, not arbitrary hostile
-  code execution. There is no default OS sandbox or Docker backend in v1.0.
-- Live model quality, semantic correctness, and provider cost are not inferred
-  from the offline benchmark. Use the benchmark for deterministic regression,
-  then record live runs with their provider failures and manual review.
-- A model may still choose an inefficient tool sequence or stop at the turn
-  budget. The finish gate and verifier make that failure explicit; they do not
-  make an arbitrary model reliable.
-- Sessions and journals can contain conversation and file history. Keep the
-  state directory private and do not place secrets in the workspace.
-- CI is configured for Windows and Linux on Python 3.11 and 3.13;
-  unusual filesystem permissions, untrusted repositories, and provider-specific
-  tool-call quirks need separate validation.
-
-## Project structure
-
-```text
-mini_agent/              runtime package
-  agent.py               model loop and reply protocol
-  runtime.py             CLI task orchestration
-  config.py              limits and configuration
-  context.py             bounded context view
-  session.py             explicit session persistence
-  permissions.py         approval policy
-  sandbox.py             workspace path boundary
-  recovery.py            bounded recovery state
-  verifier.py            contract and finish verification
-  trace.py               optional in-memory / JSONL trace
-  tools/                 single tool registry and handlers
-tests/                   offline regression tests
-benchmark/               Benchmark v1 manifest, harness, metrics, report
-examples/                one-minute offline coding-loop demo
-docs/                    history, evaluation, and experiment archive
-```
-
-## Roadmap
-
-v1.0 closes the existing runtime boundary: preserve behavior, keep the old
-tests green, make the package installable, publish CI, document the threat
-model, and provide a repeatable benchmark. New abstractions or dependencies
-belong in a later proposal only when a concrete current limitation justifies
-them. RAG, Memory, multi-agent orchestration, Planner, Reflection, and broad
-feature expansion are outside this release.
-
-The Phase 1–25 development record is preserved in
-[`docs/development-history/`](docs/development-history/README.md), with the
-detailed handoff in [`docs/HANDOFF_TO_CODEX.md`](docs/HANDOFF_TO_CODEX.md).
+历史评测报告仍保留在 `benchmark/reports/` 供回归参考，但它们是旧运行时的脚本
+化证据，不能替代当前 LangChain v2 的真实 provider 评测。
 
 ## License
 
-See [`LICENSE`](LICENSE).
+见 [`LICENSE`](LICENSE)。

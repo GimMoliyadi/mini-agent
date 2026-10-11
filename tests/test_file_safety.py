@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import file_safety
-import tools
+from mini_agent.tools import filesystem as tools
 
 
 class FileSafetyTests(unittest.TestCase):

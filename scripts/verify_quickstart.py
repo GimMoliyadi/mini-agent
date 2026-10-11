@@ -11,7 +11,13 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
-from test_public_cli_integration import local_provider, DUMMY_KEY  # noqa: E402
+from test_transport import loopback_provider, _completion  # noqa: E402
+
+DUMMY_KEY = "quickstart-fictional-key"
+
+
+def greeting(_provider, body):
+    return 200, _completion(body["model"], {"role": "assistant", "content": "Hello from the local provider."}, "stop")
 
 
 def verify(entry: Path) -> None:
@@ -23,7 +29,7 @@ def verify(entry: Path) -> None:
                        if name.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
         environment.update(MINI_AGENT_STATE_DIR=str(state), AGENT_WORKSPACE=str(workspace),
                            PYTHONUTF8="1", NO_PROXY="*", MINI_AGENT_HTTP_PROXY="", TOOL_APPROVAL_MODE="DENY")
-        with local_provider("greeting") as (url, requests):
+        with loopback_provider(greeting) as provider:
             def run(arguments: list[str], input_text: str = "") -> subprocess.CompletedProcess[str]:
                 completed = subprocess.run([str(entry), *arguments], input=input_text,
                                            cwd=directory, env=environment, capture_output=True,
@@ -42,7 +48,7 @@ def verify(entry: Path) -> None:
                 "raise SystemExit(launcher.main(['config']))\n"
             )
             configured = subprocess.run([sys.executable, "-c", wizard],
-                                        input=f"{url}\noffline-provider\n{DUMMY_KEY}\n",
+                                        input=f"{provider.base_url}\noffline-provider\n{DUMMY_KEY}\n",
                                         cwd=directory, env=environment, capture_output=True,
                                         text=True, encoding="utf-8", timeout=30, check=False)
             if configured.returncode:
@@ -51,14 +57,14 @@ def verify(entry: Path) -> None:
                 raise RuntimeError("config did not save temporary configuration")
             run(["version"])
             run(["doctor", "--workspace", str(workspace)])
-            if requests:
+            if provider.requests:
                 raise RuntimeError("doctor unexpectedly called a provider")
             run(["start", "--workspace", str(workspace)], "Hello\nexit\n")
-            if len(requests) != 1:
+            if len(provider.requests) != 1:
                 raise RuntimeError("start did not complete exactly one provider turn")
-            run(["sessions", "list"])
+            run(["sessions"])
             run(["task", "--task", "Hello", "--workspace", str(workspace)])
-            if len(requests) != 2:
+            if len(provider.requests) != 2:
                 raise RuntimeError("task did not complete exactly one provider turn")
     print("Quick Start passed: config, version, doctor, start, sessions, task; local provider only.")
 

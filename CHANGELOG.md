@@ -1,5 +1,13 @@
 # 变更记录
 
+## 2.0.0（本地迁移，尚未发布）
+
+- 模型/工具循环改用 LangChain `create_agent`；LangGraph SQLite Checkpointer 管理会话、中断与恢复。
+- 标准 `StructuredTool` 统一文件、搜索、受控命令、只读 Git 和能力检查；移除旧 Runtime 和自定义工具调度。
+- 保留文件安全、原子写入、冲突检查与撤销、Coding Contract/Finish Gate/独立 Verifier、资源预算。
+- 新增 A–D 图流程、回环 HTTP/Windows CLI、真实模型验收；统一 pytest、Ruff、mypy、隔离打包与 CI。
+- 旧 JSON 会话与历史评测数据原样保留；恢复格式及实验命令的变更见 [迁移记录](docs/migration.md)。
+
 ## 1.0.0
 
 - 正式定位为 controlled tool-use coding agent runtime，保留现有行为与兼容入口。

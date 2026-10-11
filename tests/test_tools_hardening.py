@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import file_safety
 import process_runner
-import tools
+from mini_agent.tools import filesystem as tools, command
 
 
 def process_is_running(pid: int) -> bool:
@@ -43,6 +43,9 @@ class ToolsHardeningTests(unittest.TestCase):
         self.workspace = Path(self.temporary.name)
         self.workspace_patch = patch.object(tools, "WORKSPACE_DIR", self.workspace)
         self.workspace_patch.start()
+        command_workspace = patch.object(command, "WORKSPACE_DIR", self.workspace)
+        command_workspace.start()
+        self.addCleanup(command_workspace.stop)
 
     def tearDown(self):
         self.workspace_patch.stop()
@@ -188,8 +191,8 @@ class ToolsHardeningTests(unittest.TestCase):
 
     def test_real_run_command_reports_output_limit_machine_line(self):
         (self.workspace / "test_emit.py").write_text("import os\nos.write(1, b'x' * 100000)\n", encoding="utf-8")
-        with patch.object(tools, "MAX_COMMAND_OUTPUT_BYTES", 1024):
-            result = tools.run_command("python", ["-m", "unittest", "test_emit"])
+        with patch.object(command, "MAX_COMMAND_OUTPUT_BYTES", 1024):
+            result = command.run_command("python", ["-m", "unittest", "test_emit"])
         self.assertIn("Output limit exceeded: true", result)
         self.assertIn("Captured bytes: 1024", result)
         self.assertIn("Timed out: false", result)

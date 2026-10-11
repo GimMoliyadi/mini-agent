@@ -1,3 +1,3 @@
-"""A controlled tool-use coding agent runtime built from scratch."""
+"""A verified local task agent powered by LangChain and LangGraph."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

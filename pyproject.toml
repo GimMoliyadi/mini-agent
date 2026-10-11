@@ -4,12 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mini-agent-lab"
-version = "1.0.0"
-description = "A controlled tool-use coding agent runtime built from scratch"
+version = "2.0.0"
+description = "A verified coding agent built with LangChain and LangGraph"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
-dependencies = ["openai==3.15.0"]
+dependencies = [
+    "langchain>=1.4.4,<1.5",
+    "langgraph>=1.2.14,<1.3",
+    "langchain-openai>=1.7.0,<1.8",
+    "langgraph-checkpoint-sqlite>=3.1.1,<3.2",
+    "python-dotenv>=1.2.4,<2",
+    "httpx[socks]>=0.28.1,<1",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -22,26 +29,19 @@ classifiers = [
 mini-agent = "mini_agent.launcher:main"
 
 [project.optional-dependencies]
-dev = ["ruff>=0.9,<1", "mypy>=1.14,<2", "setuptools>=65.5", "wheel"]
+dev = ["pytest>=9.1,<10", "ruff>=0.16,<1", "mypy>=1.20,<2", "setuptools>=65.5", "wheel"]
 
 [tool.setuptools]
 py-modules = [
     "acceptance",
-    "awareness",
-    "awareness_cli",
-    "capabilities",
     "cli",
     "config",
     "configure",
-    "diagnostics",
     "file_safety",
     "launcher",
     "main",
     "process_runner",
-    "recovery",
     "runtime_guards",
-    "session",
-    "session_cli",
     "tools",
 ]
 include-package-data = false
@@ -49,15 +49,18 @@ packages = ["mini_agent", "mini_agent.tools"]
 
 [tool.ruff]
 target-version = "py311"
-extend-exclude = ["tests/fixtures", "demo_workspace", "docs", ".venv"]
+extend-exclude = ["tests/fixtures", "demo_workspace", "docs", ".venv", ".tmp", ".state", ".home", ".install"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-"mini_agent/runtime.py" = ["F401", "E402"] # Runtime re-exports the legacy main API.
-"mini_agent/tools/registry.py" = ["F401"] # Single registry also exports the old tools API.
 "tests/*.py" = ["E402"] # Tests add the source checkout before compatibility imports.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixtures"] # Deliberately broken projects are agent inputs, not repository tests.
+markers = ["live: real provider acceptance (requires --run-live)"]
 
 [tool.mypy]
 python_version = "3.11"

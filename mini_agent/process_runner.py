@@ -53,9 +53,9 @@ def command_environment(workspace: Path) -> dict[str, str]:
 
 def _current_budget():
     try:
-        module = importlib.import_module("runtime_guards")
+        module = importlib.import_module("mini_agent.runtime_guards")
     except ModuleNotFoundError as exc:
-        if exc.name != "runtime_guards":
+        if exc.name != "mini_agent.runtime_guards":
             raise
         return None
     return module.get_current_budget()
@@ -110,6 +110,12 @@ class _WindowsJob:
         class ExtendedLimits(ctypes.Structure):
             _fields_ = [("basic", BasicLimits), ("io", IoCounters), ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t), ("peak_process_memory", ctypes.c_size_t), ("peak_job_memory", ctypes.c_size_t)]
 
+        class Accounting(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_int64) for name in ("user_time", "kernel_time", "period_user_time", "period_kernel_time")] + [
+                (name, wintypes.DWORD) for name in ("page_faults", "total_processes", "active_processes", "terminated_processes")
+            ]
+
+        self.accounting_type = Accounting
         self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         self.kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         self.kernel.CreateJobObjectW.restype = wintypes.HANDLE
@@ -117,6 +123,10 @@ class _WindowsJob:
         self.kernel.SetInformationJobObject.restype = wintypes.BOOL
         self.kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         self.kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        self.kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        self.kernel.TerminateJobObject.restype = wintypes.BOOL
+        self.kernel.QueryInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+        self.kernel.QueryInformationJobObject.restype = wintypes.BOOL
         self.kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         self.kernel.CloseHandle.restype = wintypes.BOOL
         self.handle = self.kernel.CreateJobObjectW(None, None)
@@ -148,6 +158,25 @@ class _WindowsJob:
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
+
+    def terminate_and_wait(self) -> None:
+        # Kill-on-close starts termination asynchronously. Wait for the whole
+        # owned job, not only its parent, before reporting command cleanup done.
+        try:
+            if not self.kernel.TerminateJobObject(self.handle, 1):
+                raise ctypes.WinError(ctypes.get_last_error())
+            deadline = time.monotonic() + PROCESS_CLEANUP_TIMEOUT_SECONDS
+            while True:
+                accounting = self.accounting_type()
+                if not self.kernel.QueryInformationJobObject(self.handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not accounting.active_processes:
+                    return
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Windows 命令进程树未能在清理期限内退出")
+                time.sleep(PROCESS_CHECK_INTERVAL_SECONDS)
+        finally:
+            self.close()
 
 
 def _close_process_handles(process: subprocess.Popen) -> None:
@@ -183,7 +212,7 @@ def _start_process(argv: list[str], cwd: Path, environment: dict) -> tuple[subpr
 
 def _stop_process_tree(process: subprocess.Popen, job: _WindowsJob | None) -> None:
     if job:
-        job.close()
+        job.terminate_and_wait()
     else:
         try:
             getattr(os, "killpg")(process.pid, getattr(signal, "SIGKILL"))

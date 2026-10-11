@@ -1,0 +1,60 @@
+{
+  "date": "2026-10-11",
+  "environment": {
+    "os": "Windows",
+    "python": "3.11.9"
+  },
+  "branch": "refactor/langgraph",
+  "offline": {
+    "checks_passed": 4,
+    "checks_total": 4,
+    "pytest_passed": 135,
+    "pytest_skipped_live": 1,
+    "pytest_subtests_passed": 119,
+    "ruff": "PASS",
+    "mypy": "PASS",
+    "mypy_source_files": 24,
+    "syntax": "PASS"
+  },
+  "packaging": {
+    "checks_passed": 6,
+    "checks_total": 6,
+    "sdist": "PASS",
+    "wheel": "PASS",
+    "offline_install_and_cli": "PASS"
+  },
+  "local_http_quickstart": "PASS",
+  "offline_coding_demo": "PASS",
+  "live": {
+    "scenario": "real-model-file-and-code",
+    "status": "completed",
+    "accepted": true,
+    "duration_seconds": 17.13,
+    "model_calls": 5,
+    "model_requested_tools": [
+      "list_files",
+      "search_text",
+      "search_text",
+      "read_file",
+      "read_file",
+      "apply_patch",
+      "apply_patch",
+      "read_file",
+      "run_command"
+    ],
+    "total_tokens": 14208,
+    "changed_files": [
+      "calculator.py",
+      "notes.txt"
+    ],
+    "unexpected_changes": [],
+    "final_test_status": "PASS",
+    "final_test_count": 1
+  },
+  "unverified": [
+    "Remote GitHub Actions matrix",
+    "Linux execution",
+    "Python 3.13 execution"
+  ],
+  "scope": "One real provider acceptance; not a task-quality benchmark or long-term reliability measure"
+}

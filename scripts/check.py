@@ -16,6 +16,9 @@ import sys
 import tempfile
 import tomllib
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECK_TIMEOUT_SECONDS = 300
 CLEANUP_TIMEOUT_SECONDS = 5
@@ -24,7 +27,7 @@ IGNORED_NAMES = {
     ".pytest_cache", ".state", ".mini-agent", ".mini-agent-state", ".dist",
     ".install", "build", "dist", "node_modules", ".workspace_snapshot",
     "changes", ".changes", ".mini_agent", "journals",
-    "runs", "release-runs",
+    "runs", "release-runs", "checkpoints", ".mypy_cache", ".ruff_cache", ".tmp", ".home", ".smoke",
 }
 SYSTEM_ENV_NAMES = {
     "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE",
@@ -69,11 +72,10 @@ def isolated_environment(root: Path) -> dict[str, str]:
         "XDG_CONFIG_HOME": str(directories[".home"] / ".config"),
         "GIT_CEILING_DIRECTORIES": str(root), "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
-        "PYTHONPATH": os.pathsep.join((str(root), str(root / "eval"))),
+        "PYTHONPATH": str(root),
         "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONNOUSERSITE": "1",
         "PIP_NO_INDEX": "1", "PIP_CONFIG_FILE": os.devnull,
         "PIP_DISABLE_PIP_VERSION_CHECK": "1", "TOOL_APPROVAL_MODE": "DENY",
-        "CONTEXT_MODE": "WRITE_ONLY",
     })
     return environment
 
@@ -191,15 +193,25 @@ def check_metadata(root: Path) -> int:
     for package in packages:
         if not (root / package.replace(".", "/") / "__init__.py").is_file():
             errors.append(f"包缺少 __init__.py：{package}")
-    lock_lines = {
-        line.strip() for line in (root / "requirements.lock").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-    for requirement in metadata["project"]["dependencies"]:
-        if requirement not in lock_lines:
-            errors.append(f"包直接依赖未按同版本锁定：{requirement}")
-    for line in sorted(lock_lines):
-        name, version = line.split("==", 1)
+    locked = {}
+    for line in (root / "requirements.lock").read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        requirement = Requirement(line.strip())
+        if requirement.marker and not requirement.marker.evaluate():
+            continue
+        pins = list(requirement.specifier)
+        if len(pins) != 1 or pins[0].operator != "==":
+            errors.append(f"依赖没有精确锁定：{requirement.name}")
+            continue
+        locked[canonicalize_name(requirement.name)] = pins[0].version
+    direct = [*metadata["project"]["dependencies"], *metadata["project"]["optional-dependencies"]["dev"]]
+    for text in direct:
+        requirement = Requirement(text)
+        version = locked.get(canonicalize_name(requirement.name))
+        if version is None or not requirement.specifier.contains(version):
+            errors.append(f"依赖锁不满足项目约束：{text}")
+    for name, version in sorted(locked.items()):
         try:
             installed = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
@@ -223,7 +235,7 @@ def smoke_installed_entry(root: Path, environment: dict[str, str]) -> int:
         return result
     environment = {**environment, "PYTHONPATH": str(target)}
     entry = target / "bin" / ("mini-agent.exe" if os.name == "nt" else "mini-agent")
-    checks = (("安装入口 --help", ["--help"]), ("安装版本查询", ["version"]), ("安装会话列表", ["sessions", "list"]))
+    checks = (("安装入口 --help", ["--help"]), ("安装版本查询", ["version"]), ("安装会话列表", ["sessions"]))
     results = [run_step(name + "（不调用模型）", [str(entry), *arguments], root / ".smoke", environment) for name, arguments in checks]
     return 0 if all(code == 0 for code in results) else 1
 
@@ -231,11 +243,9 @@ def smoke_installed_entry(root: Path, environment: dict[str, str]) -> int:
 def regression_steps(root: Path) -> list[tuple[str, list[str]]]:
     python = sys.executable
     return [
-        ("unittest tests", [python, "-m", "unittest", "discover", "-s", "tests", "-v"]),
-        ("脚本 test_loop", [python, "tests/test_loop.py"]),
-        ("脚本 test_sandbox", [python, "tests/test_sandbox.py"]),
-        ("eval metrics", [python, "eval/test_metrics.py"]),
-        ("eval 五项可靠性测试", [python, "-m", "unittest", "discover", "-s", "eval", "-p", "test_reliability.py", "-v"]),
+        ("完整 pytest（真实模型测试单独运行）", [python, "-m", "pytest", "-q"]),
+        ("Ruff", [python, "-m", "ruff", "check", "."]),
+        ("mypy", [python, "-m", "mypy"]),
         ("全部 Python 语法", [python, "scripts/check.py", "--internal", "compile"]),
     ]
 

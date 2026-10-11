@@ -11,24 +11,20 @@ from pathlib import Path
 from mini_agent import sandbox as file_safety
 from mini_agent.config import COMMAND_TIMEOUT_SECONDS, MAX_COMMAND_OUTPUT_CHARS, WORKSPACE_DIR
 from mini_agent.result import ToolResult
-from process_runner import MAX_COMMAND_OUTPUT_BYTES, run_process
+from ..process_runner import MAX_COMMAND_OUTPUT_BYTES, run_process
 from .filesystem import resolve_inside_workspace
 
 
-def _active_workspace() -> Path:
-    compat = sys.modules.get("tools")
-    value = getattr(compat, "WORKSPACE_DIR", None) if compat is not None else None
-    return Path(value) if value is not None else Path(WORKSPACE_DIR)
+def _active_workspace(workspace: str | Path | None = None) -> Path:
+    """Resolve the configured workspace for direct legacy calls.
+
+    The LangChain adapter always supplies an explicit workspace.  Keeping the
+    configured default here makes the low-level function useful on its own
+    without consulting the compatibility module's mutable globals.
+    """
+    return Path(workspace if workspace is not None else WORKSPACE_DIR).resolve()
 
 
-def _active_constant(name: str, default):
-    compat = sys.modules.get("tools")
-    return getattr(compat, name, default) if compat is not None else default
-
-
-def _active_run_process():
-    compat = sys.modules.get("tools")
-    return getattr(compat, "run_process", run_process) if compat is not None else run_process
 
 
 _COMMAND_SHELL_SYNTAX = frozenset("&|;><`\r\n")
@@ -73,7 +69,8 @@ def validate_run_command_arguments(
     cwd = arguments.get("cwd", ".")
     if not isinstance(cwd, str) or not cwd:
         raise CommandPolicyError("cwd 必须是非空字符串")
-    resolve_inside_workspace(cwd, workspace)
+    root = _active_workspace(workspace)
+    resolve_inside_workspace(cwd, root)
     if not isinstance(command, str) or not command:
         raise CommandPolicyError("command 必须是非空字符串")
     if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
@@ -89,7 +86,7 @@ def validate_run_command_arguments(
             raise CommandPolicyError("python 只允许执行 python -m pytest 或 python -m unittest")
         if any(arg == "-c" or arg.startswith("-c") for arg in args):
             raise CommandPolicyError("禁止 python -c 任意执行代码")
-        _reject_workspace_escape_tokens(args[2:], workspace)
+        _reject_workspace_escape_tokens(args[2:], root)
         return
 
     if not args or args[0] not in _ALLOWED_GIT_COMMANDS:
@@ -100,7 +97,7 @@ def validate_run_command_arguments(
         for arg in args[1:]
     ):
         raise CommandPolicyError("该 git 参数可能改变状态或访问未受控目标，已拒绝")
-    _reject_workspace_escape_tokens(args[1:], workspace)
+    _reject_workspace_escape_tokens(args[1:], root)
 
 
 def _decode_process_output(value: object) -> str:
@@ -117,9 +114,9 @@ def _redact_process_output(value: object) -> str:
 
 def _limit_command_output(value: object) -> str:
     text = _redact_process_output(value)
-    if len(text) <= _active_constant("MAX_COMMAND_OUTPUT_CHARS", MAX_COMMAND_OUTPUT_CHARS):
+    if len(text) <= MAX_COMMAND_OUTPUT_CHARS:
         return text
-    limit = _active_constant("MAX_COMMAND_OUTPUT_CHARS", MAX_COMMAND_OUTPUT_CHARS)
+    limit = MAX_COMMAND_OUTPUT_CHARS
     head_chars = limit // 2
     tail_chars = limit - head_chars
     omitted = len(text) - limit
@@ -155,8 +152,8 @@ def run_command(
     workspace: str | Path | None = None,
 ) -> ToolResult:
     args = [] if args is None else args
-    validate_run_command_arguments({"command": command, "args": args, "cwd": cwd}, workspace)
-    root = Path(workspace if workspace is not None else _active_workspace()).resolve()
+    root = _active_workspace(workspace)
+    validate_run_command_arguments({"command": command, "args": args, "cwd": cwd}, root)
     target = resolve_inside_workspace(cwd, root)
     if not target.is_dir():
         raise NotADirectoryError(f"cwd 不是一个目录：{cwd}")
@@ -167,9 +164,9 @@ def run_command(
         controlled_args = ["--no-pager", "-c", "core.fsmonitor=false", *args]
         if args[0] in {"diff", "log"}:
             controlled_args += ["--no-ext-diff", "--no-textconv"]
-    output_limit = _active_constant("MAX_COMMAND_OUTPUT_BYTES", MAX_COMMAND_OUTPUT_BYTES)
+    output_limit = MAX_COMMAND_OUTPUT_BYTES
     try:
-        result = _active_run_process()(
+        result = run_process(
             [executable, *controlled_args],
             target,
             workspace=root,

@@ -277,11 +277,16 @@ def _save_journal_data(path: Path, data: dict) -> None:
 
 
 class _Journal:
-    def __init__(self, run_id: str, workspace: str | Path, store_dir: str | Path):
+    def __init__(self, run_id: str, workspace: str | Path, store_dir: str | Path, *, resume: bool = False):
         self.root, self.path = _journal_path(run_id, workspace, store_dir)
-        if self.path.exists():
+        if self.path.exists() and not resume:
             raise FileExistsError("本轮变更日志已存在，不能覆盖")
-        self.data: dict[str, Any] = {"version": 1, "run_id": run_id, "workspace": str(self.root), "status": "running", "entries": {}}
+        if self.path.exists():
+            _, _, self.data = _load_journal(run_id, workspace, store_dir)
+            if self.data["status"] == "undone":
+                raise ValueError("该任务已撤销，不能继续写入；请开启新任务")
+        else:
+            self.data = {"version": 1, "run_id": run_id, "workspace": str(self.root), "status": "running", "entries": {}}
         self.had_failure = False
         self.save()
 
@@ -315,10 +320,10 @@ class _Journal:
 
 
 @contextmanager
-def journal_context(run_id: str, workspace: str | Path, store_dir: str | Path):
+def journal_context(run_id: str, workspace: str | Path, store_dir: str | Path, *, resume: bool = False):
     if _ACTIVE_JOURNAL.get() is not None:
         raise RuntimeError("不能嵌套变更日志上下文")
-    journal = _Journal(run_id, workspace, store_dir)
+    journal = _Journal(run_id, workspace, store_dir, resume=resume)
     token = _ACTIVE_JOURNAL.set(journal)
     try:
         yield journal

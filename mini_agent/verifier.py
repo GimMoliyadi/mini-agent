@@ -15,7 +15,7 @@ import re
 import stat
 from typing import Any, Callable
 
-import tools
+from .tools.command import validate_run_command_arguments
 from .result import ToolResult
 
 
@@ -227,7 +227,7 @@ class TestCommand:
             raise ValueError("test_command.cwd 必须是非空字符串")
 
         command_value = cls(command, tuple(args), cwd)
-        tools.validate_run_command_arguments(
+        validate_run_command_arguments(
             {
                 "command": command_value.command,
                 "args": list(command_value.args),
@@ -305,8 +305,8 @@ def coding_task_guidance(contract: CodingTaskContract) -> str:
         "Coding Task 收口规则：目标文件是 "
         f"{allowed}；必需测试命令是 `{test}`（cwd={contract.test_command.cwd}）。"
         "当代码改动已完成、该测试成功、没有新错误且没有未满足要求时，"
-        "不要重复读取、写入或测试；调用 finish_task(summary=...) 请求完成，"
-        "并在 summary 中简要说明改动和测试结果。普通 Final Answer 不会完成 Coding Task。"
+        "不要重复读取、写入或测试；直接给出简短最终总结，"
+        "说明改动和测试结果。Runtime 会根据工作区快照、测试新鲜度和最终回答验收任务。"
     )
 
 
@@ -333,13 +333,15 @@ SNAPSHOT_CHUNK_BYTES = 64 * 1024
 
 
 def _snapshot_paths(root: Path):
-    from runtime_guards import BudgetExceeded, get_current_budget
+    from .runtime_guards import BudgetExceeded, get_current_budget
 
     pending = [root]
     entries_seen = 0
     while pending:
         with os.scandir(pending.pop()) as entries:
             for entry in entries:
+                if entry.is_dir(follow_symlinks=False) and entry.name in {".git", ".venv", "venv", "node_modules", ".mini-agent"}:
+                    continue
                 budget = get_current_budget()
                 if budget is not None:
                     budget.check()
@@ -358,7 +360,7 @@ def _snapshot_paths(root: Path):
 
 
 def _snapshot_file(path: Path, expected, remaining: int) -> tuple[str, int]:
-    from runtime_guards import BudgetExceeded, get_current_budget
+    from .runtime_guards import BudgetExceeded, get_current_budget
 
     if expected.st_size > remaining:
         raise BudgetExceeded("工作区文件总量超过快照字节预算，请缩小工作区。")
@@ -632,7 +634,7 @@ def _run_final_test(
         )
         return {**parse_test_result(result), "error": None}
     except Exception as exc:
-        from runtime_guards import BudgetExceeded
+        from .runtime_guards import BudgetExceeded
         if isinstance(exc, BudgetExceeded):
             raise
         return {"status": "UNKNOWN", "exit_code": None, "test_count": None,

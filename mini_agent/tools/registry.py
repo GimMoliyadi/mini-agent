@@ -1,394 +1,271 @@
-"""Canonical tool registry and model-facing schemas."""
+"""Canonical LangChain tool construction for the local agent.
 
-from collections.abc import Callable
-from dataclasses import dataclass
-from enum import Enum
+The handlers remain small, dependency-free functions.  ``build_tools`` binds
+one explicit workspace to those handlers and returns the only tool collection
+the Agent should expose to a model.  Runtime-specific control flow such as
+``finish_task`` is intentionally kept outside this registry.
+"""
 
-from .command import CommandPolicyError, run_command, validate_run_command_arguments
+from __future__ import annotations
+
+from functools import partial, wraps
+from inspect import Signature, signature
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from langchain_core.tools import BaseTool, StructuredTool
+from pydantic import BaseModel, Field
+
+from .command import run_command
 from .filesystem import apply_patch, list_files, read_file, rename_file, search_text, write_file
-from .introspection import finish_task, inspect_capabilities, inspect_project
-
-class RiskLevel(str, Enum):
-    """Tool 的副作用风险等级；后两个值只为未来工具预留。"""
-
-    READ_ONLY = "READ_ONLY"
-    SIDE_EFFECT = "SIDE_EFFECT"
-    EXECUTION = "EXECUTION"
-    EXTERNAL_SIDE_EFFECT = "EXTERNAL_SIDE_EFFECT"
+from .introspection import inspect_capabilities, inspect_project
+from ..result import ToolResult
 
 
-class ToolKind(str, Enum):
-    """How a tool participates in the Agent loop, independent of risk."""
-
-    NORMAL = "NORMAL"
-    CONTROL_FLOW = "CONTROL_FLOW"
+ToolHandler = Callable[..., object]
 
 
-@dataclass(frozen=True)
-class ToolDefinition:
-    """一个工具的完整 Runtime 定义。"""
-
-    name: str
-    schema: dict
-    handler: Callable[..., str]
-    risk_level: RiskLevel
-    workspace_arguments: tuple[str, ...] = ("path",)
-    operation_path_argument: str | None = "path"
-    preflight: Callable[[dict], None] | None = None
-    tool_kind: ToolKind = ToolKind.NORMAL
-    workspace_mutation: bool = False
-    uses_runtime_context: bool = False
-
-# 工具的「说明书」。发给模型的不是函数本身，而是这份 JSON 描述；
-# 模型照着它生成一次工具调用请求。
-# required 里必须列上 path，否则模型可能给出空参数。
-
-READ_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "读取工作目录内一个文件的文本内容。"
-            "当用户想了解某个文件里写了什么时，用这个工具。"
-            "默认读取从第 1 行开始的最多 100 行；如果 has_more 为 true，"
-            "根据 next_start_line 决定是否继续读取下一段。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "相对于工作目录的路径，例如 \"todo.txt\"",
-                },
-                "start_line": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 1,
-                    "description": "从第几行开始读取，行号从 1 开始",
-                },
-                "max_lines": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 100,
-                    "description": "本次最多读取多少行",
-                }
-            },
-            "required": ["path"],
-        },
-    },
-}
-
-# 「不知道有什么文件」时的第一个工具。
-# path 是可选的（没有 required 字段），省略就是列工作目录本身。
-# 描述里那句「不要猜文件名」是刻意的：模型有凭空编文件名的倾向，
-# 把这句写进工具说明书，比在系统提示词里写「必须先看目录」更贴切——
-# 前者是模型自己读到工具后自然形成的用法，后者是硬命令。
-LIST_FILES_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "list_files",
-        "description": (
-            "列出工作目录里的文件和子目录，只看一层，不递归。"
-            "如果你不知道有哪些文件、或者用户没有点名具体文件，"
-            "先用这个工具，不要猜文件名。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要列出的目录，相对工作目录。省略表示工作目录本身。",
-                },
-            },
-        },
-    },
-}
-
-SEARCH_TEXT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "search_text",
-        "description": (
-            "在工作目录内递归搜索固定字符串，返回匹配文件、行号和少量上下文。"
-            "默认搜索整个工作目录；可以用 path 限定子目录。"
-            "只处理可按 UTF-8 读取的文本文件，自动忽略 .git、.venv、__pycache__、"
-            "sessions、eval/runs 等临时目录。query 按字面量匹配，不支持正则。"
-            "没有匹配时返回正常结果，不要把它当成运行时错误。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "要查找的固定字符串，例如 calculate_total",
-                },
-                "path": {
-                    "type": "string",
-                    "default": ".",
-                    "description": "限定搜索的目录，相对工作目录；省略表示整个工作目录",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "default": 20,
-                    "description": "最多返回多少个匹配行，默认 20，最大 100",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-# 把内容写回工作目录。
-# 允许覆盖已有文件——这是刻意选择，README 里有说明：
-# 沙盒已经把破坏范围锁死在一个专用目录里，而拒绝覆盖会让「重跑同一个任务」
-# 直接失败，还得再加一个 force 参数让模型学习怎么绕过。那比覆盖本身更复杂。
-WRITE_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "write_file",
-        "description": (
-            "把文本内容写入工作目录内的一个文件（UTF-8）。"
-            "父目录不存在会自动创建，只能创建在工作目录内。"
-            "已经存在的同名文件会被覆盖。"
-            "这是有副作用的操作，执行前可能需要用户批准。"
-            "不能用 .. 或绝对路径写到工作目录之外。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "相对工作目录的文件路径，例如 \"notes/summary.md\"",
-                },
-                "content": {
-                    "type": "string",
-                    "description": "要写入的完整文本内容",
-                },
-            },
-            "required": ["path", "content"],
-        },
-    },
-}
-
-APPLY_PATCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "apply_patch",
-        "description": (
-            "修改工作目录内已有的 UTF-8 文本文件。用 old_text 精确匹配一段文本，"
-            "且 old_text 必须在文件中恰好出现一次；匹配 0 次或多次都会失败，"
-            "不会猜测位置、模糊匹配或自动修正空白。new_text 可以为空，用于删除局部文本。"
-            "这是有副作用的操作，执行前可能需要用户批准。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "相对工作目录的已有文本文件路径，例如 \"calculator.py\"",
-                },
-                "old_text": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "文件中必须唯一出现的原始文本，区分空白和换行",
-                },
-                "new_text": {
-                    "type": "string",
-                    "description": "替换后的文本；传空字符串表示删除 old_text",
-                },
-            },
-            "required": ["path", "old_text", "new_text"],
-        },
-    },
-}
-
-RENAME_FILE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "rename_file",
-        "description": (
-            "重命名工作目录内已有文件；source 和 destination 都相对工作目录。"
-            "目标文件若已存在则拒绝，不会覆盖。Markdown 文件改名时保留 .md 扩展名。"
-            "这是有副作用的操作，执行前需要批准。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "source": {"type": "string", "description": "已有文件路径，例如 notes/old.md"},
-                "destination": {"type": "string", "description": "新文件路径，例如 notes/new.md"},
-            },
-            "required": ["source", "destination"],
-        },
-    },
-}
-
-RUN_COMMAND_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "run_command",
-        "description": (
-            "在工作目录内执行一个受控的本地开发命令。只允许 python -m pytest、"
-            "python -m unittest，以及 git status、git diff、git log；command 和 args "
-            "必须分开提供，不要传入 shell script。该工具需要用户批准。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "程序名，只允许 python 或 git",
-                },
-                "args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "default": [],
-                    "description": "传给程序的参数数组，不是 shell 命令字符串",
-                },
-                "cwd": {
-                    "type": "string",
-                    "default": ".",
-                    "description": "工作目录，必须位于 Agent workspace 内",
-                },
-            },
-            "required": ["command"],
-        },
-    },
-}
+class ListFilesInput(BaseModel):
+    path: str | None = None
 
 
-FINISH_TASK_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "finish_task",
-        "description": (
-            "Request completion of the current Coding Task with a short user-facing summary. "
-            "A Coding Task is complete only when finish_task is accepted by the Runtime Finish Gate; "
-            "ordinary Final Answer text does not complete it. After the final code change, make sure "
-            "the required test is still valid before requesting finish."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Short final summary shown to the user when finish is accepted.",
-                },
-            },
-            "required": ["summary"],
-        },
-    },
-}
+class ReadFileInput(BaseModel):
+    path: str
+    start_line: int = 1
+    max_lines: int = 100
 
-INSPECT_CAPABILITIES_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "inspect_capabilities",
-        "description": "只读查看当前可调用 Tool 与 Runtime 自身能力及状态；回答能力问题时先调用。",
-        "parameters": {"type": "object", "properties": {}},
-    },
-}
 
-INSPECT_PROJECT_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "inspect_project",
-        "description": (
-            "只读查看这个 Agent 自身项目的核心源码和说明。省略 path 列出可读文件；"
-            "指定列表中的 path 可分页读取。工作目录文件仍用 read_file。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "列出的项目文件名，例如 tools.py；省略时列目录"},
-                "start_line": {"type": "integer", "minimum": 1, "default": 1},
-                "max_lines": {"type": "integer", "minimum": 1, "default": 100},
-            },
-        },
-    },
-}
+class SearchTextInput(BaseModel):
+    query: str
+    path: str = "."
+    max_results: int = 20
 
-TOOL_REGISTRY = {
-    "list_files": ToolDefinition(
-        name="list_files",
-        schema=LIST_FILES_TOOL,
-        handler=list_files,
-        risk_level=RiskLevel.READ_ONLY,
-    ),
-    "read_file": ToolDefinition(
-        name="read_file",
-        schema=READ_FILE_TOOL,
-        handler=read_file,
-        risk_level=RiskLevel.READ_ONLY,
-    ),
-    "search_text": ToolDefinition(
-        name="search_text",
-        schema=SEARCH_TEXT_TOOL,
-        handler=search_text,
-        risk_level=RiskLevel.READ_ONLY,
-    ),
-    "write_file": ToolDefinition(
-        name="write_file",
-        schema=WRITE_FILE_TOOL,
-        handler=write_file,
-        risk_level=RiskLevel.SIDE_EFFECT,
-        workspace_mutation=True,
-    ),
-    "apply_patch": ToolDefinition(
-        name="apply_patch",
-        schema=APPLY_PATCH_TOOL,
-        handler=apply_patch,
-        risk_level=RiskLevel.SIDE_EFFECT,
-        workspace_mutation=True,
-    ),
-    "rename_file": ToolDefinition(
-        name="rename_file",
-        schema=RENAME_FILE_TOOL,
-        handler=rename_file,
-        risk_level=RiskLevel.SIDE_EFFECT,
-        workspace_arguments=("source", "destination"),
-        operation_path_argument=None,
-        workspace_mutation=True,
-    ),
-    "run_command": ToolDefinition(
-        name="run_command",
-        schema=RUN_COMMAND_TOOL,
-        handler=run_command,
-        risk_level=RiskLevel.EXECUTION,
-        workspace_arguments=("cwd",),
-        operation_path_argument=None,
-        preflight=validate_run_command_arguments,
-    ),
-    "finish_task": ToolDefinition(
-        name="finish_task",
-        schema=FINISH_TASK_TOOL,
-        handler=finish_task,
-        risk_level=RiskLevel.READ_ONLY,
-        workspace_arguments=(),
-        operation_path_argument=None,
-        tool_kind=ToolKind.CONTROL_FLOW,
-    ),
-    "inspect_capabilities": ToolDefinition(
-        name="inspect_capabilities",
-        schema=INSPECT_CAPABILITIES_TOOL,
-        handler=inspect_capabilities,
-        risk_level=RiskLevel.READ_ONLY,
-        workspace_arguments=(),
-        operation_path_argument=None,
-        uses_runtime_context=True,
-    ),
-    "inspect_project": ToolDefinition(
-        name="inspect_project",
-        schema=INSPECT_PROJECT_TOOL,
-        handler=inspect_project,
-        risk_level=RiskLevel.READ_ONLY,
-        workspace_arguments=(),
-        operation_path_argument=None,
-    ),
-}
 
-# 这是给模型的公开 Schema 视图，不是另一份注册表。
-AVAILABLE_TOOLS = [definition.schema for definition in TOOL_REGISTRY.values()]
+class WriteFileInput(BaseModel):
+    path: str
+    content: str
+
+
+class ApplyPatchInput(BaseModel):
+    path: str
+    old_text: str
+    new_text: str
+
+
+class RenameFileInput(BaseModel):
+    source: str
+    destination: str
+
+
+class RunCommandInput(BaseModel):
+    command: str
+    args: list[str] = Field(default_factory=list)
+    cwd: str = "."
+
+
+class InspectProjectInput(BaseModel):
+    path: str | None = None
+    start_line: int = 1
+    max_lines: int = 100
+
+
+class NoArgumentsInput(BaseModel):
+    pass
+
+
+def _tool_artifact(value: object) -> tuple[str, dict[str, Any]]:
+    """Convert a handler result to LangChain's content/artifact pair."""
+    if isinstance(value, ToolResult):
+        return value.text, {
+            "status": value.status,
+            "code": value.code,
+            "metadata": dict(value.metadata),
+        }
+    return str(value), {"status": "success", "code": "ok", "metadata": {}}
+
+
+def _make_tool(
+    *,
+    name: str,
+    description: str,
+    handler: ToolHandler,
+    workspace: Path | None,
+    metadata: Mapping[str, Any],
+    args_schema: type[BaseModel],
+    inject_workspace: bool = True,
+) -> StructuredTool:
+    """Build one StructuredTool without exposing the injected workspace arg."""
+    bound: ToolHandler = (
+        partial(handler, workspace=workspace) if inject_workspace else handler
+    )
+
+    @wraps(handler)
+    def invoke(*args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        return _tool_artifact(bound(*args, **kwargs))
+
+    # ``StructuredTool`` infers a Pydantic schema from inspect.signature.  A
+    # wrapped partial has the useful model-facing parameters, while the bound
+    # keyword-only workspace remains hidden from that schema.
+    invoke.__signature__ = signature(bound)  # type: ignore[attr-defined]
+    return StructuredTool.from_function(
+        func=invoke,
+        name=name,
+        description=description,
+        args_schema=args_schema,
+        response_format="content_and_artifact",
+        metadata=dict(metadata),
+    )
+
+
+def _metadata(
+    *,
+    risk: str,
+    mutation: bool,
+    workspace_arguments: tuple[str, ...] = (),
+    mutation_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "risk": risk,
+        "mutation": mutation,
+        "workspace_arguments": workspace_arguments,
+    }
+    if mutation_paths:
+        values["mutation_paths"] = mutation_paths
+    return values
+
+
+def build_tools(
+    workspace: Path,
+    *,
+    runtime_context: Mapping[str, object] | None = None,
+) -> list[BaseTool]:
+    """Return the canonical tools bound to ``workspace``.
+
+    ``workspace`` is captured by closures/partials and is never a model input.
+    The returned list contains only operational and read-only tools; runtime
+    control-flow tools are registered by the Agent assembly layer.
+    """
+    root = Path(workspace).expanduser().resolve()
+    bound_tools: list[BaseTool] = []
+
+    bound_tools.extend(
+        [
+            _make_tool(
+                name="list_files",
+                description=(
+                    "列出工作目录内指定目录的一层内容；省略 path 时列出工作目录。"
+                ),
+                handler=list_files,
+                workspace=root,
+                args_schema=ListFilesInput,
+                metadata=_metadata(
+                    risk="read", mutation=False, workspace_arguments=("path",)
+                ),
+            ),
+            _make_tool(
+                name="read_file",
+                description="读取工作目录内 UTF-8 文件的一段文本内容。",
+                handler=read_file,
+                workspace=root,
+                args_schema=ReadFileInput,
+                metadata=_metadata(
+                    risk="read", mutation=False, workspace_arguments=("path",)
+                ),
+            ),
+            _make_tool(
+                name="search_text",
+                description="在工作目录内递归搜索固定字符串并返回匹配上下文。",
+                handler=search_text,
+                workspace=root,
+                args_schema=SearchTextInput,
+                metadata=_metadata(
+                    risk="read", mutation=False, workspace_arguments=("path",)
+                ),
+            ),
+            _make_tool(
+                name="write_file",
+                description="把完整 UTF-8 文本写入工作目录内的文件；可能覆盖已有文件。",
+                handler=write_file,
+                workspace=root,
+                args_schema=WriteFileInput,
+                metadata=_metadata(
+                    risk="write",
+                    mutation=True,
+                    workspace_arguments=("path",),
+                    mutation_paths=("path",),
+                ),
+            ),
+            _make_tool(
+                name="apply_patch",
+                description="在工作目录内已有 UTF-8 文件中唯一精确替换一段文本。",
+                handler=apply_patch,
+                workspace=root,
+                args_schema=ApplyPatchInput,
+                metadata=_metadata(
+                    risk="write",
+                    mutation=True,
+                    workspace_arguments=("path",),
+                    mutation_paths=("path",),
+                ),
+            ),
+            _make_tool(
+                name="rename_file",
+                description="重命名工作目录内文件；目标存在时拒绝覆盖。",
+                handler=rename_file,
+                workspace=root,
+                args_schema=RenameFileInput,
+                metadata=_metadata(
+                    risk="write",
+                    mutation=True,
+                    workspace_arguments=("source", "destination"),
+                    mutation_paths=("source", "destination"),
+                ),
+            ),
+            _make_tool(
+                name="run_command",
+                description="在工作目录内执行受控的无 shell 本地开发命令。",
+                handler=run_command,
+                workspace=root,
+                args_schema=RunCommandInput,
+                metadata=_metadata(
+                    risk="execute", mutation=False, workspace_arguments=("cwd",)
+                ),
+            ),
+            _make_tool(
+                name="inspect_project",
+                description="只读查看 Agent 项目允许公开的源码文件并支持分页。",
+                handler=inspect_project,
+                workspace=None,
+                args_schema=InspectProjectInput,
+                metadata=_metadata(risk="read", mutation=False),
+                inject_workspace=False,
+            ),
+        ]
+    )
+
+    def capabilities() -> tuple[str, dict[str, Any]]:
+        result = inspect_capabilities(
+            tools=bound_tools,
+            runtime_context=runtime_context,
+        )
+        return _tool_artifact(result)
+
+    capabilities.__signature__ = Signature()  # type: ignore[attr-defined]
+    bound_tools.append(
+        StructuredTool.from_function(
+            func=capabilities,
+            name="inspect_capabilities",
+            description="只读查看当前可调用工具及由 Runtime 注入的能力状态。",
+            args_schema=NoArgumentsInput,
+            response_format="content_and_artifact",
+            metadata=_metadata(risk="read", mutation=False),
+        )
+    )
+    return bound_tools
+
+
+__all__ = [
+    "BaseTool",
+    "StructuredTool",
+    "build_tools",
+]
