@@ -119,6 +119,17 @@ flowchart LR
 `mutation_paths` 由 `BoundaryMiddleware` 用于审批、contract 路径检查和前置条件
 校验。
 
+## 开发任务能力（下一轮迭代）
+
+原有的文件读取、全文搜索、补丁修改和测试执行之外，`run_command` 现在支持：
+`python -m pytest/unittest/ruff/mypy/compileall/build`、工作区内 `python path/to/script.py`
+以及只读的 `git status/diff/log/ls-files`。
+
+这让 Coding Agent 能实际运行仓库内的 Python 脚本、静态检查和构建步骤，而不是只会改代码和跑单元测试。
+命令仍使用现有的无 shell 进程执行器、工作区限定、超时和输出上限；
+默认 `ASK` 审批对执行工具仍然生效。这不是操作系统隔离：**仅用于受信任项目**。
+`pip install` 不在默认命令列表中，依赖安装应在开发者管理的虚拟环境完成。
+
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
