@@ -130,6 +130,10 @@ flowchart LR
 默认 `ASK` 审批对执行工具仍然生效。这不是操作系统隔离：**仅用于受信任项目**。
 `pip install` 不在默认命令列表中，依赖安装应在开发者管理的虚拟环境完成。
 
+项目导航工具同样使用已有的工作区保护：`find_files(pattern, path)` 递归列出匹配路径，
+`inspect_python_symbols(path, query)` 通过 Python AST 定位类、函数、方法和行号，
+不执行被分析代码。两者都限制扫描范围和结果长度，避免把整个项目直接塞进模型上下文。
+
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
