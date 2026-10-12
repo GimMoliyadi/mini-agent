@@ -30,6 +30,10 @@ class BoundaryMiddleware(AgentMiddleware):
         budget = get_current_budget()
         if budget is not None:
             budget.validate_batch_size(len(getattr(message, "tool_calls", [])))
+        plan_updates = [call for call in getattr(message, "tool_calls", [])
+                        if call["name"] in {"set_task_plan", "update_task_step"}]
+        if len(plan_updates) > 1:
+            raise ValueError("每批最多一次计划更新，避免并行写入同一个 Checkpoint 状态")
         preconditions = {}
         for call in getattr(message, "tool_calls", []):
             if call["name"] in {"write_file", "apply_patch", "rename_file"}:
