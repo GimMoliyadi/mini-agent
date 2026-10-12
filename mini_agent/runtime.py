@@ -17,6 +17,7 @@ from .observability import Events
 from .persistence import checkpoint_store, validate_thread_id
 from .policies import BoundaryMiddleware
 from .planning import build_plan_tools, plan_summary
+from .git_workflow import build_git_tools
 from .sandbox import redact_text
 from .settings import Settings
 from .state import TaskState
@@ -36,6 +37,8 @@ SYSTEM_PROMPT = (
     "复杂开发任务先用 set_task_plan 拆解计划，依次用 update_task_step 标记进行、完成或阻塞；"
     "需要调整步骤时提供修订原因。每批工具调用至多包含一次计划更新，"
     "规划不代表执行成功，步骤完成必须依据工具与测试结果。"
+    "使用 git_worktree_review 检查仓库，执行 Git 本地提交请单独调用 git_commit_files，"
+    "明确指定文件且先完成必要测试；提交不会自动推送远程。"
     "遇到审批拒绝应如实说明。完成目标后给出简洁总结，不要重复已完成的操作。"
 )
 
@@ -65,6 +68,7 @@ class AgentApplication:
                 "approval_mode": self.settings.approval_mode, "interface": "sync",
             }})
             tools.extend(build_plan_tools())
+            tools.extend(build_git_tools(self.settings.workspace))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
             if self.settings.mcp_config_path is not None:

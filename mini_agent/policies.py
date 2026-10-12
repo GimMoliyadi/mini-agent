@@ -32,6 +32,8 @@ class BoundaryMiddleware(AgentMiddleware):
             budget.validate_batch_size(len(getattr(message, "tool_calls", [])))
         plan_updates = [call for call in getattr(message, "tool_calls", [])
                         if call["name"] in {"set_task_plan", "update_task_step"}]
+        if any(call["name"] == "git_commit_files" for call in getattr(message, "tool_calls", [])) and len(getattr(message, "tool_calls", [])) != 1:
+            raise ValueError("Git 提交必须单独一个工具调用，避免与并发文件变更冲突")
         if len(plan_updates) > 1:
             raise ValueError("每批最多一次计划更新，避免并行写入同一个 Checkpoint 状态")
         preconditions = {}
@@ -52,6 +54,8 @@ class BoundaryMiddleware(AgentMiddleware):
                 return preview_tool_change(call["name"], call["args"], self.settings.workspace)
             except (OSError, ValueError, KeyError) as exc:
                 return redact_text(f"操作预览失败：{exc}")
+        if call["name"] == "git_commit_files":
+            return redact_text(f"创建本地 Git 提交：{call['args'].get('message', '')}；文件：{call['args'].get('paths', [])}；不会推送远程")
         return f"执行工具 {call['name']}（工作区内受控命令或扩展工具）"
 
     def _validate(self, request):
