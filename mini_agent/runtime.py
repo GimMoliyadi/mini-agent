@@ -10,6 +10,8 @@ from langgraph.types import Command
 from langchain_core.runnables import RunnableConfig
 
 from .context import ContextMiddleware
+from .mcp_tools import MCPToolBridge
+from .rag_chain import build_rag_tool
 from .models import create_model
 from .observability import Events
 from .persistence import checkpoint_store, validate_thread_id
@@ -58,6 +60,13 @@ class AgentApplication:
                 "engine": "langchain.create_agent", "checkpoint": "langgraph.sqlite",
                 "approval_mode": self.settings.approval_mode, "interface": "sync",
             }})
+            if self.settings.rag_chain_url:
+                tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
+            if self.settings.mcp_config_path is not None:
+                bridge = self.stack.enter_context(MCPToolBridge(
+                    self.settings.mcp_config_path, timeout=self.settings.mcp_timeout,
+                ))
+                tools.extend(bridge.tools)
             tools.extend(self.extra_tools)
             if len({tool.name for tool in tools}) != len(tools):
                 raise ValueError("工具名称必须唯一")
