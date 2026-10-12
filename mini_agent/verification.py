@@ -24,6 +24,12 @@ def verification_facts(state: dict) -> VerificationFacts:
             facts.last_mutation_event_seq = facts.event_seq
         if artifact.get("command") == contract.test_command.as_dict():
             parsed = parse_test_result(str(message.content))
+            if message.status != "success":
+                # A failed ToolMessage is never evidence that the required
+                # test ran successfully, even if a provider-shaped payload
+                # happens to contain a passing summary.
+                parsed["status"] = "UNKNOWN"
+                parsed["test_count"] = None
             facts.last_test_status = parsed["status"]
             facts.last_test_count = parsed["test_count"]
             facts.verified_snapshot = artifact.get("snapshot") if parsed["status"] == "PASS" else None
@@ -65,7 +71,7 @@ class VerificationMiddleware(AgentMiddleware):
         contract = CodingTaskContract.from_dict(state["contract"])
         gate = evaluate_finish_request(contract, verification_facts(state), self.settings.workspace)
         if not gate.accepted:
-            self.events.emit("verification_rejected", reasons=list(gate.reasons))
+            self.events.emit("verification_rejected", task_id=state.get("task_id"), reasons=list(gate.reasons))
             return {"messages": [HumanMessage(content=(
                 "验收尚未通过：" + ", ".join(gate.reasons) +
                 "; 完成允许的修改并运行指定测试：" + str(contract.test_command.as_dict())
@@ -92,6 +98,6 @@ class VerificationMiddleware(AgentMiddleware):
             agent_final_answer_present=bool(answer.content),
             agent_ran_required_test=facts.last_test_status == "PASS", command_runner=runner,
         )
-        self.events.emit("verification", accepted=verification["accepted"])
+        self.events.emit("verification", task_id=state.get("task_id"), accepted=verification["accepted"])
         return {"verification": verification,
                 "status": "completed" if verification["accepted"] else "incomplete"}

@@ -1,0 +1,111 @@
+{
+  "model": "grok-4.7",
+  "scenarios": [
+    {
+      "scenario": "rag-mcp-local-development",
+      "passed": true,
+      "status": "completed",
+      "duration_seconds": 31.11,
+      "model_calls": 8,
+      "input_tokens": 29343,
+      "output_tokens": 483,
+      "usage_missing": 0,
+      "tool_calls": [
+        "search_knowledge",
+        "mcp_guide_python_test_guidance",
+        "find_files",
+        "read_file",
+        "read_file",
+        "apply_patch",
+        "run_command"
+      ],
+      "verification": {
+        "task_id": "live-rag-mcp",
+        "artifact_passed": true,
+        "interaction_completed": true,
+        "accepted": true,
+        "changed_files": [
+          "collections_util.py"
+        ],
+        "unexpected_changes": [],
+        "agent_ran_required_test": true,
+        "agent_self_verified": true,
+        "final_test_exit_code": 0,
+        "final_test_passed": true,
+        "final_test_status": "PASS",
+        "final_test_count": 3,
+        "final_test_collected_count": 3,
+        "final_test_skipped_count": 0,
+        "final_test_unverified_reason": null,
+        "agent_final_answer_present": true,
+        "task_status": "FINISHED",
+        "max_steps_reached": false,
+        "runtime_exception": null,
+        "reasons": []
+      },
+      "error": null,
+      "answer": "`stable_unique` 已按规范实现：过滤 `None` 与不可哈希元素，保留首次出现顺序并去重。`python -m unittest test_collections_util -q` 通过（3 tests, OK）。依据《stable_unique 规范》（`fixtures/stable-unique.md`）。",
+      "evidence": {
+        "search_knowledge": {
+          "status": "success",
+          "code": "ok",
+          "metadata": {
+            "source_count": 3,
+            "truncated": false,
+            "query": "stable_unique",
+            "top_k": 5,
+            "sources": [
+              {
+                "rank": 1,
+                "score": 0.7071068286895752,
+                "title": "stable_unique 规范",
+                "file_path": "fixtures/stable-unique.md",
+                "heading": "边界示例",
+                "source": "upstream acceptance fixture",
+                "chunk_index": 1
+              },
+              {
+                "rank": 2,
+                "score": 0.5,
+                "title": "stable_unique 规范",
+                "file_path": "fixtures/stable-unique.md",
+                "heading": "行为契约",
+                "source": "upstream acceptance fixture",
+                "chunk_index": 0
+              },
+              {
+                "rank": 3,
+                "score": 0.0,
+                "title": "discount 说明",
+                "file_path": "fixtures/discount.md",
+                "heading": "折扣",
+                "source": "unrelated acceptance fixture",
+                "chunk_index": 0
+              }
+            ]
+          },
+          "mutation": false
+        },
+        "mcp_guide_python_test_guidance": {
+          "status": "success",
+          "code": "ok",
+          "metadata": {
+            "server": "guide",
+            "remote_tool": "python_test_guidance",
+            "remote_artifact": {
+              "structured_content": {
+                "command": "python -m unittest test_collections_util -q",
+                "review": "Keep the supplied tests unchanged; verify behavior after editing source."
+              }
+            }
+          },
+          "mutation": false
+        }
+      }
+    }
+  ],
+  "passed": 1,
+  "total": 1,
+  "cost": "Token usage reported; no provider price table configured.",
+  "rag_service": "upstream rag-chain actual app, Chroma and SQLite, deterministic embedding test double"
+}

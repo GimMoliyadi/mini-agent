@@ -29,6 +29,7 @@ classifiers = [
 mini-agent = "mini_agent.launcher:main"
 
 [project.optional-dependencies]
+mcp = ["langchain-mcp-adapters>=0.3.2,<0.4"]
 dev = ["pytest>=9.1,<10", "ruff>=0.16,<1", "mypy>=1.20,<2", "setuptools>=65.5", "wheel"]
 
 [tool.setuptools]

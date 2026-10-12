@@ -12,6 +12,16 @@ from mini_agent.verifier import CodingTaskContract, TestCommand as RequiredComma
 from helpers import ScriptedModel, call
 
 
+def test_configured_batch_limit_is_visible_to_model(settings):
+    model = ScriptedModel(replies=["Ready"])
+    with AgentApplication(replace(settings, budget_options={"MINI_AGENT_MAX_BATCH_TOOL_CALLS": "2"}),
+                          model=model) as app:
+        result = app.run("Report readiness")
+    assert result["status"] == "completed"
+    prompt = next(message.content for message in model.observed[0] if message.type == "system")
+    assert "本轮最多调用 2 个工具" in prompt
+
+
 @pytest.fixture
 def settings(tmp_path):
     workspace = tmp_path / "work"
@@ -234,3 +244,44 @@ def test_request_timeout_is_bounded_by_configured_transport_timeout(settings):
     with AgentApplication(replace(settings, request_timeout=1.5), model=model) as app:
         assert app.run("Hello")["status"] == "completed"
     assert model.model_options[0]["timeout"] == 1.5
+
+
+def test_trace_is_scoped_to_each_task_in_one_application(settings):
+    model = ScriptedModel(replies=["First answer", "Second answer"])
+    with AgentApplication(settings, model=model) as app:
+        first = app.run("First task")
+        second = app.run("Second task", thread_id="second-task")
+
+    first_events = [item["event"] for item in first["trace"]]
+    second_events = [item["event"] for item in second["trace"]]
+    assert first_events == ["model", "budget"]
+    assert second_events == ["model", "budget"]
+
+
+def test_resuming_completed_task_does_not_include_later_task_trace(settings):
+    model = ScriptedModel(replies=["A answer", "B answer"])
+    with AgentApplication(settings, model=model) as app:
+        first = app.run("Task A", thread_id="task-a")
+        app.run("Task B", thread_id="task-b")
+        resumed = app.run(None, thread_id=first["session_id"])
+
+    assert [item["event"] for item in resumed["trace"]] == ["model", "budget"]
+
+
+def test_rejected_tool_batch_keeps_one_model_usage_event(settings):
+    oversized_batch = call("list_files")
+    oversized_batch.tool_calls.append({
+        "name": "list_files", "args": {}, "id": "list-files-2", "type": "tool_call",
+    })
+    limited = replace(settings, budget_options={"MINI_AGENT_MAX_BATCH_TOOL_CALLS": "1"})
+    with AgentApplication(limited, model=ScriptedModel(replies=[oversized_batch])) as app:
+        result = app.run("List the files")
+        resumed = app.run(None, thread_id=result["session_id"])
+
+    assert result["status"] == "failed"
+    for observed in (result, resumed):
+        model_events = [item for item in observed["trace"] if item["event"] == "model"]
+        assert len(model_events) == 1
+        assert model_events[0]["usage"] == {
+            "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+        }
