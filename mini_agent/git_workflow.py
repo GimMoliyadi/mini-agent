@@ -91,7 +91,7 @@ def _validate_contract(root: Path, paths: list[str], runtime: ToolRuntime[Any, T
     contract = CodingTaskContract.from_dict(data)
     if any(path not in contract.allowed_paths for path in paths):
         raise PermissionError("提交文件不在 Coding Contract.allowed_paths 内")
-    facts = verification_facts(runtime.state)
+    facts = verification_facts(dict(runtime.state))
     result = evaluate_finish_request(contract, facts, root)
     if not result.accepted:
         raise PermissionError("指定测试尚未通过或验收证据已过期：" + ", ".join(result.reasons))
