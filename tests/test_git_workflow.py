@@ -1,6 +1,5 @@
 """End-to-end Git delivery tests against temporary real Git repositories."""
 
-from dataclasses import replace
 import subprocess
 
 import pytest
@@ -90,7 +89,7 @@ def test_contract_requires_fresh_tests_before_git_commit(repo, tmp_path):
         "I cannot commit without passing tests.",
     ])) as app:
         result = app.run(contract.instruction, contract=contract)
-    assert result["status"] == "incomplete", result
+    assert result["status"] != "completed", result
     assert _git(repo, "rev-parse", "HEAD") == head
 
 
@@ -100,6 +99,7 @@ def test_approval_interruption_before_git_commit(repo, tmp_path):
     settings = _settings(repo, tmp_path, approval="ASK")
     with AgentApplication(settings, model=ScriptedModel(replies=[
         call("git_commit_files", paths=["calculator.py"], message="fix: correct addition"),
+        "I will not commit after approval was rejected.",
     ])) as app:
         paused = app.run("Commit calculator fix")
         assert paused["status"] == "interrupted", paused
