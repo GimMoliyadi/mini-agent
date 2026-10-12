@@ -234,3 +234,20 @@ with AgentApplication(settings) as app:
 
 上游 API、版本基线和实际读取过的源码链接见
 [`docs/framework-references.md`](framework-references.md)。
+
+
+## 可选外部 Tool 插件层（本分支，待 Codex 验收）
+
+- mini_agent.rag_chain.build_rag_tool：绑定配置的 RAG_CHAIN_URL，向已有
+  rag-chain GET /api/search 只读检索，保留原文和来源，不启动新 RAG Runtime。
+- mini_agent.mcp_tools.MCPToolBridge：可选安装 langchain-mcp-adapters；
+  由 MultiServerMCPClient 转换远端 MCP tools，在独立事件循环中执行远端异步
+  ainvoke，并通过同步 StructuredTool 适配到当前 create_agent。
+- mini_agent.runtime.AgentApplication.__enter__：仅在用户提供配置时
+  增加这些工具；仍然只创建一个 Agent/CompiledStateGraph，复用 Boundary/HITL。
+- 用户显式列出的 MCP 工具才能暴露给模型。非只读外部工具默认执行审批；
+  无本地 mutation_paths 的远端写工具无法通过 Coding Contract 限制。
+- 远端 MCP Server 和 RAG 索引都不与 SQLite checkpoint 合并。
+
+本段描述新增实现结构，尚未进行完整安装、真实 MCP 服务以及真实 Obsidian
+索引的独立验收。见 docs/CODEX_MCP_RAG_QA.md。
