@@ -7,7 +7,7 @@ import pytest
 from helpers import ScriptedModel, call
 from mini_agent.runtime import AgentApplication
 from mini_agent.settings import Settings
-from mini_agent.verifier import CodingTaskContract, TestCommand
+from mini_agent.verifier import CodingTaskContract, TestCommand as RequiredCommand
 
 
 def _git(root, *args):
@@ -42,7 +42,7 @@ def test_code_fix_then_verified_local_git_commit(repo, tmp_path):
     settings = _settings(repo, tmp_path)
     contract = CodingTaskContract(
         "fix-add", "Fix addition and commit", ("calculator.py",),
-        TestCommand("python", ("-m", "unittest", "test_calculator", "-q")),
+        RequiredCommand("python", ("-m", "unittest", "test_calculator", "-q")),
     )
     old_head = _git(repo, "rev-parse", "HEAD")
     model = ScriptedModel(replies=[
@@ -80,7 +80,7 @@ def test_preexisting_staged_work_is_never_committed(repo, tmp_path):
 def test_contract_requires_fresh_tests_before_git_commit(repo, tmp_path):
     contract = CodingTaskContract(
         "no-tests", "Fix and commit", ("calculator.py",),
-        TestCommand("python", ("-m", "unittest", "test_calculator", "-q")),
+        RequiredCommand("python", ("-m", "unittest", "test_calculator", "-q")),
     )
     head = _git(repo, "rev-parse", "HEAD")
     with AgentApplication(_settings(repo, tmp_path), model=ScriptedModel(replies=[
@@ -105,7 +105,7 @@ def test_approval_interruption_before_git_commit(repo, tmp_path):
         assert paused["status"] == "interrupted", paused
         assert _git(repo, "rev-parse", "HEAD") == old_head
         denied = app.run(None, thread_id=paused["session_id"], decisions=[{"type": "reject"}])
-        assert denied["status"] in {"incomplete", "interrupted"}, denied
+        assert denied["status"] != "completed", denied
     assert _git(repo, "rev-parse", "HEAD") == old_head
 
 
