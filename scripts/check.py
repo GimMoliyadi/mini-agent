@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 
 from packaging.requirements import Requirement
@@ -121,7 +122,27 @@ def isolated_project(source: Path):
         # 先只删除链接，再清理副本；绝不递归删除共享虚拟环境目标。
         if link is not None and (link.exists() or link.is_symlink()):
             remove_venv_link(link)
-        shutil.rmtree(temporary_root)
+        # Windows Git may leave read-only loose objects and AV scanners can
+        # briefly hold handles after pytest's temporary repositories exit.
+        # Retry only our canonical mkdtemp directory, never the source tree.
+        for attempt in range(20):
+            try:
+                def on_remove_error(operation, path, exc_info):
+                    error = exc_info[1]
+                    target = Path(path)
+                    if os.name != "nt" or not isinstance(error, PermissionError):
+                        raise error
+                    if is_link(target) or not target.absolute().is_relative_to(temporary_root):
+                        raise PermissionError("拒绝修改临时目录之外的路径权限") from error
+                    target.chmod(stat.S_IWRITE | stat.S_IREAD)
+                    operation(path)
+
+                shutil.rmtree(temporary_root, onerror=on_remove_error)
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 19:
+                    raise
+                time.sleep(0.25)
 
 
 def stop_check(process: subprocess.Popen, root: Path, environment: dict[str, str]) -> None:
