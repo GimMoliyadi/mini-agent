@@ -49,4 +49,3 @@ def test_checkpoint_store_rejects_private_root_junction(tmp_path: Path) -> None:
     finally:
         if private_root.exists():
             private_root.rmdir()
-

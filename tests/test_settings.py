@@ -29,4 +29,3 @@ def test_non_finite_timeout_is_rejected(tmp_path: Path, field: str) -> None:
 
     with pytest.raises(ValueError, match="有限的正数"):
         Settings(workspace=workspace, state_dir=tmp_path / "state", **{field: math.nan})
-
