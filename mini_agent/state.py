@@ -10,6 +10,7 @@ class TaskState(AgentState):
     contract: dict | None
     initial_snapshot: dict[str, str]
     task_start: int
+    plan: NotRequired[dict | None]
     preconditions: NotRequired[dict]
     verification: NotRequired[dict | None]
     status: NotRequired[str]

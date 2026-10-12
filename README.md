@@ -119,6 +119,21 @@ flowchart LR
 `mutation_paths` 由 `BoundaryMiddleware` 用于审批、contract 路径检查和前置条件
 校验。
 
+## Checkpoint 任务计划管理
+
+复杂开发任务可调用模型可见工具 `set_task_plan(steps, reason)`、
+`update_task_step(step_id, status, note)` 与 `get_task_plan()`。
+
+- 计划包含 2–12 个有序步骤，支持 `pending → in_progress → completed`，
+  以及 `blocked → pending` 恢复；修订计划需提供原因。
+- 计划直接写入当前 LangGraph `TaskState`/SQLite checkpoint，
+  不新增独立 JSON 存储。切换到新任务时清空旧计划，同一会话中断恢复时读取原计划。
+- `task` JSON 响应及 `session_info` 增加 `plan` 字段，包含
+  `revision`、步骤状态、`completed`、`total`。计划只属于当前任务；
+  工具修改的是任务状态，不代表对文件系统的修改或 Coding Contract 验收。
+- 同批工具调用最多更新一次计划，避免多个并发工具写同一个状态键。
+  计划进度是执行过程记录，是否真正完成仍依靠原有工具、审批与测试验收。
+
 ## 开发任务能力
 
 原有的文件读取、全文搜索、补丁修改和测试执行之外，`run_command` 现在支持：

@@ -124,6 +124,22 @@ Contract 的最终工作区快照会检查命令造成的额外文件变化。
 `mini_agent.tools.filesystem` 和 `mini_agent.tools.command`，不由 LangChain
 middleware 代替。应用层策略是工作区边界，不是操作系统隔离。
 
+## 基于 LangGraph Checkpoint 的任务计划
+
+`mini_agent.planning` 在原 `create_agent` 中注册
+`set_task_plan`、`update_task_step`、`get_task_plan`。
+LangChain `ToolRuntime` 隐式注入当前 `TaskState` 和 tool_call_id；
+计划修改返回 `Command(update={plan, messages})`，带关联
+`ToolMessage`，由 LangGraph checkpoint 保存。没有额外的规划状态数据库。
+切换新任务时重置 `plan`；新进程恢复旧 thread 时仍能读取计划。
+
+状态机限定计划步骤数量、状态转换及前置顺序。计划重排必须说明原因，
+每次更新只写当前任务状态，不进行工作区文件操作，因此工具策略标记
+`risk=read`、`mutation=False`。它们仍通过现有 BoundaryMiddleware，
+批次中拒绝两个及以上计划写入，避免同一 graph step 并发写计划状态。
+对外 `result.plan` 和 `session_info.plan` 仅输出脱敏摘要，
+Plan 不是 Coding Contract 的测试结果或替代验收证明。
+
 ## 上下文、资源额度与验收
 
 `ContextMiddleware` 只改变送给模型的消息视图：工具文本超过上限时截断并清除
