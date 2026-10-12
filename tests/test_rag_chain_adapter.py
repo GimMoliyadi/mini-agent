@@ -1,7 +1,6 @@
 """Offline tests for the read-only RAG-chain HTTP tool."""
 from __future__ import annotations
 
-import json
 import unittest
 from unittest.mock import patch
 
