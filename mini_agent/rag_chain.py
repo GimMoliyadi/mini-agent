@@ -103,9 +103,10 @@ def search_rag(
         score_text = f" score={score:.4f}" if isinstance(score, (int, float)) and not isinstance(score, bool) else ""
         sections.append(f"[{index}] {title} / {heading}{score_text}\n来源：{path}\n原文：{body}")
     output = "\n\n".join(sections)
-    if len(output) > MAX_RESULT_CHARS:
+    truncated = len(output) > MAX_RESULT_CHARS
+    if truncated:
         output = output[:MAX_RESULT_CHARS] + "\n[输出已截断，请缩小 top_k 或细化查询]"
-    return ToolResult(redact_text(output), metadata={"source_count": len(hits), "truncated": len(output) > MAX_RESULT_CHARS})
+    return ToolResult(redact_text(output), metadata={"source_count": len(hits), "truncated": truncated})
 
 
 def build_rag_tool(base_url: str, *, timeout: float = 20.0) -> StructuredTool:
