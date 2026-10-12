@@ -22,7 +22,7 @@ MAX_TITLE = 140
 MAX_NOTE = 400
 
 
-def _current(runtime: ToolRuntime[TaskState]) -> dict[str, Any] | None:
+def _current(runtime: ToolRuntime[Any, TaskState]) -> dict[str, Any] | None:
     """Return a detached view; never mutate checkpoint state in place."""
     value = runtime.state.get("plan")
     return dict(value) if isinstance(value, dict) else None
@@ -50,8 +50,10 @@ def plan_summary(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _reply(name: str, runtime: ToolRuntime[TaskState], plan: dict[str, Any]) -> Command:
+def _reply(name: str, runtime: ToolRuntime[Any, TaskState], plan: dict[str, Any]) -> Command:
     """A Command must include its matching ToolMessage for graph invariants."""
+    if runtime.tool_call_id is None:
+        raise ValueError("计划操作需要明确的 tool_call_id")
     return Command(update={
         "plan": plan,
         "messages": [ToolMessage(
@@ -63,7 +65,7 @@ def _reply(name: str, runtime: ToolRuntime[TaskState], plan: dict[str, Any]) -> 
 
 
 @tool
-def set_task_plan(steps: list[str], runtime: ToolRuntime[TaskState], reason: str = "") -> Command:
+def set_task_plan(steps: list[str], runtime: ToolRuntime[Any, TaskState], reason: str = "") -> Command:
     """Create/revise a bounded ordered development plan in the current task checkpoint.
 
     Use for substantial multi-step work, not trivial requests. When revising an
@@ -98,7 +100,7 @@ def set_task_plan(steps: list[str], runtime: ToolRuntime[TaskState], reason: str
 def update_task_step(
     step_id: int,
     status: Literal["pending", "in_progress", "completed", "blocked"],
-    runtime: ToolRuntime[TaskState],
+    runtime: ToolRuntime[Any, TaskState],
     note: str = "",
 ) -> Command:
     """Mark progress in a checkpointed development plan; explain blockers/retries.
@@ -141,7 +143,7 @@ def update_task_step(
 
 
 @tool
-def get_task_plan(runtime: ToolRuntime[TaskState]) -> str:
+def get_task_plan(runtime: ToolRuntime[Any, TaskState]) -> str:
     """Read current development plan, progress, blockers and revision (no side effects)."""
     return json.dumps(plan_summary(_current(runtime)), ensure_ascii=False)
 
