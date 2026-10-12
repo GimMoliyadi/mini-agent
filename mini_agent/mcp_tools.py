@@ -93,7 +93,8 @@ class MCPToolBridge:
     def _serve(self) -> None:
         assert self.loop is not None
         asyncio.set_event_loop(self.loop)
-        self.started.set()
+        # Signal readiness from the running loop, not before run_forever().
+        self.loop.call_soon(self.started.set)
         try:
             self.loop.run_forever()
         finally:
