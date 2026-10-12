@@ -52,7 +52,8 @@ class RagChainAdapterTests(unittest.TestCase):
         self.assertEqual(requests[0].url.params["k"], "3")
 
     def test_empty_result_does_not_fabricate_knowledge(self):
-        handler = lambda _: httpx.Response(200, json={"results": []})
+        def handler(_request):
+            return httpx.Response(200, json={"results": []})
         result = search_rag("missing", base_url="http://localhost:8000",
                             client_factory=fake_client(handler))
         self.assertEqual(result.status, "success")
