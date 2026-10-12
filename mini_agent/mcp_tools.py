@@ -12,13 +12,12 @@ import json
 from pathlib import Path
 import re
 from threading import Event, Thread
-from typing import Any
+from uuid import uuid4
 from urllib.parse import urlsplit
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
-from .result import ToolResult
 from .sandbox import redact_text
 
 _NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,39}$")
@@ -138,7 +137,10 @@ class MCPToolBridge:
                 def handler_factory(remote_tool, remote_server, remote_name):
                     def call(**kwargs):
                         try:
-                            value = self._submit(remote_tool.ainvoke(kwargs))
+                            value = self._submit(remote_tool.ainvoke({
+                                "type": "tool_call", "name": remote_tool.name,
+                                "args": kwargs, "id": uuid4().hex,
+                            }))
                             failed = isinstance(value, ToolMessage) and value.status == "error"
                             body = value.content if isinstance(value, ToolMessage) else value
                             msg = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, default=str)
