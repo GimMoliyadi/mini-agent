@@ -79,7 +79,7 @@ class AgentApplication:
                     for tool in tools if (tool.metadata or {}).get("risk", "execute") != "read"
                 }))
             middleware.extend([
-                boundary, ContextMiddleware(self.settings.context_tokens, request_timeout=self.settings.request_timeout),
+                boundary, ContextMiddleware(self.settings.context_tokens, events=self.events, request_timeout=self.settings.request_timeout),
                 VerificationMiddleware(self.settings, self.events),
                 ModelCallLimitMiddleware(run_limit=self.settings.max_model_calls, exit_behavior="error"),
             ])
@@ -109,6 +109,7 @@ class AgentApplication:
         config = self.config(thread_id)
         saved = self.graph.get_state(config)
         state = saved.values
+        task_id = state.get("task_id")
         if state and state.get("workspace") != str(self.settings.workspace):
             raise PermissionError("会话绑定到其他工作目录；请使用原目录恢复")
         if task is not None:
@@ -139,7 +140,7 @@ class AgentApplication:
             budget = RunBudget(environ={**os.environ, **self.settings.budget_options})
             with budget_context(budget):
                 self.graph.invoke(payload, config=config, durability="sync")
-            self.events.emit("budget", **budget.snapshot())
+            self.events.emit("budget", task_id=task_id, **budget.snapshot())
         except KeyboardInterrupt:
             saved = self.graph.get_state(config)
             result = self.result(thread_id, saved.values, saved)
@@ -161,12 +162,14 @@ class AgentApplication:
                        if message.type == "ai" and not getattr(message, "tool_calls", None)), None)
         if isinstance(answer, list):
             answer = "\n".join(block.get("text", "") for block in answer if isinstance(block, dict))
+        task_id = state.get("task_id")
         return {
             "session_id": thread_id, "task_id": state.get("task_id"),
             "status": "interrupted" if snapshot.next else state.get("status", "incomplete"),
             "answer": redact_text(answer) if answer else None,
             "verification": state.get("verification"), "interrupts": interrupts,
-            "pending_nodes": list(snapshot.next), "trace": list(self.events.events), "error": None,
+            "pending_nodes": list(snapshot.next),
+            "trace": [event for event in self.events.events if event.get("task_id") == task_id], "error": None,
         }
 
     def session_info(self, thread_id: str) -> dict:

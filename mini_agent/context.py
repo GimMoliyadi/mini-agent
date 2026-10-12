@@ -1,16 +1,18 @@
 """Model-only context projection; checkpoints retain full messages and artifacts."""
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import ToolMessage, trim_messages, convert_to_openai_messages
+from langchain_core.messages import SystemMessage, ToolMessage, trim_messages, convert_to_openai_messages
 from types import SimpleNamespace
 from .runtime_guards import get_current_budget
+from .observability import Events
 
 
 class ContextMiddleware(AgentMiddleware):
-    def __init__(self, max_tokens: int, tool_chars: int = 4000, *, request_timeout: float = 120):
+    def __init__(self, max_tokens: int, tool_chars: int = 4000, *, events: Events, request_timeout: float = 120):
         self.max_tokens = max_tokens
         self.tool_chars = tool_chars
         self.request_timeout = request_timeout
+        self.events = events
 
     def wrap_model_call(self, request, handler):
         projected = []
@@ -34,11 +36,22 @@ class ContextMiddleware(AgentMiddleware):
         messages = [*older, *active]
         budget = get_current_budget()
         model_settings = dict(request.model_settings)
+        system_message = request.system_message
         if budget is not None:
+            guidance = f"本轮最多调用 {budget.max_batch_tool_calls} 个工具。有依赖的操作必须等待前一步工具返回结果。"
+            content = system_message.content if system_message is not None else ""
+            if isinstance(content, str):
+                content = content + "\n" + guidance
+            else:
+                content = [*content, {"type": "text", "text": guidance}]
+            system_message = SystemMessage(content=content)
             limits = budget.before_model_request(convert_to_openai_messages(messages))
             limits["timeout"] = min(limits["timeout"], self.request_timeout)
             model_settings.update(limits)
-        response = handler(request.override(messages=messages, model_settings=model_settings))
+        response = handler(request.override(messages=messages, model_settings=model_settings, system_message=system_message))
+        # Count real responses here; resuming an after_model node must not
+        # charge the same paid response a second time.
+        self.events.emit("model", task_id=request.state.get("task_id"), usage=response.result[0].usage_metadata)
         if budget is not None:
             usage = response.result[0].usage_metadata or {}
             budget.record_usage(SimpleNamespace(

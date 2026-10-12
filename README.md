@@ -119,7 +119,7 @@ flowchart LR
 `mutation_paths` 由 `BoundaryMiddleware` 用于审批、contract 路径检查和前置条件
 校验。
 
-## 开发任务能力（下一轮迭代）
+## 开发任务能力
 
 原有的文件读取、全文搜索、补丁修改和测试执行之外，`run_command` 现在支持：
 `python -m pytest/unittest/ruff/mypy/compileall/build`、工作区内 `python path/to/script.py`
@@ -134,7 +134,7 @@ flowchart LR
 `inspect_python_symbols(path, query)` 通过 Python AST 定位类、函数、方法和行号，
 不执行被分析代码。两者都限制扫描范围和结果长度，避免把整个项目直接塞进模型上下文。
 
-## 知识库和 MCP 外部工具（可选，待 Codex 验收）
+## 知识库和 MCP 外部工具（可选）
 
 本分支支持在原 LangChain `create_agent` 中按需注册两类外部工具：
 
@@ -149,8 +149,10 @@ flowchart LR
 默认需要执行审批；外部 MCP Server 不会自动继承工作区沙盒权限。
 详细安装、示例配置和数据隐私边界见 [集成说明](docs/integrations.md)。
 
-**本轮只提交功能代码与测试，尚未完成 Codex 独立 QA 和真实 MCP/RAG 联调。**
-对应 [Codex 验收清单](docs/CODEX_MCP_RAG_QA.md)。
+真实 MCP stdio/HTTP、本地 RAG HTTP 和真实模型协作已完成独立验收。
+模型在临时工作区完成仓库分析、Bug 修复、RAG/MCP 辅助开发和跨应用恢复四项任务。
+测试范围、首次失败记录、运行数据和可复现步骤见
+[2026-10-12 验收报告](docs/evaluation/MCP_RAG_QA_20261012.md)。
 
 ## 状态、恢复与副作用边界
 
@@ -188,8 +190,8 @@ SQLite saver 保存图节点状态和写入记录，因而可以在 HTTP 错误�
 - 当前没有公开的异步/`ainvoke` 或 streaming API。`AgentApplication` 是同步
   API seam；需要实时 UI 时先消费 JSON 结果和 `interrupts`，不要猜测内部 graph
   节点。
-- memory、web browsing、multi-agent 和长期 Store 尚未实现。RAG/MCP 为本分支
-  新增的可选适配器，尚待 Codex 真实链路验收。Checkpoint 不是长期知识库。
+- memory、web browsing、multi-agent 和长期 Store 尚未实现。RAG/MCP 是已验证的
+  可选外部适配器；外部知识库与 Checkpoint 分别保存。
 
 ## 验证
 

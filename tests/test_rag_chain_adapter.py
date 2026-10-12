@@ -1,6 +1,7 @@
 """Offline tests for the read-only RAG-chain HTTP tool."""
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +19,17 @@ def fake_client(handler):
 
 
 class RagChainAdapterTests(unittest.TestCase):
+    def test_long_known_secret_is_redacted_before_field_truncation(self):
+        secret = "opaque-" + "a" * 1500
+        def handler(_request):
+            return httpx.Response(200, json={"results": [{"title": secret, "file_path": secret,
+                                                        "content": secret}]})
+        with patch.dict(os.environ, {"EXAMPLE_API_KEY": secret}):
+            result = search_rag("fixture", base_url="http://localhost:8000",
+                                client_factory=fake_client(handler))
+        self.assertNotIn("opaque-", result.text)
+        self.assertEqual(result.metadata["sources"][0]["title"], "[REDACTED]")
+
     def test_local_url_and_remote_https_rules(self):
         self.assertEqual(validate_rag_url("http://127.0.0.1:8000/"), "http://127.0.0.1:8000")
         self.assertEqual(validate_rag_url("https://rag.example.org"), "https://rag.example.org")
@@ -34,8 +46,10 @@ class RagChainAdapterTests(unittest.TestCase):
             return httpx.Response(200, json={
                 "query": "agent", "count": 1,
                 "results": [{
-                    "score": 0.932, "title": "Agent Notes",
+                    "rank": 2, "score": 0.932, "title": "Agent Notes",
                     "file_path": "notes/agent.md", "heading": "Planning",
+                    "source": "temporary-fixture",
+                    "chunk_index": 7,
                     "content": "Use evidence before choosing an action.",
                 }],
             })
@@ -44,8 +58,18 @@ class RagChainAdapterTests(unittest.TestCase):
                             client_factory=fake_client(handler))
         self.assertEqual(result.status, "success")
         self.assertIn("notes/agent.md", result.text)
+        self.assertIn("来源：temporary-fixture", result.text)
         self.assertIn("Use evidence", result.text)
         self.assertEqual(result.metadata["source_count"], 1)
+        self.assertEqual(result.metadata["sources"], [{
+            "rank": 2,
+            "score": 0.932,
+            "title": "Agent Notes",
+            "file_path": "notes/agent.md",
+            "heading": "Planning",
+            "source": "temporary-fixture",
+            "chunk_index": 7,
+        }])
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0].url.path, "/api/search")
         self.assertEqual(requests[0].url.params["q"], "agent")
@@ -73,6 +97,41 @@ class RagChainAdapterTests(unittest.TestCase):
                                     client_factory=fake_client(handler))
                 self.assertEqual(result.status, "tool_error")
                 self.assertEqual(result.code, code)
+
+    def test_invalid_hit_without_text_is_not_reported_as_success(self):
+        def handler(_request):
+            return httpx.Response(200, json={"results": [{"title": "empty"}]})
+
+        result = search_rag("check", base_url="http://localhost:8000",
+                            client_factory=fake_client(handler))
+        self.assertEqual(result.status, "tool_error")
+        self.assertEqual(result.code, "rag_invalid_response")
+
+    def test_timeout_must_be_finite_and_positive(self):
+        for timeout in (0, -1, float("nan"), float("inf"), float("-inf"), True, "slow"):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                search_rag("check", base_url="http://localhost:8000", timeout=timeout)
+
+    def test_provenance_metadata_is_redacted_before_artifact_storage(self):
+        def handler(_request):
+            return httpx.Response(200, json={
+                "results": [{
+                    "title": "secret-token-value title",
+                    "file_path": "docs/secret-token-value.md",
+                    "source": "secret-token-value source",
+                    "heading": "secret-token-value heading",
+                    "content": "safe content",
+                }],
+            })
+
+        with patch.dict(os.environ, {"RAG_TEST_TOKEN": "secret-token-value"}):
+            result = search_rag("check", base_url="http://localhost:8000",
+                                client_factory=fake_client(handler))
+        source = result.metadata["sources"][0]
+        self.assertEqual(source["title"], "[REDACTED] title")
+        self.assertEqual(source["file_path"], "docs/[REDACTED].md")
+        self.assertEqual(source["source"], "[REDACTED] source")
+        self.assertEqual(source["heading"], "[REDACTED] heading")
 
     def test_parameters_are_bounded(self):
         with self.assertRaises(ValueError):

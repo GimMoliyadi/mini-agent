@@ -1,6 +1,7 @@
 """Validated application settings; secrets are never included in repr."""
 
 from dataclasses import dataclass, field
+import math
 import os
 from pathlib import Path
 
@@ -28,13 +29,25 @@ class Settings:
     def __post_init__(self) -> None:
         object.__setattr__(self, "workspace", self.workspace.expanduser().resolve())
         object.__setattr__(self, "state_dir", self.state_dir.expanduser().resolve())
+        if self.mcp_config_path is not None:
+            config_path = Path(self.mcp_config_path).expanduser()
+            if not config_path.is_absolute():
+                config_path = self.state_dir / config_path
+            object.__setattr__(self, "mcp_config_path", config_path)
         if not self.workspace.is_dir():
             raise NotADirectoryError(f"工作目录不存在：{self.workspace}")
         if self.approval_mode not in {"ASK", "ALLOW", "DENY"}:
             raise ValueError("TOOL_APPROVAL_MODE 必须是 ASK、ALLOW 或 DENY")
-        if self.rag_timeout <= 0 or self.mcp_timeout <= 0:
-            raise ValueError("RAG/MCP 工具超时必须为正数")
-        if self.max_model_calls < 1 or self.context_tokens < 256 or self.request_timeout <= 0:
+        for name in ("request_timeout", "rag_timeout", "mcp_timeout"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} 必须是有限的正数")
+        if self.max_model_calls < 1 or self.context_tokens < 256:
             raise ValueError("模型轮数、上下文和请求超时必须为正数（上下文至少 256）")
 
     @classmethod
@@ -46,8 +59,6 @@ class Settings:
         trace = values.get("MINI_AGENT_TRACE_JSONL")
         mcp_config = values.get("MINI_AGENT_MCP_CONFIG")
         mcp_path = Path(mcp_config).expanduser() if mcp_config else None
-        if mcp_path is not None and not mcp_path.is_absolute():
-            mcp_path = state_dir / mcp_path
         return cls(
             workspace=workspace, state_dir=state_dir,
             api_key=values.get("OPENAI_API_KEY") or "",

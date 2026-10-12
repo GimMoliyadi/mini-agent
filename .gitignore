@@ -45,6 +45,7 @@ sessions/
 .mini-agent/
 .mini-agent-state/
 .state/
+/.tmp/
 /changes/
 .changes/
 .mini_agent/

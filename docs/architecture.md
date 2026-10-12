@@ -12,7 +12,8 @@ LangChain/LangGraph，把工作区安全、命令策略、审批和 Coding Contr
 1. `mini_agent.persistence.checkpoint_store` 打开
    `SqliteSaver`，数据库位于 `{state_dir}/.mini-agent/checkpoints/v2.sqlite3`。
 2. `mini_agent.tools.registry.build_tools(workspace)` 创建绑定到当前工作区的
-   LangChain `StructuredTool` 列表，并拒绝重复工具名。
+   LangChain `StructuredTool` 列表。`AgentApplication` 按配置加入 RAG、MCP 和
+   `extra_tools`，在编译 graph 前统一拒绝重复工具名。
 3. 根据 `TOOL_APPROVAL_MODE` 加入 `HumanInTheLoopMiddleware`（`ASK` 时）、
    `BoundaryMiddleware`、`ContextMiddleware`、`VerificationMiddleware` 和
    `ModelCallLimitMiddleware`。
@@ -34,6 +35,9 @@ flowchart TD
     G --> V[VerificationMiddleware]
     G --> T[StructuredTool registry]
     T --> P[filesystem / command policy / sandbox]
+    T --> R[RAG-chain GET /api/search]
+    T --> MC[MCPToolBridge / upstream adapters]
+    MC --> MS[MCP stdio / Streamable HTTP servers]
     P --> W[trusted workspace]
     G --> DB[SqliteSaver]
 ```
@@ -78,7 +82,8 @@ HTTP 错误、模型限额或进程中断会返回 `failed`/`cancelled`，同时
 
 ## 工具注入与结构化结果
 
-`build_tools` 是唯一的模型可见工具注册表。每个工具由 Pydantic 输入模型描述，
+`build_tools` 构造内建工具；应用汇总后的工具列表是模型可见能力的唯一来源。
+内建/RAG 工具由 Pydantic 输入模型描述，MCP 保留上游 JSON Schema。
 工作区通过闭包/partial 注入，模型不会获得 `workspace` 参数。当前工具集合：
 
 | 工具 | 风险 | 变更 | 作用 |
@@ -86,12 +91,16 @@ HTTP 错误、模型限额或进程中断会返回 `failed`/`cancelled`，同时
 | `list_files` | read | 否 | 列出工作区内一层目录 |
 | `read_file` | read | 否 | 读取有界 UTF-8 文本 |
 | `search_text` | read | 否 | 递归搜索固定字符串 |
+| `find_files` | read | 否 | 按模式递归定位文件 |
+| `inspect_python_symbols` | read | 否 | AST 定位函数、类、方法和行号 |
 | `write_file` | write | 是 | 原子写入完整文件 |
 | `apply_patch` | write | 是 | 唯一精确替换文本 |
 | `rename_file` | write | 是 | 不覆盖目标的重命名 |
 | `run_command` | execute | 否* | 运行受控的无 shell 命令 |
 | `inspect_project` | read | 否 | 读取项目白名单源码 |
 | `inspect_capabilities` | read | 否 | 返回工具和 runtime 能力元数据 |
+| `search_knowledge` | read | 否 | 可选外部 RAG 搜索，保留出处与 chunk/rank |
+| `mcp_<server>_<tool>` | 配置决定 | 配置决定 | 可选 MCP 工具，显式允许列表 |
 
 `*` `run_command` 的 registry 元数据不是文件 mutation；它仍可能通过受控测试产
 生副作用，风险级别为 `execute`，并受命令白名单、cwd、输出和超时限制。Coding
@@ -236,7 +245,7 @@ with AgentApplication(settings) as app:
 [`docs/framework-references.md`](framework-references.md)。
 
 
-## 可选外部 Tool 插件层（本分支，待 Codex 验收）
+## 可选外部 Tool 插件层
 
 - mini_agent.rag_chain.build_rag_tool：绑定配置的 RAG_CHAIN_URL，向已有
   rag-chain GET /api/search 只读检索，保留原文和来源，不启动新 RAG Runtime。
@@ -249,5 +258,16 @@ with AgentApplication(settings) as app:
   无本地 mutation_paths 的远端写工具无法通过 Coding Contract 限制。
 - 远端 MCP Server 和 RAG 索引都不与 SQLite checkpoint 合并。
 
-本段描述新增实现结构，尚未进行完整安装、真实 MCP 服务以及真实 Obsidian
-索引的独立验收。见 docs/CODEX_MCP_RAG_QA.md。
+MCP 使用上游默认的每次调用独立会话：发现和调用分别建立、关闭连接。
+`MCPToolBridge` 持有的是后台事件循环，不承诺远端会话中的状态跨工具调用保留。
+超时会取消本次调用；关闭会取消并等待剩余任务、异步生成器和执行器清理，
+再关闭事件循环。远端副作用超时不会自动重放。
+
+RAG 来源的 rank、score、title、file_path、heading、source 和 chunk_index
+同时保存在有界展示文本和 `ToolMessage.artifact.metadata.sources` 中；
+模型上下文裁剪不修改持久化的原始工具结果。MCP 结构化返回值位于
+`artifact.metadata.remote_artifact`，超过上限时明确标记 artifact_truncated。
+脱敏在字段/片段截断之前完成，避免留下已知凭据的部分前缀。
+
+独立服务、真实模型任务、恢复和工程验证记录见
+[本轮验收报告](evaluation/MCP_RAG_QA_20261012.md)。

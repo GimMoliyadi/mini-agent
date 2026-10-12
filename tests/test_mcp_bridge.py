@@ -1,10 +1,12 @@
 """Offline MCP tests: fake async adapter, real sync bridge and tool contracts."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 import sys
 import tempfile
+from threading import Event
 from types import ModuleType
 import unittest
 from unittest.mock import patch
@@ -136,6 +138,61 @@ class MCPBridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "缺少指定工具"):
                 with MCPToolBridge(self.path, timeout=5):
                     pass
+
+    def test_close_cancels_and_drains_inflight_call(self):
+        self.write_config()
+        entered, cleaned = Event(), Event()
+
+        async def pending():
+            entered.set()
+            try:
+                await asyncio.sleep(60)
+            finally:
+                await asyncio.sleep(0.01)
+                cleaned.set()
+
+        with patch.dict(sys.modules, mocked_adapter()):
+            bridge = MCPToolBridge(self.path, timeout=5).__enter__()
+            asyncio.run_coroutine_threadsafe(pending(), bridge.loop)
+            self.assertTrue(entered.wait(2))
+            bridge.close()
+            self.assertTrue(cleaned.is_set())
+            self.assertFalse(bridge.thread.is_alive())
+
+    def test_remote_artifact_is_preserved(self):
+        self.write_config()
+        with patch.dict(sys.modules, mocked_adapter()):
+            with MCPToolBridge(self.path, timeout=5) as bridge:
+                message = ToolMessage(content="sum: 5", tool_call_id="remote",
+                                      artifact={"structured_content": {"sum": 5}})
+                def response(coroutine):
+                    coroutine.close()
+                    return message
+                with patch.object(bridge, "_submit", side_effect=response):
+                    result = bridge.tools[0].invoke({
+                        "type": "tool_call", "name": bridge.tools[0].name,
+                        "args": {"a": 2, "b": 3}, "id": "outer",
+                    })
+                self.assertEqual(result.artifact["metadata"]["remote_artifact"], message.artifact)
+
+    def test_credential_artifact_is_redacted_without_corrupting_result(self):
+        self.write_config()
+        message = ToolMessage(content="safe result", tool_call_id="remote", artifact={
+            "structured_content": {"api_key": "synthetic-credential", "sum": 5},
+        })
+        def response(coroutine):
+            coroutine.close()
+            return message
+        with patch.dict(sys.modules, mocked_adapter()):
+            with MCPToolBridge(self.path, timeout=5) as bridge:
+                with patch.object(bridge, "_submit", side_effect=response):
+                    result = bridge.tools[0].invoke({
+                        "type": "tool_call", "name": bridge.tools[0].name,
+                        "args": {"a": 2, "b": 3}, "id": "outer",
+                    })
+        self.assertEqual(result.artifact["status"], "success")
+        data = result.artifact["metadata"]["remote_artifact"]["structured_content"]
+        self.assertEqual(data, {"api_key": "[REDACTED]", "sum": 5})
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 """Independent verifier regressions, without an agent or provider."""
 
 import pytest
+from langchain_core.messages import ToolMessage
 
+from mini_agent.verification import verification_facts
 from mini_agent.verifier import (
     CodingTaskContract, TestCommand as RequiredCommand, TaskState, TaskStatus,
     parse_test_result, snapshot_workspace, verify_contract,
@@ -50,6 +52,31 @@ def test_no_authorized_runner_is_explicitly_unverified(tmp_path):
     result = verify_contract(contract, tmp_path, baseline, agent_final_answer_present=True)
     assert not result["accepted"]
     assert result["final_test_status"] == "UNKNOWN"
+
+
+def test_failed_required_test_tool_message_is_not_fresh_evidence(tmp_path):
+    contract, baseline = fixture(tmp_path)
+    message = ToolMessage(
+        content=(
+            "Exit code: 0\nTimed out: false\nOutput limit exceeded: false\n"
+            "STDOUT:\nRan 1 test in 0.001s\n\nOK\nSTDERR:\n<empty>"
+        ),
+        name="run_command",
+        tool_call_id="test-call",
+        status="error",
+        artifact={"command": contract.test_command.as_dict(), "snapshot": baseline},
+    )
+
+    facts = verification_facts({
+        "initial_snapshot": baseline,
+        "contract": contract.as_dict(),
+        "task_start": 0,
+        "messages": [message],
+    })
+
+    assert facts.last_test_status == "UNKNOWN"
+    assert facts.last_successful_exact_required_test_seq is None
+    assert facts.verified_snapshot is None
 
 
 def test_snapshots_ignore_runtime_and_dependency_directories(tmp_path):

@@ -193,3 +193,18 @@ run = agent.invoke(resume, config, version="v2")
 6. `interrupt()` 的 payload 必须可序列化，且节点恢复会从头执行；任何 interrupt 前非幂等写操作都可能重复。
 7. 同步和异步入口不能混用：同步 `SqliteSaver` 不支持 async saver 方法，异步应用使用 `AsyncSqliteSaver`。
 8. `langchain-openai 1.7.0` 的依赖要求 OpenAI SDK `>=2.45,<4`；项目的 OpenAI-compatible `base_url`、API key 和 model 仍应由统一配置注入，不能写死。
+
+## 2026-10-12 MCP 验收补充
+
+本轮实际安装、查看源码并联调 `langchain-mcp-adapters 0.3.2`、MCP Python SDK
+`1.30.0`。上游 `MultiServerMCPClient.get_tools(server_name=...)` 返回标准
+LangChain 异步工具，保留服务器输入 JSON Schema；`content_and_artifact` 保存
+`structuredContent`，`isError` 转为错误 ToolMessage。底层新会话由 SDK 管理，
+同步 CLI 只负责在受控事件循环中等待结果和清理取消任务。
+
+官方 [MCP 指南](https://docs.langchain.com/oss/python/langchain/mcp) 已迁至
+`langchain.mcp.MCPAdapter`（依赖 FastMCP），并明确标记该接口为 beta；
+[旧 adapters 仓库](https://github.com/langchain-ai/langchain-mcp-adapters)
+已归档。本轮选择固定已验证的稳定版本，完成协议、错误、审批和生命周期回归，
+避免把适配器迁移与当前验收混合。下一轮应建立等价协议用例后受控迁移到新接口，
+不能长期依赖归档项目而不维护升级路径。

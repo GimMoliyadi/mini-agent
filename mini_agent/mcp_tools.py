@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import TimeoutError as FutureTimeout
 import json
+import math
 from pathlib import Path
 import re
 from threading import Event, Thread
+from typing import Any
 from uuid import uuid4
 from urllib.parse import urlsplit
 
@@ -23,6 +25,24 @@ from .sandbox import redact_text
 _NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,39}$")
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_MCP_RESULT_CHARS = 4_000
+
+
+def _redact_artifact(value: Any) -> Any:
+    """Redact values before serialization so credential text cannot break JSON."""
+    if isinstance(value, dict):
+        return {
+            redact_text(str(key)): (
+                "[REDACTED]" if redact_text(f"{key}: marker") != f"{key}: marker"
+                else _redact_artifact(item)
+            ) for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_artifact(item) for item in value]
+    if isinstance(value, str):
+        return redact_text(value)
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    return redact_text(str(value))
 
 
 def read_mcp_configuration(path: Path) -> tuple[dict, dict[str, set[str]], dict[str, set[str]]]:
@@ -54,6 +74,8 @@ def read_mcp_configuration(path: Path) -> tuple[dict, dict[str, set[str]], dict[
             if (parsed.scheme not in {"http", "https"} or not parsed.hostname
                     or parsed.username or parsed.password or parsed.fragment):
                 raise ValueError("MCP HTTP URL 不允许凭据和 fragment")
+            if parsed.port is not None and not 0 < parsed.port <= 65535:
+                raise ValueError("MCP HTTP URL 端口无效")
             if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
                 raise ValueError("外部 MCP HTTP 服务必须使用 HTTPS")
     allowed = data.get("allowed_tools", {})
@@ -81,7 +103,7 @@ class MCPToolBridge:
     """Session-scoped, bounded sync bridge to official async LangChain adapters."""
 
     def __init__(self, path: Path, *, timeout: float = 45.0):
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("MCP timeout 必须为正数")
         self.path = Path(path)
         self.timeout = timeout
@@ -98,7 +120,15 @@ class MCPToolBridge:
         try:
             self.loop.run_forever()
         finally:
+            # Let adapter transports finish their cancellation/stdio cleanup
+            # before closing the loop; stopping alone abandons pending tasks.
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            self.loop.run_until_complete(self.loop.shutdown_default_executor())
             self.loop.close()
             asyncio.set_event_loop(None)
 
@@ -144,18 +174,36 @@ class MCPToolBridge:
                             }))
                             failed = isinstance(value, ToolMessage) and value.status == "error"
                             body = value.content if isinstance(value, ToolMessage) else value
-                            msg = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, default=str)
+                            if isinstance(body, list) and all(
+                                isinstance(block, dict) and block.get("type") == "text" for block in body
+                            ):
+                                msg = "\n".join(str(block.get("text", "")) for block in body if isinstance(block, dict))
+                            else:
+                                msg = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, default=str)
                             msg = redact_text(msg)
                             if len(msg) > MAX_MCP_RESULT_CHARS:
                                 msg = msg[:MAX_MCP_RESULT_CHARS] + "\n[MCP 工具结果已截断]"
+                            metadata: dict[str, object] = {"server": remote_server, "remote_tool": remote_name}
+                            if isinstance(value, ToolMessage) and value.artifact is not None:
+                                safe_artifact = _redact_artifact(value.artifact)
+                                artifact = json.dumps(safe_artifact, ensure_ascii=False)
+                                if len(artifact) <= MAX_MCP_RESULT_CHARS:
+                                    metadata["remote_artifact"] = safe_artifact
+                                else:
+                                    metadata["artifact_truncated"] = True
                             return msg, {
                                 "status": "tool_error" if failed else "success",
                                 "code": "mcp_tool_error" if failed else "ok",
-                                "metadata": {"server": remote_server, "remote_tool": remote_name},
+                                "metadata": metadata,
                             }
                         except Exception as exc:
-                            return "MCP 工具调用失败：" + type(exc).__name__, {
-                                "status": "tool_error", "code": "mcp_call_failed", "metadata": {},
+                            # A server error must remain actionable for the model.
+                            # Never replay side effects automatically after a timeout.
+                            detail = redact_text(str(exc))[:MAX_MCP_RESULT_CHARS]
+                            return f"MCP 工具调用失败：{type(exc).__name__}: {detail}", {
+                                "status": "tool_error",
+                                "code": "mcp_timeout" if isinstance(exc, TimeoutError) else "mcp_call_failed",
+                                "metadata": {"server": remote_server, "remote_tool": remote_name},
                             }
                     return call
 
@@ -174,6 +222,9 @@ class MCPToolBridge:
         return registered
 
     def __enter__(self) -> "MCPToolBridge":
+        if self.thread is not None and self.thread.is_alive():
+            raise RuntimeError("MCP bridge 已启动")
+        self.started.clear()
         try:
             servers, allowed, readonly = read_mcp_configuration(self.path)
             self.loop = asyncio.new_event_loop()
@@ -195,4 +246,6 @@ class MCPToolBridge:
             self.loop.call_soon_threadsafe(self.loop.stop)
         if self.thread is not None:
             self.thread.join(timeout=5)
+            if self.thread.is_alive():
+                raise RuntimeError("MCP transport 清理未在 5 秒内结束")
         self.tools = []

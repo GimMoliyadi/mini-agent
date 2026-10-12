@@ -31,9 +31,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install package and development checks
-        run: python -m pip install -c requirements.lock -e ".[dev]" wheel
+        run: python -m pip install -c requirements.lock -e ".[dev,mcp]" wheel
       - name: Offline unit and integration regression
         run: python scripts/check.py
+      - name: Real local MCP protocol integration
+        run: python -m pytest -q tests/test_mcp_integration.py
       - name: Package and CLI smoke checks
         run: python scripts/check.py --packaging-only
       - name: Quick Start through a local HTTP provider

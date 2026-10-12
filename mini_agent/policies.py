@@ -30,7 +30,6 @@ class BoundaryMiddleware(AgentMiddleware):
         budget = get_current_budget()
         if budget is not None:
             budget.validate_batch_size(len(getattr(message, "tool_calls", [])))
-        self.events.emit("model", usage=message.usage_metadata)
         preconditions = {}
         for call in getattr(message, "tool_calls", []):
             if call["name"] in {"write_file", "apply_patch", "rename_file"}:
@@ -110,6 +109,6 @@ class BoundaryMiddleware(AgentMiddleware):
                 name=name, tool_call_id=request.tool_call["id"], status="error",
                 artifact={"status": "policy_rejected" if isinstance(exc, PermissionError) else "tool_error"},
             )
-        self.events.emit("tool", name=name, status=getattr(result, "status", "success"),
+        self.events.emit("tool", task_id=request.state.get("task_id"), name=name, status=getattr(result, "status", "success"),
                          duration=round(perf_counter() - started, 4))
         return result
