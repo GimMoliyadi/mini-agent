@@ -214,6 +214,18 @@ SQLite saver 保存 graph state/checkpoint writes，不保存一个外部系统�
 避免状态文件污染 Coding Contract 的 changed-files 结果，但不意味着状态内容不
 敏感。会话消息可能含文件正文、路径和工具参数，状态目录必须是本机私有位置。
 
+## Git 本地交付工具
+
+`mini_agent.git_workflow.build_git_tools(workspace)` 增加只读
+`git_worktree_review` 与需审批的 `git_commit_files`。它只对与
+workspace 完全同根的本地 Git 仓库工作，使用原有 `run_process`
+进程树/环境/输出保护。后者拒绝已有暂存区内容，通过明确路径进行
+Git add 与本地 commit，禁止自动 push，且禁用 Hooks/GPG。
+Coding Contract 任务在提交前先通过 `verification_facts` 与
+`evaluate_finish_request` 校验指定测试时效与实际更改路径。
+Git 索引和 refs 不在文件 journal 范围内，也无远程 exactly-once 保证。
+需要 push/PR 的工作流应通过另外批准的 GitHub MCP 接入。
+
 ## 同步 API 与扩展点
 
 最小程序化调用：

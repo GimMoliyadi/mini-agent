@@ -169,6 +169,31 @@ flowchart LR
 测试范围、首次失败记录、运行数据和可复现步骤见
 [2026-10-12 验收报告](docs/evaluation/MCP_RAG_QA_20261012.md)。
 
+## Local Git review and delivery
+
+On an existing trusted Git repository whose root is exactly the selected workspace,
+the agent can use `git_worktree_review()` to inspect the current branch,
+working-tree status, and summary statistics for staged/unstaged changes.
+
+The new `git_commit_files(paths, message)` tool creates a **local Git commit only**.
+It works with an exact allowlist of 1–30 relative **file** paths (including tracked deletions).
+The tool rejects ambiguous/sensitive/outside-workspace paths, symbolic links,
+a repository whose root differs from the workspace, and any pre-existing staged
+changes. It never stages unrelated files or silently pushes to remotes.
+A generated commit disables repository hooks and GPG signing, and runs Git
+subprocesses using the existing bounded, no-shell process runner.
+
+Git commits are treated as approval-requiring execution effects
+(`TOOL_APPROVAL_MODE=ASK` by default). In a Coding Contract task,
+the specified paths must exactly match the contract's changed files and
+the required fresh passing test must be in the LangGraph trace **before**
+the commit. The Git index/branch ref are not ordinary workspace-file
+mutations and cannot be undone by the file journal.
+
+Complete remote delivery (push, PR creation and merging) remains a separate,
+explicitly authorized integration via an approved GitHub MCP server or the
+developer's normal Git workflow. No remote-push capability is granted here.
+
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
