@@ -134,6 +134,24 @@ flowchart LR
 `inspect_python_symbols(path, query)` 通过 Python AST 定位类、函数、方法和行号，
 不执行被分析代码。两者都限制扫描范围和结果长度，避免把整个项目直接塞进模型上下文。
 
+## 知识库和 MCP 外部工具（可选，待 Codex 验收）
+
+本分支支持在原 LangChain `create_agent` 中按需注册两类外部工具：
+
+- 配置 `RAG_CHAIN_URL=http://127.0.0.1:8000` 后，新增只读
+  `search_knowledge(query, top_k)`，调用独立 rag-chain 的 `GET /api/search`，
+  返回原文与引用来源，不需要第二次 RAG LLM 调用。
+- 安装 `pip install -e ".[mcp,dev]"` 并配置 `MINI_AGENT_MCP_CONFIG` 后，
+  通过官方 LangChain MCP Adapter 发现显式允许的 MCP 工具；
+  现有同步 CLI 使用独立 asyncio bridge 来调用异步 MCP 工具。
+
+默认两种工具都关闭，不改变既有工具集。未明确标记只读的远端 MCP 工具
+默认需要执行审批；外部 MCP Server 不会自动继承工作区沙盒权限。
+详细安装、示例配置和数据隐私边界见 [集成说明](docs/integrations.md)。
+
+**本轮只提交功能代码与测试，尚未完成 Codex 独立 QA 和真实 MCP/RAG 联调。**
+对应 [Codex 验收清单](docs/CODEX_MCP_RAG_QA.md)。
+
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
@@ -170,8 +188,8 @@ SQLite saver 保存图节点状态和写入记录，因而可以在 HTTP 错误�
 - 当前没有公开的异步/`ainvoke` 或 streaming API。`AgentApplication` 是同步
   API seam；需要实时 UI 时先消费 JSON 结果和 `interrupts`，不要猜测内部 graph
   节点。
-- memory、web browsing、multi-agent、长期 Store 和通用 MCP/RAG 连接尚未并入
-  v2。框架不会把 checkpoint 当长期知识库。
+- memory、web browsing、multi-agent 和长期 Store 尚未实现。RAG/MCP 为本分支
+  新增的可选适配器，尚待 Codex 真实链路验收。Checkpoint 不是长期知识库。
 
 ## 验证
 
@@ -207,9 +225,8 @@ list/search/read/apply/read/final、HTTP 错误后的可恢复 checkpoint，以�
 
 按优先级排列：
 
-1. 增加 MCP tool adapter 和独立的 RAG-chain adapter，把外部工具/检索接到现有
-   `StructuredTool` 与 policy 边界；RAG 数据源和 checkpoint 不合并，检索结果也
-   不直接写入任务状态 schema。
+1. **先完成本分支的 MCP/RAG 验收**：独立运行可选依赖的安装、工具调用、
+   HITL 及检索来源的回归测试；验收通过后再扩展外部业务流程。
 2. 当规划、测试、验收、恢复需要显式分支时，再增加以 `create_agent` 为节点或子图
    的 `StateGraph` workflow；基础工具循环继续由 `create_agent` 托管。
 3. 在同步 API 的状态和错误语义稳定后，再公开 async/streaming seam，并为
