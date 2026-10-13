@@ -24,6 +24,7 @@ from .multi_file import build_multi_file_tools
 from .scaffolding import build_scaffold_tools
 from .fullstack import build_fullstack_tools
 from .fullstack_checks import build_fullstack_check_tools
+from .openapi_contract import build_openapi_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -54,6 +55,9 @@ SYSTEM_PROMPT = (
     "按返回的路径和行号联合修改前后端；静态未匹配只是线索，最终需运行实际后端测试及前端构建。"
     "前后端修改完成后可以使用 run_fullstack_checks 同时获取后端 Python 测试和前端声明脚本的结果；"
     "两端都成功才算联合检查通过，但 Coding Contract 要求的验收命令仍需单独执行。"
+    "若项目已有 FastAPI 导出的 openapi.json，可先 inspect_openapi_contract 检查接口和模型，"
+    "再 generate_openapi_types 使用前端安装的 openapi-typescript 生成类型声明；"
+    "生成后需运行前端 typecheck/build，并检查类型与前后端实际行为。"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
     "依赖缺失则使用 prepare_dev_environment 建立项目环境并安装，"
     "再使用 run_dev_task 执行测试、构建、lint 或已声明的脚本。"
@@ -101,6 +105,7 @@ class AgentApplication:
             tools.extend(build_scaffold_tools(self.settings.workspace))
             tools.extend(build_fullstack_tools(self.settings.workspace))
             tools.extend(build_fullstack_check_tools(self.settings.workspace))
+            tools.extend(build_openapi_tools(self.settings.workspace))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
