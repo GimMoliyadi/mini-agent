@@ -337,6 +337,25 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## 智能测试生成：具体案例 → pytest
+
+新增 `generate_pytest_regressions(source_path, function_name, output_path, cases)`：Agent 先阅读代码及用户需求，设计正常、边界和异常的 **明确预期**，再使用结构化 JSON 案例生成真正可执行的 `pytest.mark.parametrize` 测试文件。生成器不需要重新实现 pytest，不会自己凭空决定函数的正确行为。
+
+```json
+{
+  "source_path": "backend/calculator.py",
+  "function_name": "add",
+  "output_path": "tests/test_add_regression.py",
+  "cases": [
+    {"id": "positive", "args": [2, 3], "expected": 5},
+    {"id": "negative", "args": [-2, 2], "expected": 0},
+    {"id": "invalid-input", "args": ["x", 2], "raises": "TypeError"}
+  ]
+}
+```
+
+当前版本面向同步 Python 顶层函数（JSON 参数与返回值比较，或白名单内的内置异常）。复杂的 async、数据库、副作用测试仍由 Agent 使用原有文件创建/补丁工具编写。不会覆盖已有测试文件，生成后应使用 `run_dev_task(task="test")` 执行。输出仍遵循 Coding Contract、单次审批和文件变更日志。
+
 ## GitHub Issue → Draft PR 开发入口
 
 配置 `MINI_AGENT_GITHUB_REPO` 和 `MINI_AGENT_GITHUB_TOKEN` 后，新增两个只读入口：
