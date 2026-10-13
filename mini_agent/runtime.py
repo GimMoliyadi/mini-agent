@@ -76,6 +76,8 @@ SYSTEM_PROMPT = (
     "该服务器随 AgentApplication 关闭而终止，端口开始监听才表示可访问。"
     "进行本地前端页面调试时可使用 browser_action 在 Playwright 中打开页面、点击、填写、读取 DOM，"
     "再使用 browser_screenshot 将当前页面截图保存到工作区；首次使用需安装可选 browser 依赖。"
+    "页面操作后调用 browser_diagnostics 查看 JavaScript 异常、控制台 error/warning、HTTP 错误及失败请求，"
+    "结合开发服务器 logs 和源码位置修复问题；不要把浏览器事件当作已确定的根因。"
     "若后端 OpenAPI 契约发生变化，使用 inspect_openapi_changes 对比两个 JSON 版本，"
     "定位需同步调整的前端 API 调用及数据模型；仅把静态分析结果视为候选影响范围。"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"

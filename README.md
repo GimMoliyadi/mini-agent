@@ -337,6 +337,16 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## 自动浏览器错误诊断
+
+在 Playwright `browser_action(action="open", url="http://127.0.0.1:5173")` 打开本地页面后，可以执行 `browser_diagnostics(reset=false)`，读取该浏览器页面的最近日志：
+
+- JavaScript 未捕获异常（`javascript_exception`）和控制台 error/warning；
+- 网络层失败（`request_failed`）与 HTTP 4xx/5xx（`http_error`）；
+- 输出请求的方法、URL 路径及状态码，忽略 URL 的 query/hash，不保存请求/响应正文或 headers；返回有界事件历史。
+
+Agent 可按「`dev_server` 启动 → Playwright 点击/填写 → `browser_diagnostics` 查看报错 → `dev_server(action="logs")` 对照后端日志 → 修改代码」循环工作。通过 `browser_diagnostics(reset=true)` 清除本次采集窗口，便于确认某次修复后是否又出现新错误。诊断来自浏览器事件，并不能单独证明报错根因；真实 Chromium 运行验收留待后续阶段。
+
 ## Playwright 本地浏览器操作
 
 可选安装 `pip install -e ".[browser]"` 并执行 `playwright install chromium`。然后在 mini-agent 的同一次运行里使用 `browser_action`：
