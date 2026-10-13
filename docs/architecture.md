@@ -264,6 +264,12 @@ run_dev_task（对 Python/Node 执行受支持的运行、测试、lint、typech
 Python 使用子项目 .venv；Node 使用 package.json/scripts 和 npm/pnpm 锁文件。
 执行工具以 content_and_artifact 返回真实成功/失败状态，供原有失败恢复机制判断。
 只有 Python 子项目真实隔离运行通过 CI，Node 进程测试不接公网而模拟 npm/pnpm。
+## Python 与 JS/TS 跨模块开发能力
+
+mini_agent.tools.module_map.inspect_module_dependencies 使用有界递归扫描与 Python AST / JS 静态相对 import 分析，返回目标文件的直接依赖、直接被引用模块、传递上游影响路径和截断标志。它不会执行项目代码，也不会把整个大仓库塞进模型上下文。相对 TypeScript/JavaScript 导入解析属于静态近似，不提供编译器级或运行时解析保证。
+
+mini_agent.multi_file.build_multi_file_tools 为原 LangGraph Agent 增加 apply_patch_batch。依靠 sandbox.patched_content 生成全部更新后，调用 sandbox.file_change 一次建立变更日志，再进行原子单文件替换与失败回滚。BoundaryMiddleware 以所有文件的内容 hash 作为审批前置条件；Coding Contract 对批次内每个文件执行 allowlist 校验；该工具必须独立调用，避免同一步骤其他工具竞争写入。不能承诺真正的跨文件磁盘事务（进程崩溃或回滚本身失败时仍需检查变更日志）。
+
 ## 同步 API 与扩展点
 
 最小程序化调用：

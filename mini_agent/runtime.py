@@ -20,6 +20,7 @@ from .planning import build_plan_tools, plan_summary
 from .recovery import decide_recovery, recovery_message, work_signature
 from .git_workflow import build_git_tools
 from .dev_environment import build_dev_environment_tools
+from .multi_file import build_multi_file_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -40,6 +41,9 @@ SYSTEM_PROMPT = (
     "复杂开发任务先用 set_task_plan 拆解计划，依次用 update_task_step 标记进行、完成或阻塞；"
     "需要调整步骤时提供修订原因。每批工具调用至多包含一次计划更新，"
     "规划不代表执行成功，步骤完成必须依据工具与测试结果。"
+    "跨模块修改前可先调用 inspect_module_dependencies 检查被依赖与受影响文件；"
+    "修改多个已有源码文件时优先用 apply_patch_batch 一次提交多个精确补丁，"
+    "失败则重新读取相关文件并修复，不要忽略任何失败。"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
     "依赖缺失则使用 prepare_dev_environment 建立项目环境并安装，"
     "再使用 run_dev_task 执行测试、构建、lint 或已声明的脚本。"
@@ -79,6 +83,7 @@ class AgentApplication:
             tools.extend(build_plan_tools())
             tools.extend(build_git_tools(self.settings.workspace))
             tools.extend(build_dev_environment_tools(self.settings.workspace))
+            tools.extend(build_multi_file_tools(self.settings.workspace))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))

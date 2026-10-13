@@ -288,6 +288,17 @@ Python 不向 mini-agent 自身解释器安装依赖；Node 使用声明的锁�
 所有命令通过已有的有界无 Shell 进程执行器。失败退出码提供结构化 tool artifact，自动修复循环可以识别。
 依赖安装和 package.json 脚本只能在可信项目使用，ASK 模式需要审批；网络依赖安装无法保证成功。
 npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契约指定测试作为最终验收，不把任意脚本运行当成契约证据。
+## 跨模块理解与多文件联合开发
+
+这轮新增两项实际 Coding 工具，面向 Python 后端及 JavaScript/TypeScript 前端：
+
+- **inspect_module_dependencies(path, focus, max_files)**：静态扫描仓库内的 Python import 与 JS/TS 相对导入，构建本地模块依赖图。指定 focus 文件时，返回它引用的模块、直接引用它的模块，以及上游传递影响的模块。扫描有边界、忽略 node_modules/.venv，不执行目标项目代码。它会额外给出 `candidate_test_files`，从静态反向依赖中挑出 Python/JS/TS 常见命名的测试文件，供后续选择测试命令；该清单是建议而不是完整覆盖率或测试通过证明。它是轻量导入关系图，不是完整的动态调用图。
+- **apply_patch_batch(patches)**：一次对 2–12 个已经存在的源码文件执行唯一精确文本替换。写入前预检**所有文件**；任一补丁不匹配则不修改任何文件。依次写入时发生错误则尝试恢复前面已更改的文件；结果返回修改清单。
+
+示例：对 src/logic.py 调用 inspect_module_dependencies(..., focus="src/logic.py")，发现依赖它的 src/service.py 与 tests/test_service.py；然后用 apply_patch_batch 同时修改 src/logic.py、src/service.py，再运行 run_command 或 run_dev_task 执行真实测试。
+
+多文件修改仍使用原有 Coding Contract 文件范围、Checkpoint、变更日志与 HITL 审批。默认 ASK 会呈现整组差异供一次批准，审批后内容变化会重新拦截；同时最多允许一个批次补丁调用。若出现外部进程在文件写入间竞争修改等异常，需要重新核对工作区。该工具只做已有源码文件的精确替换，新建文件仍使用 write_file。
+
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
