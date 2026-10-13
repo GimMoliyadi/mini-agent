@@ -29,6 +29,7 @@ from .fullstack_codegen import build_fullstack_codegen_tools
 from .react_query_codegen import build_react_query_tools
 from .openapi_impact import build_openapi_impact_tools
 from .browser_tools import BrowserSession, build_browser_tools
+from .dev_servers import DevServerManager, build_dev_server_tools
 from .project_memory import build_project_memory_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
@@ -70,6 +71,9 @@ SYSTEM_PROMPT = (
     "类型生成后可使用 generate_typed_api_client 创建基于 openapi-fetch 的类型化 API 客户端。"
     "后端导出需要可导入的 app 模块与项目 .venv；前端客户端需已声明 openapi-fetch。"
     "React 前端可调用 generate_react_query_hooks 基于 API 客户端生成 openapi-react-query 的类型化 hooks。"
+    "本地调试 FastAPI 与 Vite 时先用 dev_server(action='start') 分别启动后端或前端，"
+    "用 dev_server(action='status'/'logs') 读取状态与输出，最后用 dev_server(action='stop') 停止；"
+    "该服务器随 AgentApplication 关闭而终止，端口开始监听才表示可访问。"
     "进行本地前端页面调试时可使用 browser_action 在 Playwright 中打开页面、点击、填写、读取 DOM，"
     "再使用 browser_screenshot 将当前页面截图保存到工作区；首次使用需安装可选 browser 依赖。"
     "若后端 OpenAPI 契约发生变化，使用 inspect_openapi_changes 对比两个 JSON 版本，"
@@ -128,6 +132,9 @@ class AgentApplication:
             browser_session = BrowserSession(self.settings.workspace)
             self.stack.callback(browser_session.shutdown)
             tools.extend(build_browser_tools(browser_session))
+            server_manager = DevServerManager(self.settings.workspace)
+            self.stack.callback(server_manager.close)
+            tools.extend(build_dev_server_tools(server_manager))
             tools.extend(build_project_memory_tools(self.settings.workspace, self.settings.state_dir))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
