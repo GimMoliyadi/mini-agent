@@ -148,6 +148,26 @@ CLI 默认不开启节点流，现有脚本接口不变。
 - 同批工具调用最多更新一次计划，避免多个并发工具写同一个状态键。
   计划进度是执行过程记录，是否真正完成仍依靠原有工具、审批与测试验收。
 
+## 未完成计划的续跑与成功判定
+
+如果 Agent 建立了开发计划，但最后仍有 pending/in_progress/blocked 步骤，
+任务结果会返回 `status: "incomplete"`（而不是误报 `completed`），同时返回
+Checkpoint 保存的 `plan` 和 `session_id`。无计划的普通短任务不受影响。
+对于 Coding Contract，即使指定测试验收通过，计划未完成仍保持 incomplete，
+但原有 `verification` 证据不被伪造或覆盖。
+
+可在同一个任务 Checkpoint 上明确继续执行：
+
+```powershell
+.\\mini.cmd task --resume SESSION_ID --continue-plan --workspace C:\\path\\to\\trusted-project --progress-jsonl
+```
+
+该命令保留原 task_id、任务计划、文件修改历史、测试证据和 Contract，不创建新任务；
+适合大模型提前结束、额度中断后已保存的 incomplete 计划。
+无法用于已完成任务、无计划任务或仍有待审批节点的会话；如有待审批节点，
+先使用普通 `--resume` 并进行审批。继续运行仍会消耗模型额度，
+并遵守原工具限制及审核策略。
+
 ## 开发任务能力
 
 原有的文件读取、全文搜索、补丁修改和测试执行之外，`run_command` 现在支持：

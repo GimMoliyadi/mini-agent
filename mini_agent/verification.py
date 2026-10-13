@@ -5,6 +5,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 import json
 
 from .state import TaskState
+from .planning import plan_summary
 from .tools.command import run_command
 from .verifier import (
     CodingTaskContract, TaskState as VerificationFacts, TaskStatus,
@@ -81,8 +82,18 @@ class VerificationMiddleware(AgentMiddleware):
     def after_agent(self, state, runtime):
         answer = state["messages"][-1]
         failures = unresolved_tool_failures(state)
+        plan = plan_summary(state.get("plan"))
+        # A model's final text is not evidence that planned work is finished.
+        # Blocked steps also count as incomplete, but the checkpoint stays
+        # available for an explicit continuation of the same task.
+        unfinished = bool(plan is not None and plan["completed"] != plan["total"])
+        if unfinished:
+            self.events.emit(
+                "plan_incomplete", task_id=state.get("task_id"),
+                completed=plan["completed"], total=plan["total"],
+            )
         if not state.get("contract"):
-            return {"status": "completed" if answer.content and not failures else "incomplete"}
+            return {"status": "completed" if answer.content and not failures and not unfinished else "incomplete"}
         contract = CodingTaskContract.from_dict(state["contract"])
         facts = verification_facts(state)
         gate = evaluate_finish_request(contract, facts, self.settings.workspace)
@@ -100,4 +111,4 @@ class VerificationMiddleware(AgentMiddleware):
         )
         self.events.emit("verification", task_id=state.get("task_id"), accepted=verification["accepted"])
         return {"verification": verification,
-                "status": "completed" if verification["accepted"] else "incomplete"}
+                "status": "completed" if verification["accepted"] and not unfinished else "incomplete"}

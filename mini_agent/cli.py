@@ -44,6 +44,8 @@ def build_parser():
         command.add_argument("--contract", help="JSON Coding Task Contract")
         if name == "task":
             command.add_argument("--task")
+            command.add_argument("--continue-plan", action="store_true",
+                                 help="在同一 checkpoint 中继续此前未完成的计划，而不是开启新任务")
             decision = command.add_mutually_exclusive_group()
             decision.add_argument("--approve", action="store_true", help="明确批准恢复时所有当前待审批操作")
             decision.add_argument("--reject", action="store_true")
@@ -116,7 +118,13 @@ def run_agent(args, state_dir, workspace):
                 raise ValueError("task 需要 --task、--contract 或 --resume")
             if (args.approve or args.reject) and not thread_id:
                 raise ValueError("审批只能用于 --resume 的待审批操作")
-            result = app.run(task, thread_id=thread_id, contract=contract, stream_updates=args.progress_jsonl)
+            if args.continue_plan and (
+                not thread_id or task is not None or args.contract or args.approve or args.reject
+            ):
+                raise ValueError("--continue-plan 只能与 --resume SESSION_ID 单独使用")
+            result = app.run(task, thread_id=thread_id, contract=contract,
+                             stream_updates=args.progress_jsonl,
+                             continue_incomplete=args.continue_plan)
             if result["interrupts"] and (args.approve or args.reject):
                 decisions = [{"type": "approve" if args.approve else "reject"}
                              for item in result["interrupts"] for _ in item.get("action_requests", [])]

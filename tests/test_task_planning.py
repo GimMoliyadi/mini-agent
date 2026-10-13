@@ -24,7 +24,7 @@ def test_plan_state_survives_new_application_and_resets_for_new_task(settings):
         "Inspection complete; tests remain pending.",
     ])) as app:
         first = app.run("Inspect and fix", thread_id="plan-session")
-        assert first["status"] == "completed", first
+        assert first["status"] == "incomplete", first
         assert first["plan"]["completed"] == 1
         assert first["plan"]["total"] == 2
         assert first["plan"]["steps"][0]["note"] == "Inspected files"
@@ -46,7 +46,7 @@ def test_plan_revision_after_blocked_step(settings):
         "Plan revised.",
     ])) as app:
         result = app.run("Repair project")
-    assert result["status"] == "completed", result
+    assert result["status"] == "incomplete", result
     assert result["plan"]["revision"] == 2
     assert result["plan"]["total"] == 3
     assert all(item["status"] == "pending" for item in result["plan"]["steps"])
