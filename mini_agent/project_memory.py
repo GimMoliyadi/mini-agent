@@ -6,6 +6,7 @@ and is not a source-code file in the tracked checkout.
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -52,7 +53,7 @@ class ProjectMemoryStore:
         if not isinstance(content, str) or not 0 < len(content.strip()) <= _MAX_NOTE_CHARS:
             raise ValueError("content 长度须为 1–2000")
         key = key.strip()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute("""
                 INSERT INTO project_facts (workspace, category, key, content)
                 VALUES (?, ?, ?, ?)
@@ -64,7 +65,7 @@ class ProjectMemoryStore:
     def recall(self, query: str = "") -> dict[str, Any]:
         if not isinstance(query, str) or len(query) > _MAX_QUERY_CHARS:
             raise ValueError("搜索查询长度不得超过 200 字")
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             rows = conn.execute(
                 """SELECT category, key, content, updated_at
                    FROM project_facts WHERE workspace = ?
@@ -89,7 +90,7 @@ class ProjectMemoryStore:
     def delete(self, category: str, key: str) -> dict[str, Any]:
         if category not in _CATEGORIES or not isinstance(key, str) or not key.strip():
             raise ValueError("必须提供有效的 category 和 key")
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 "DELETE FROM project_facts WHERE workspace = ? AND category = ? AND key = ?",
                 (self.scope, category, key.strip()),
