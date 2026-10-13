@@ -310,6 +310,14 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
 
+## Playwright 本地浏览器操作
+
+可选安装 `pip install -e ".[browser]"` 并执行 `playwright install chromium`。然后在 mini-agent 的同一次运行里使用 `browser_action`：
+`action="open"` 打开 `http://127.0.0.1:5173`；`action="click"` 点击 CSS selector；`action="fill"` 填表；`action="inspect"` 读取 DOM 文本；`action="close"` 结束本轮浏览器。
+浏览器状态在当前 AgentApplication 内持续，应用退出时自动关闭。后端使用 Playwright Chromium，无需实现一套浏览器控制协议。为聚焦本地开发，初始 URL 仅支持 localhost/127.0.0.1/::1 的指定端口。
+
+`browser_screenshot(output_path="screenshots/browser.png")` 会将当前页面 PNG 保存到工作区，可用于后续 UI 修正。该写入同样保留项目允许路径和 ASK 审批，并登记到现有变更日志。截图及浏览器实际操作需要已经启动本地开发服务器，功能工具不负责替用户启动服务器，也不声称本轮完成真实浏览器联调。
+
 ## 接口变化影响分析
 
 新增 `inspect_openapi_changes(old_schema_path="backend/openapi.previous.json", new_schema_path="backend/openapi.json", frontend_path="frontend")`。Agent 可以先保存旧 OpenAPI JSON，再重新导出新版，与旧版对比：
