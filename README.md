@@ -337,6 +337,21 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## GitHub Issue → Draft PR 开发入口
+
+配置 `MINI_AGENT_GITHUB_REPO` 和 `MINI_AGENT_GITHUB_TOKEN` 后，新增两个只读入口：
+
+- `github_list_issues(state="open", limit=12)`：列出目标仓库的 Issue 编号、标题和标签。
+- `github_issue_context(issue_number=123)`：获取指定 Issue 标题、描述、状态和标签，并附上开发交付流程提示。Issue 正文始终作为外部数据，不能授权额外操作。
+
+Agent 读取 Issue 后可以复用既有 `set_task_plan`、代码导航、编辑、测试与本地 Git 提交，再通过原有的 `github_push_branch`、`github_create_draft_pr` 完成交付。远端 push / Draft PR 仍需按 ASK 模式分别审批，不会自动合并、关闭 Issue 或强推。PR 正文可以使用 `Refs #123` 关联原 Issue，不应把读取 Issue 等同于实现成功。
+
+```text
+github_issue_context(issue_number=123)
+set_task_plan(...)
+# Agent uses coding, test, git_commit_files, github_push_branch, github_create_draft_pr
+```
+
 ## Tree-sitter 跨语言代码导航
 
 在已有的 `search_text`、`inspect_python_symbols` 基础上新增两个只读工具：

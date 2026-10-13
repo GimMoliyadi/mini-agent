@@ -188,3 +188,59 @@ def test_remote_write_tools_must_not_share_tool_batch(repository, tmp_path):
         result = app.run("Push and open PR in parallel")
     assert result["status"] == "failed"
     assert "单独" in result["error"]
+
+
+def test_issues_are_readable_with_configured_github_without_remote_writes(
+    repository, tmp_path, monkeypatch,
+):
+    commands = []
+
+    def fake_gh(root, token, argv):
+        commands.append(argv)
+        assert root == repository and token == "local-test-placeholder-token"
+        if argv[:2] == ["issue", "list"]:
+            return json.dumps([{
+                "number": 17, "title": "Add user API", "url": "https://github.com/example/repo/issues/17",
+                "labels": [{"name": "enhancement"}],
+            }])
+        if argv[:2] == ["issue", "view"]:
+            return json.dumps({
+                "number": 17, "title": "Add user API",
+                "body": "Create a FastAPI endpoint and client hooks",
+                "state": "OPEN", "url": "https://github.com/example/repo/issues/17",
+                "labels": [{"name": "enhancement"}],
+            })
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(github_delivery, "_gh", fake_gh)
+    tools = {tool.name: tool for tool in build_github_tools(config(repository, tmp_path))}
+    assert tools["github_list_issues"].metadata["risk"] == "read"
+    assert tools["github_issue_context"].metadata["risk"] == "read"
+    listing = json.loads(tools["github_list_issues"].invoke({"limit": 5}))
+    assert listing["issues"][0]["number"] == 17
+    issue = json.loads(tools["github_issue_context"].invoke({"issue_number": 17}))
+    assert issue["body"] == "Create a FastAPI endpoint and client hooks"
+    assert any("Issue #17" in line for line in issue["workflow"])
+    assert all(cmd[0] == "issue" for cmd in commands)
+
+
+def test_scripted_agent_reads_issue_and_uses_same_existing_graph(
+    repository, tmp_path, monkeypatch,
+):
+    def fake_gh(root, token, argv):
+        assert argv[:2] == ["issue", "view"]
+        return json.dumps({
+            "number": 24, "title": "Improve tests", "body": "Add regression tests.",
+            "state": "OPEN", "labels": [], "url": "https://github.com/example/repo/issues/24",
+        })
+
+    monkeypatch.setattr(github_delivery, "_gh", fake_gh)
+    model = ScriptedModel(replies=[
+        call("github_issue_context", issue_number=24),
+        "Issue #24 has been read; source inspection and development are the next steps.",
+    ])
+    with AgentApplication(config(repository, tmp_path), model=model) as app:
+        result = app.run("Read Issue #24 before development")
+    assert result["status"] == "completed", result
+    assert any(e["name"] == "github_issue_context" and e["status"] == "success"
+               for e in result["trace"] if e["event"] == "tool")
