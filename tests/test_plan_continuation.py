@@ -1,7 +1,5 @@
 """Incomplete plans must not pass; the same task can continue from its checkpoint."""
 
-from dataclasses import replace
-
 import pytest
 
 from helpers import ScriptedModel, call
