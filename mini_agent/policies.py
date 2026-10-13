@@ -14,6 +14,7 @@ from .state import TaskState
 from .verifier import CodingTaskContract, snapshot_workspace
 from .runtime_guards import get_current_budget
 from .multi_file import patch_batch_precondition, preview_patch_batch, prepare_patch_batch
+from .scaffolding import creation_precondition, preview_file_creations, prepare_file_creations
 
 
 class BoundaryMiddleware(AgentMiddleware):
@@ -33,18 +34,20 @@ class BoundaryMiddleware(AgentMiddleware):
             budget.validate_batch_size(len(getattr(message, "tool_calls", [])))
         plan_updates = [call for call in getattr(message, "tool_calls", [])
                         if call["name"] in {"set_task_plan", "update_task_step"}]
-        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch"}
+        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch", "create_files_batch"}
         if any(call["name"] in exclusive for call in getattr(message, "tool_calls", [])) and len(getattr(message, "tool_calls", [])) != 1:
             raise ValueError("Git 提交或 GitHub 远程写入必须单独调用，避免并行操作冲突")
         if len(plan_updates) > 1:
             raise ValueError("每批最多一次计划更新，避免并行写入同一个 Checkpoint 状态")
         preconditions = {}
         for call in getattr(message, "tool_calls", []):
-            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch"}:
+            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch"}:
                 try:
                     preconditions[call["id"]] = (
                         patch_batch_precondition(call["args"]["patches"], self.settings.workspace)
                         if call["name"] == "apply_patch_batch"
+                        else creation_precondition(call["args"]["files"], self.settings.workspace)
+                        if call["name"] == "create_files_batch"
                         else capture_precondition(call["name"], call["args"], self.settings.workspace)
                     )
                 except (OSError, ValueError, KeyError):
@@ -53,11 +56,13 @@ class BoundaryMiddleware(AgentMiddleware):
         return {"preconditions": preconditions}
 
     def approval_description(self, call, state, runtime):
-        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch"}:
+        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch"}:
             try:
                 return (
                     preview_patch_batch(call["args"]["patches"], self.settings.workspace)
                     if call["name"] == "apply_patch_batch"
+                    else preview_file_creations(call["args"]["files"], self.settings.workspace)
+                    if call["name"] == "create_files_batch"
                     else preview_tool_change(call["name"], call["args"], self.settings.workspace)
                 )
             except (OSError, ValueError, KeyError) as exc:
@@ -93,6 +98,13 @@ class BoundaryMiddleware(AgentMiddleware):
                     relative = path.relative_to(self.settings.workspace).as_posix()
                     if relative not in contract.allowed_paths:
                         raise PermissionError("跨文件补丁存在 Coding Contract.allowed_paths 之外的路径")
+        elif name == "create_files_batch":
+            created = prepare_file_creations(request.tool_call["args"]["files"], self.settings.workspace)
+            if contract_data:
+                contract = CodingTaskContract.from_dict(contract_data)
+                for path in created:
+                    if path.relative_to(self.settings.workspace).as_posix() not in contract.allowed_paths:
+                        raise PermissionError("批量创建包含 Coding Contract.allowed_paths 之外的路径")
         elif contract_data and metadata.get("mutation"):
             contract = CodingTaskContract.from_dict(contract_data)
             paths = metadata.get("mutation_paths", ())
@@ -108,6 +120,11 @@ class BoundaryMiddleware(AgentMiddleware):
                 request.tool_call["args"]["patches"], self.settings.workspace,
             ):
                 raise PermissionError("跨文件补丁审批前后文件已变化，请重新预览和批准")
+        elif name == "create_files_batch":
+            if before is None or before != creation_precondition(
+                request.tool_call["args"]["files"], self.settings.workspace,
+            ):
+                raise PermissionError("批量创建审批后目标已变化，请重新预览和批准")
         elif before is not None:
             validate_precondition(name, request.tool_call["args"], self.settings.workspace, before)
 
