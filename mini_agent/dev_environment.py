@@ -17,6 +17,7 @@ from typing import Any, Literal
 from langchain.tools import tool
 
 from .process_runner import MAX_COMMAND_OUTPUT_BYTES, run_process
+from .error_locations import error_location_summary
 from .result import ResultStatus, ToolResult
 from .sandbox import redact_text, resolve_path
 
@@ -192,8 +193,6 @@ def _execute(argv: list[str], project: Path, workspace: Path, *, timeout: float)
     stdout = redact_text(completed.stdout.decode("utf-8", errors="replace"))
     stderr = redact_text(completed.stderr.decode("utf-8", errors="replace"))
     output = f"exit_code={completed.returncode}; timed_out={completed.timed_out}; output_limit={completed.output_limit_exceeded}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-    if len(output) > _MAX_DISPLAY_CHARS:
-        output = output[:_MAX_DISPLAY_CHARS // 2] + "\n[output truncated]\n" + output[-_MAX_DISPLAY_CHARS // 2:]
     status: ResultStatus
     if completed.timed_out:
         status, code = "command_failed", "timeout"
@@ -203,10 +202,17 @@ def _execute(argv: list[str], project: Path, workspace: Path, *, timeout: float)
         status, code = "command_failed", "exit_nonzero"
     else:
         status, code = "success", "command_succeeded"
+    diagnostics = []
+    if status != "success":
+        summary, diagnostics = error_location_summary(stdout, stderr, project)
+        output += summary
+    if len(output) > _MAX_DISPLAY_CHARS:
+        output = output[:_MAX_DISPLAY_CHARS // 2] + "\n[output truncated]\n" + output[-_MAX_DISPLAY_CHARS // 2:]
     return ToolResult(
         output, status, code,
         {"returncode": completed.returncode, "timed_out": completed.timed_out,
-         "output_limit_exceeded": completed.output_limit_exceeded},
+         "output_limit_exceeded": completed.output_limit_exceeded,
+         "diagnostics": diagnostics},
     )
 
 
