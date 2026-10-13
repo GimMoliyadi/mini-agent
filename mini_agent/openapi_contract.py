@@ -16,7 +16,7 @@ from langchain.tools import tool
 from . import dev_environment as dev
 from . import sandbox
 from .config import MAX_TOOL_RESULT_CHARS
-from .result import ResultStatus, ToolResult
+from .result import ToolResult
 
 _MAX_CONTRACT_BYTES = 2 * 1024 * 1024
 _MAX_SUMMARY_OPERATIONS = 60
