@@ -41,13 +41,18 @@ class BoundaryMiddleware(AgentMiddleware):
             raise ValueError("每批最多一次计划更新，避免并行写入同一个 Checkpoint 状态")
         preconditions = {}
         for call in getattr(message, "tool_calls", []):
-            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch"}:
+            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types"}:
                 try:
                     preconditions[call["id"]] = (
                         patch_batch_precondition(call["args"]["patches"], self.settings.workspace)
                         if call["name"] == "apply_patch_batch"
                         else creation_precondition(call["args"]["files"], self.settings.workspace)
                         if call["name"] == "create_files_batch"
+                        else capture_precondition(
+                            "write_file", {"path": call["args"]["output_path"], "content": ""},
+                            self.settings.workspace,
+                        )
+                        if call["name"] == "generate_openapi_types"
                         else capture_precondition(call["name"], call["args"], self.settings.workspace)
                     )
                 except (OSError, ValueError, KeyError):
@@ -56,13 +61,19 @@ class BoundaryMiddleware(AgentMiddleware):
         return {"preconditions": preconditions}
 
     def approval_description(self, call, state, runtime):
-        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch"}:
+        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types"}:
             try:
                 return (
                     preview_patch_batch(call["args"]["patches"], self.settings.workspace)
                     if call["name"] == "apply_patch_batch"
                     else preview_file_creations(call["args"]["files"], self.settings.workspace)
                     if call["name"] == "create_files_batch"
+                    else redact_text(
+                        f"使用本地 openapi-typescript 将 {call['args'].get('schema_path', 'backend/openapi.json')} "
+                        f"生成到 {call['args'].get('output_path', 'frontend/src/openapi.d.ts')} "
+                        f"(前端项目 {call['args'].get('frontend_path', 'frontend')})"
+                    )
+                    if call["name"] == "generate_openapi_types"
                     else preview_tool_change(call["name"], call["args"], self.settings.workspace)
                 )
             except (OSError, ValueError, KeyError) as exc:
@@ -125,6 +136,13 @@ class BoundaryMiddleware(AgentMiddleware):
                 request.tool_call["args"]["files"], self.settings.workspace,
             ):
                 raise PermissionError("批量创建审批后目标已变化，请重新预览和批准")
+        elif name == "generate_openapi_types":
+            validate_precondition(
+                "write_file",
+                {"path": request.tool_call["args"].get("output_path", "frontend/src/openapi.d.ts"),
+                 "content": ""},
+                self.settings.workspace, before,
+            )
         elif before is not None:
             validate_precondition(name, request.tool_call["args"], self.settings.workspace, before)
 
