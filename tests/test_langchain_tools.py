@@ -26,6 +26,7 @@ class LangChainToolsTests(unittest.TestCase):
                 "run_command",
                 "find_files",
                 "inspect_python_symbols",
+                "inspect_module_dependencies",
                 "inspect_project",
                 "inspect_capabilities",
             ],
