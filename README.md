@@ -310,6 +310,11 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
 
+## 接口变化影响分析
+
+新增 `inspect_openapi_changes(old_schema_path="backend/openapi.previous.json", new_schema_path="backend/openapi.json", frontend_path="frontend")`。Agent 可以先保存旧 OpenAPI JSON，再重新导出新版，与旧版对比：
+识别 API 方法/路径的新增、删除、参数和响应结构变更；提取 components.schemas 中发生变化的模型名；搜索前端字面量 `fetch` / `axios` / `client` 调用，输出可能受影响的源码位置。它是只读静态影响分析，不修改项目，也不会将无法匹配的动态 URL 视为无影响。类型文件重新生成后仍应运行前端 typecheck/build。
+
 ## React Query 类型化 Hooks
 
 新增 `generate_react_query_hooks(frontend_path="frontend", client_path="frontend/src/api-client.ts", output_path="frontend/src/api-hooks.ts")`。
