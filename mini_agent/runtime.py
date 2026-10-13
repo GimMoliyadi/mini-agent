@@ -17,6 +17,7 @@ from .observability import Events
 from .persistence import checkpoint_store, validate_thread_id
 from .policies import BoundaryMiddleware
 from .planning import build_plan_tools, plan_summary
+from .recovery import decide_recovery, recovery_message, work_signature
 from .git_workflow import build_git_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -114,7 +115,10 @@ class AgentApplication:
 
     def run(self, task: str | None, *, thread_id: str | None = None,
             contract: CodingTaskContract | None = None, decisions: list[dict] | None = None,
-            stream_updates: bool = False, continue_incomplete: bool = False) -> dict:
+            stream_updates: bool = False, continue_incomplete: bool = False,
+            auto_recover: bool = False, max_recovery_attempts: int = 2) -> dict:
+        if not isinstance(max_recovery_attempts, int) or isinstance(max_recovery_attempts, bool) or not 1 <= max_recovery_attempts <= 3:
+            raise ValueError("自动恢复轮数只能设置为 1–3")
         if continue_incomplete and (task is not None or contract is not None or decisions is not None):
             raise ValueError("继续原计划不能同时开始新任务、传入新 Contract 或审批决定")
         if continue_incomplete and thread_id is None:
@@ -168,19 +172,50 @@ class AgentApplication:
             else:
                 payload = Command(resume={"decisions": decisions}) if decisions is not None else None
         try:
-            budget = RunBudget(environ={**os.environ, **self.settings.budget_options})
-            with budget_context(budget):
+            budget = RunBudget(
+                environ={**os.environ, **self.settings.budget_options},
+                max_model_requests=self.settings.max_model_calls if auto_recover else None,
+            )
+
+            def execute(turn_payload: Any) -> None:
                 if stream_updates:
-                    # LangGraph owns streaming/checkpoint behavior. Only publish node names:
-                    # tool arguments, prompts, model content and file bodies stay private.
+                    # Use the same compiled graph and synchronous checkpoint semantics.
                     for updates in self.graph.stream(
-                        payload, config=config, stream_mode="updates", durability="sync",
+                        turn_payload, config=config, stream_mode="updates", durability="sync",
                     ):
                         if isinstance(updates, dict):
                             for node_name in updates:
                                 self.events.emit("graph_step", task_id=task_id, node=str(node_name))
                 else:
-                    self.graph.invoke(payload, config=config, durability="sync")
+                    self.graph.invoke(turn_payload, config=config, durability="sync")
+
+            with budget_context(budget):
+                execute(payload)
+                if auto_recover:
+                    # Each pass shares ONE wall-clock/token/tool/model budget.
+                    # No auto-repeat across an interruption, rejected approval,
+                    # blocked plan or an unchanged checkpoint.
+                    previous = None
+                    for attempt in range(1, max_recovery_attempts + 1):
+                        current = self.graph.get_state(config)
+                        state_now = current.values
+                        decision = decide_recovery(state_now, tuple(current.next))
+                        if not decision.retry:
+                            self.events.emit("recovery_stopped", task_id=task_id, reason=decision.reason)
+                            break
+                        signature = work_signature(state_now)
+                        if signature == previous:
+                            self.events.emit("recovery_stopped", task_id=task_id, reason="no_progress")
+                            break
+                        previous = signature
+                        self.events.emit(
+                            "recovery_started", task_id=task_id,
+                            attempt=attempt, category=decision.category,
+                        )
+                        execute({
+                            "messages": [{"role": "user", "content": recovery_message(decision.category)}],
+                            "status": "running",
+                        })
             self.events.emit("budget", task_id=task_id, **budget.snapshot())
         except KeyboardInterrupt:
             saved = self.graph.get_state(config)

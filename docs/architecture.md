@@ -226,6 +226,24 @@ Coding Contract 任务在提交前先通过 `verification_facts` 与
 Git 索引和 refs 不在文件 journal 范围内，也无远程 exactly-once 保证。
 需要 push/PR 的工作流应通过另外批准的 GitHub MCP 接入。
 
+## 自动恢复回合与证据边界
+
+`mini_agent.recovery.decide_recovery` 只读当前 LangGraph
+checkpoint 中的 `status`、`plan`、失败 ToolMessage 与验收状态，
+将恢复动作分类成 `command_failure`、`edit_failure`、
+`tool_failure`、`plan_progress`、`verification`。
+`AgentApplication.run(..., auto_recover=True)` 仅在上一个图调用已完成且
+返回 actionable `incomplete` 时，往**同一 checkpoint**追加一条
+限定范围的恢复指导消息并调用同一个 compiled `create_agent`。
+这不是新的自研执行引擎，也不会旁路 Tool Boundary/Verification/HITL。
+
+每个自动恢复调用只允许 1–3 次额外模型回合，单次运行的
+`RunBudget` 跨回合继续记账，限制总时间、模型请求、工具和 token。
+`work_signature` 根据计划进度、成功文件写入/测试工具事件判断停滞，
+只允许有实际进展的恢复继续迭代；明确 blocked、权限拒绝、审批中断则停止。
+外部 MCP 副作用无法保证 exactly-once，自动恢复不会自动重放它。
+CLI 默认不开启以保持以前的脚本行为，可使用 `--auto-recover` 显式开启。
+
 ## 同步 API 与扩展点
 
 最小程序化调用：

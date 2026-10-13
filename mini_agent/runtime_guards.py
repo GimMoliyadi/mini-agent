@@ -64,6 +64,7 @@ class RunBudget:
         *,
         clock: Callable[[], float] = time.monotonic,
         environ: Mapping[str, str] | None = None,
+        max_model_requests: int | None = None,
     ) -> None:
         env = os.environ if environ is None else environ
         self.task_timeout_seconds = _positive_setting(env, "MINI_AGENT_TASK_TIMEOUT_SECONDS", DEFAULT_TASK_TIMEOUT_SECONDS)
@@ -75,6 +76,12 @@ class RunBudget:
         self.unknown_usage_policy = env.get("MINI_AGENT_UNKNOWN_USAGE_POLICY", DEFAULT_UNKNOWN_USAGE_POLICY).strip().upper()
         if self.unknown_usage_policy not in UNKNOWN_USAGE_POLICIES:
             raise ValueError("MINI_AGENT_UNKNOWN_USAGE_POLICY 必须是 STOP 或 ESTIMATE")
+        if max_model_requests is not None and (
+            isinstance(max_model_requests, bool) or not isinstance(max_model_requests, int)
+            or max_model_requests < 1
+        ):
+            raise ValueError("模型请求总额度必须为正整数")
+        self.max_model_requests = max_model_requests
         self._clock = clock
         self._deadline = clock() + self.task_timeout_seconds
         self._cancelled = False
@@ -114,6 +121,8 @@ class RunBudget:
 
     def before_model_request(self, messages: Sequence[Mapping[str, object]]) -> dict[str, int | float]:
         self.check()
+        if self.max_model_requests is not None and self._model_requests >= self.max_model_requests:
+            raise BudgetExceeded("跨恢复回合的模型请求总次数已达上限。")
         if self._pending_request is not None:
             raise BudgetExceeded("上一模型请求尚未完成用量记账，不能继续请求。")
         if self._unknown_usage_responses and self.unknown_usage_policy == "STOP":
