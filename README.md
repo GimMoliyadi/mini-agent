@@ -337,6 +337,15 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## Tree-sitter 跨语言代码导航
+
+在已有的 `search_text`、`inspect_python_symbols` 基础上新增两个只读工具：
+
+- `inspect_code_symbols(path=".", query="", max_results=60)`：解析 Python、JavaScript、TypeScript、TSX 文件，定位函数、类、方法、接口和部分变量声明，返回文件、行号、列号和简短源码。
+- `find_code_references(symbol, path=".", max_results=60)`：按语法树寻找标识符出现的位置，不把普通文本字符串或代码注释当作引用；这是包括定义在内的候选使用点，并不是完整语义引用或调用图。
+
+可选安装 `pip install -e ".[code_index]"` 使用成熟的 [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) 和 [tree-sitter-language-pack](https://docs.tree-sitter-language-pack.xberg.io/)。实际调用时会在所选目录内限量扫描，自动跳过 `.git`、`node_modules` 和缓存目录，不自动执行待分析的源码。此能力面向理解大型陌生 Python/React/Vue 项目，不要求先搭建 LSP 服务器。
+
 ## 自动浏览器错误诊断
 
 在 Playwright `browser_action(action="open", url="http://127.0.0.1:5173")` 打开本地页面后，可以执行 `browser_diagnostics(reset=false)`，读取该浏览器页面的最近日志：
