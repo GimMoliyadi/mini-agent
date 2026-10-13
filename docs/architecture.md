@@ -254,6 +254,16 @@ CLI 默认不开启以保持以前的脚本行为，可使用 `--auto-recover` �
 
 CI 仅验证真实本地 Git 预检、Graph/HITL 行为与模拟 gh 网络响应，真实 GitHub 远程写入需要受控测试仓库的另外验收。
 
+## 项目级 Python / Node 工具
+
+mini_agent.dev_environment.build_dev_environment_tools 使用标准 LangChain @tool 注册
+inspect_dev_environment（只读）、prepare_dev_environment（安装和创建项目专用运行环境）、
+run_dev_task（对 Python/Node 执行受支持的运行、测试、lint、typecheck、build、已声明脚本）。
+该模块在现有 AgentApplication.create_agent 中直接注册，无第二套 Agent 执行循环。
+工具 path 绑定到原受信 workspace 的子目录，沿用 run_process 的进程树清理、超时、输出限制和预算。
+Python 使用子项目 .venv；Node 使用 package.json/scripts 和 npm/pnpm 锁文件。
+执行工具以 content_and_artifact 返回真实成功/失败状态，供原有失败恢复机制判断。
+只有 Python 子项目真实隔离运行通过 CI，Node 进程测试不接公网而模拟 npm/pnpm。
 ## 同步 API 与扩展点
 
 最小程序化调用：
