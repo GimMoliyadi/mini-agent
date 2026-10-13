@@ -271,6 +271,23 @@ Token 使用最小权限，只授予目标仓库所需的 Contents/Pull requests
 
 该功能不支持推送到 main/master 等保护名称，不自动合并、强制覆盖远端或访问其它 GitHub 仓库。固定的 Git/gh 子进程接收私有 Token，但模型及事件日志不应接触 Token；远程副作用不能由 SQLite Checkpoint 回滚。默认 ASK 下，每一个远程写步骤都必须由用户批准，且不能与其它工具并行。CI 使用隔离 Git 仓库和模拟的 GitHub 返回值，**不执行真实远程推送**；真实公网联调仍需单独在测试仓库验收。
 
+## Python / Node 项目环境与多语言执行
+
+面对 Python 后端 + Node 前端的仓库，Agent 新增三个真实可调用工具：
+
+- inspect_dev_environment(path)：检查子项目是否有 requirements.txt、pyproject.toml、package.json、npm/pnpm lockfile，列出可用的 Node scripts。
+- prepare_dev_environment(path, language)：Python 创建项目本地 .venv，按 manifest 安装依赖；Node 使用 npm ci/install 或 pnpm install。
+- run_dev_task(task, path, language, script)：Python 支持 pytest/unittest/ruff/mypy/build、项目 .py 脚本；Node 执行 package.json 已声明的 scripts。
+
+例如可对 backend 和 frontend 两个子目录分别调用 inspect_dev_environment，
+再调用 prepare_dev_environment(path="backend", language="python") 与
+prepare_dev_environment(path="frontend", language="node")，
+最后用 run_dev_task(path="backend", task="unittest") 或 run_dev_task(path="frontend", task="build") 完成测试与构建。
+
+Python 不向 mini-agent 自身解释器安装依赖；Node 使用声明的锁文件和本地脚本。
+所有命令通过已有的有界无 Shell 进程执行器。失败退出码提供结构化 tool artifact，自动修复循环可以识别。
+依赖安装和 package.json 脚本只能在可信项目使用，ASK 模式需要审批；网络依赖安装无法保证成功。
+npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契约指定测试作为最终验收，不把任意脚本运行当成契约证据。
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：

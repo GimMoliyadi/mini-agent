@@ -19,6 +19,7 @@ from .policies import BoundaryMiddleware
 from .planning import build_plan_tools, plan_summary
 from .recovery import decide_recovery, recovery_message, work_signature
 from .git_workflow import build_git_tools
+from .dev_environment import build_dev_environment_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -39,6 +40,10 @@ SYSTEM_PROMPT = (
     "复杂开发任务先用 set_task_plan 拆解计划，依次用 update_task_step 标记进行、完成或阻塞；"
     "需要调整步骤时提供修订原因。每批工具调用至多包含一次计划更新，"
     "规划不代表执行成功，步骤完成必须依据工具与测试结果。"
+    "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
+    "依赖缺失则使用 prepare_dev_environment 建立项目环境并安装，"
+    "再使用 run_dev_task 执行测试、构建、lint 或已声明的脚本。"
+    "Python 使用项目自己的 .venv；运行失败要检查工具状态，分析并修复后重测。"
     "使用 git_worktree_review 检查仓库，执行 Git 本地提交请单独调用 git_commit_files，"
     "明确指定文件且先完成必要测试；本地提交不会自动推送远程。"
     "只有显式配置后才能使用 GitHub 远程工具。先审批 github_push_branch，再单独审批"
@@ -73,6 +78,7 @@ class AgentApplication:
             }})
             tools.extend(build_plan_tools())
             tools.extend(build_git_tools(self.settings.workspace))
+            tools.extend(build_dev_environment_tools(self.settings.workspace))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
