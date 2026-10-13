@@ -34,7 +34,7 @@ class BoundaryMiddleware(AgentMiddleware):
             budget.validate_batch_size(len(getattr(message, "tool_calls", [])))
         plan_updates = [call for call in getattr(message, "tool_calls", [])
                         if call["name"] in {"set_task_plan", "update_task_step"}]
-        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch", "create_files_batch"}
+        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch", "create_files_batch", "generate_openapi_types"}
         if any(call["name"] in exclusive for call in getattr(message, "tool_calls", [])) and len(getattr(message, "tool_calls", [])) != 1:
             raise ValueError("Git 提交或 GitHub 远程写入必须单独调用，避免并行操作冲突")
         if len(plan_updates) > 1:
