@@ -44,6 +44,7 @@ SYSTEM_PROMPT = (
     "跨模块修改前可先调用 inspect_module_dependencies 检查被依赖与受影响文件；"
     "修改多个已有源码文件时优先用 apply_patch_batch 一次提交多个精确补丁，"
     "失败则重新读取相关文件并修复，不要忽略任何失败。"
+    "面对包含前后端或多个包的仓库，先调用 discover_workspace_projects 识别子项目路径、技术栈和可运行脚本；"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
     "依赖缺失则使用 prepare_dev_environment 建立项目环境并安装，"
     "再使用 run_dev_task 执行测试、构建、lint 或已声明的脚本。"
