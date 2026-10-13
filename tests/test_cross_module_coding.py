@@ -101,6 +101,29 @@ def test_atomic_rollback_after_second_file_write_failure(repository, monkeypatch
     assert "return add(a, b) * 2 + 0" not in (repository / "src" / "service.py").read_text()
 
 
+
+@pytest.mark.parametrize("failure_on", [1, 2])
+def test_batch_rolls_back_write_that_succeeded_before_reporting_error(
+    repository, monkeypatch, failure_on,
+):
+    """A late fsync/close failure must undo even the in-flight write."""
+    paths = [repository / "src" / "logic.py", repository / "src" / "service.py"]
+    original = {path: path.read_bytes() for path in paths}
+    real_atomic_write = multi_file.sandbox.atomic_write_bytes
+    count = [0]
+
+    def late_write_failure(path, content):
+        count[0] += 1
+        real_atomic_write(path, content)
+        if count[0] == failure_on:
+            raise OSError("simulated post-replace I/O error")
+
+    monkeypatch.setattr(multi_file.sandbox, "atomic_write_bytes", late_write_failure)
+    with pytest.raises(OSError, match="post-replace I/O error"):
+        apply_patch_batch(_patches(), workspace=repository)
+    assert {path: path.read_bytes() for path in paths} == original
+
+
 def test_path_escape_duplicate_and_virtualenv_are_rejected(repository):
     for edits in [
         [_patches()[0], _patches()[0]],
