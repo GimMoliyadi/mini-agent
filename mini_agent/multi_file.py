@@ -100,8 +100,10 @@ def apply_patch_batch(patches: list[dict[str, str]], *, workspace: Path) -> str:
                 # Fail closed on external modifications during the batch.
                 if sandbox.read_bounded_bytes(target) != before[target]:
                     raise PermissionError("提交期间文件内容发生变化，停止跨文件写入")
-                sandbox.atomic_write_bytes(target, updated)
+                # The atomic replace may succeed before a later fsync/close error.
+                # Track the in-flight target first so rollback covers it too.
                 applied.append(target)
+                sandbox.atomic_write_bytes(target, updated)
         except BaseException as exc:
             rollback_errors = []
             for target in reversed(applied):
