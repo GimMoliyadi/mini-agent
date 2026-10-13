@@ -14,7 +14,7 @@ from langchain.tools import tool
 
 from . import dev_environment as dev
 from .config import MAX_TOOL_RESULT_CHARS
-from .result import ToolResult
+from .result import ResultStatus, ToolResult
 
 
 def run_fullstack_checks(
@@ -84,8 +84,9 @@ def run_fullstack_checks(
         )
     if len(combined) > MAX_TOOL_RESULT_CHARS:
         combined = combined[:MAX_TOOL_RESULT_CHARS]
+    status: ResultStatus = "success" if succeeded else "command_failed"
     return ToolResult(
-        combined, "success" if succeeded else "command_failed",
+        combined, status,
         "fullstack_passed" if succeeded else "fullstack_failed",
         reports,
     )
