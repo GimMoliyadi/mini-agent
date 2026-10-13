@@ -72,7 +72,7 @@ def test_js_ts_dependency_graph_handles_relative_imports(repository):
         'import { store } from "./store"\nexport default store\n', encoding="utf-8",
     )
     (repository / "web" / "store.spec.ts").write_text(
-        'import { store } from "./store"\\nexport const expected = store\\n',
+        'import { store } from "./store"\nexport const expected = store\n',
         encoding="utf-8",
     )
     graph = json.loads(inspect_module_dependencies(workspace=repository, focus="web/util.ts"))
