@@ -25,6 +25,7 @@ from .scaffolding import build_scaffold_tools
 from .fullstack import build_fullstack_tools
 from .fullstack_checks import build_fullstack_check_tools
 from .openapi_contract import build_openapi_tools
+from .fullstack_codegen import build_fullstack_codegen_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -58,6 +59,9 @@ SYSTEM_PROMPT = (
     "若项目已有 FastAPI 导出的 openapi.json，可先 inspect_openapi_contract 检查接口和模型，"
     "再 generate_openapi_types 使用前端安装的 openapi-typescript 生成类型声明；"
     "生成后需运行前端 typecheck/build，并检查类型与前后端实际行为。"
+    "如果还没有 OpenAPI 文件，使用 export_fastapi_openapi 从本地 FastAPI app.openapi() 导出；"
+    "类型生成后可使用 generate_typed_api_client 创建基于 openapi-fetch 的类型化 API 客户端。"
+    "后端导出需要可导入的 app 模块与项目 .venv；前端客户端需已声明 openapi-fetch。"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
     "依赖缺失则使用 prepare_dev_environment 建立项目环境并安装，"
     "再使用 run_dev_task 执行测试、构建、lint 或已声明的脚本。"
@@ -106,6 +110,7 @@ class AgentApplication:
             tools.extend(build_fullstack_tools(self.settings.workspace))
             tools.extend(build_fullstack_check_tools(self.settings.workspace))
             tools.extend(build_openapi_tools(self.settings.workspace))
+            tools.extend(build_fullstack_codegen_tools(self.settings.workspace))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
