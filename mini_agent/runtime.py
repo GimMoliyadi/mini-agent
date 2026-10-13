@@ -53,6 +53,8 @@ SYSTEM_PROMPT = (
     "再使用 run_dev_task 执行测试、构建、lint 或已声明的脚本。"
     "Python 可以依据模块依赖分析的 candidate_test_files，用 run_dev_task 的 test_files 参数先运行定向测试，"
     "但候选测试不一定完整，最终仍需运行用户或 Coding Contract 指定的完整验收。"
+    "run_dev_task 失败时优先查看工具结果内的 diagnostics 文件路径与行号线索，"
+    "再读取相关源码进行修复；这些位置是候选线索，不代表已确定根因。"
     "Python 使用项目自己的 .venv；运行失败要检查工具状态，分析并修复后重测。"
     "使用 git_worktree_review 检查仓库，执行 Git 本地提交请单独调用 git_commit_files，"
     "明确指定文件且先完成必要测试；本地提交不会自动推送远程。"
