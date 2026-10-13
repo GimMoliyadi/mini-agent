@@ -327,6 +327,16 @@ remember_project_fact(category="todo", key="frontend-forms", content="Wire the u
 recall_project_facts(query="frontend")
 ```
 
+## 自动开发服务器管理（FastAPI + Vite）
+
+新增 `dev_server(action, name, path, port, app_import, script)`：
+
+- 启动后端：`dev_server(action="start", name="backend", path="backend", port=8000, app_import="app.main:app")` 使用后端已准备的 `.venv` 和 uvicorn；
+- 启动前端：`dev_server(action="start", name="frontend", path="frontend", port=5173)` 使用前端 `package.json` 里已声明的 Vite dev 脚本；
+- `action="status"` 获取进程与本机端口状态；`action="logs"` 获取近期输出；`action="stop"` 停止对应进程树。
+
+同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
+
 ## Playwright 本地浏览器操作
 
 可选安装 `pip install -e ".[browser]"` 并执行 `playwright install chromium`。然后在 mini-agent 的同一次运行里使用 `browser_action`：
