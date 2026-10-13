@@ -337,6 +337,12 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## 自动代码审查：当前变更 + 静态诊断
+
+新增只读工具 `review_code_changes()`：获取当前 Git 工作树相对于 HEAD 的文件变化与限量 diff，分析改变过的 Python 源码语法、裸 `except`、可变默认参数，以及 JSON 文件是否可解析，并检查是否缺少测试变更。对新增但尚未跟踪的代码文件同样进行静态语法检查。
+
+Agent 可以在修改文件后先调用该工具，再结合源码和需求分析是否有潜在逻辑错误，接着执行既有 pytest/Vitest/类型检查工具。它不会启动额外的审查 Agent，也不会自动声称某项启发式警告就是 Bug；有跨函数/跨模块语义疑问时仍需进一步阅读代码和实际测试。不会读取仓库外文件，也不会修改任何源文件。
+
 ## 智能测试生成：具体案例 → pytest
 
 新增 `generate_pytest_regressions(source_path, function_name, output_path, cases)`：Agent 先阅读代码及用户需求，设计正常、边界和异常的 **明确预期**，再使用结构化 JSON 案例生成真正可执行的 `pytest.mark.parametrize` 测试文件。生成器不需要重新实现 pytest，不会自己凭空决定函数的正确行为。
