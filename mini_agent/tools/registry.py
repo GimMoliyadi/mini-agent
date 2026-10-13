@@ -20,6 +20,7 @@ from .command import run_command
 from .filesystem import apply_patch, list_files, read_file, rename_file, search_text, write_file
 from .introspection import inspect_capabilities, inspect_project
 from .navigation import find_files, inspect_python_symbols
+from .module_map import inspect_module_dependencies
 from ..result import ToolResult
 
 
@@ -52,6 +53,12 @@ class InspectPythonSymbolsInput(BaseModel):
     path: str
     query: str = ""
     max_results: int = 50
+
+
+class InspectModuleDependenciesInput(BaseModel):
+    path: str = "."
+    focus: str = ""
+    max_files: int = 150
 
 
 class WriteFileInput(BaseModel):
@@ -259,6 +266,17 @@ def build_tools(
                 workspace=root,
                 args_schema=InspectPythonSymbolsInput,
                 metadata=_metadata(risk="read", mutation=False, workspace_arguments=("path",)),
+            ),
+            _make_tool(
+                name="inspect_module_dependencies",
+                description=(
+                    "静态检查 Python/JavaScript/TypeScript 模块的本地导入依赖图。"
+                    "focus 指定源码文件时返回直接依赖、直接及传递被依赖方，用于评估跨文件修改影响。"
+                ),
+                handler=inspect_module_dependencies,
+                workspace=root,
+                args_schema=InspectModuleDependenciesInput,
+                metadata=_metadata(risk="read", mutation=False, workspace_arguments=("path", "focus")),
             ),
             _make_tool(
                 name="inspect_project",
