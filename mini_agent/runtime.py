@@ -23,6 +23,7 @@ from .dev_environment import build_dev_environment_tools
 from .multi_file import build_multi_file_tools
 from .scaffolding import build_scaffold_tools
 from .fullstack import build_fullstack_tools
+from .fullstack_checks import build_fullstack_check_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -51,6 +52,8 @@ SYSTEM_PROMPT = (
     "面对包含前后端或多个包的仓库，先调用 discover_workspace_projects 识别子项目路径、技术栈和可运行脚本；"
     "协调 FastAPI 与 JS/TS 前端时先用 inspect_fullstack_interfaces 对齐后端路由和前端 HTTP 调用，"
     "按返回的路径和行号联合修改前后端；静态未匹配只是线索，最终需运行实际后端测试及前端构建。"
+    "前后端修改完成后可以使用 run_fullstack_checks 同时获取后端 Python 测试和前端声明脚本的结果；"
+    "两端都成功才算联合检查通过，但 Coding Contract 要求的验收命令仍需单独执行。"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
     "依赖缺失则使用 prepare_dev_environment 建立项目环境并安装，"
     "再使用 run_dev_task 执行测试、构建、lint 或已声明的脚本。"
@@ -97,6 +100,7 @@ class AgentApplication:
             tools.extend(build_multi_file_tools(self.settings.workspace))
             tools.extend(build_scaffold_tools(self.settings.workspace))
             tools.extend(build_fullstack_tools(self.settings.workspace))
+            tools.extend(build_fullstack_check_tools(self.settings.workspace))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
