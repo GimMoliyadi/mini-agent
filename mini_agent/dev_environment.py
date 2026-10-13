@@ -230,7 +230,6 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
     ) -> tuple[str, dict[str, Any]]:
         """Run project tests, including a bounded list of Python test files, or build/lint.
 
-
         For Python script mode, script is an existing relative .py entrypoint.
         For Node, task maps to package.json scripts; custom script names must
         already appear in package.json. For Python test/unittest only,
