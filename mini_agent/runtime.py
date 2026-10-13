@@ -33,6 +33,7 @@ from .dev_servers import DevServerManager, build_dev_server_tools
 from .code_index import build_code_index_tools
 from .test_generation import build_test_generation_tools
 from .code_review import build_code_review_tools
+from .alembic_migrations import build_migration_tools
 from .project_memory import build_project_memory_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
@@ -53,6 +54,9 @@ SYSTEM_PROMPT = (
     "对于行为定义明确的同步 Python 函数，可先读取源代码和需求，设计正常/边界/异常案例，"
     "再使用 generate_pytest_regressions 写入包含确切预期值的新 pytest 文件；"
     "预期值来自用户需求，不要把猜测当作事实，生成后必须运行测试。"
+    "涉及 SQLAlchemy 数据结构变化时，先用 inspect_alembic_status(action='heads') 查询当前版本，"
+    "再按明确的 schema 变更调用 generate_alembic_migration 创建支持回滚的 Alembic 脚本；"
+    "不自动运行 upgrade/downgrade，不把脚本生成当作数据库已迁移。"
     "代码修改结束时可调用 review_code_changes 自动收集语法错误、JSON 格式问题、"
     "易错模式和当前 Git diff；再由同一个 Agent 分析行为回归风险、修复高风险缺陷并执行测试。"
     "静态审查只是线索，不能替代测试或人工审核。"
@@ -155,6 +159,7 @@ class AgentApplication:
             tools.extend(build_code_index_tools(self.settings.workspace))
             tools.extend(build_test_generation_tools(self.settings.workspace))
             tools.extend(build_code_review_tools(self.settings.workspace))
+            tools.extend(build_migration_tools(self.settings.workspace))
             tools.extend(build_project_memory_tools(self.settings.workspace, self.settings.state_dir))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:

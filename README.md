@@ -337,6 +337,29 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## 数据库模型与 Alembic 迁移文件
+
+新增两项数据库演进工具，继续复用 SQLAlchemy/Alembic 而不引入第二套迁移执行器：
+
+- `inspect_alembic_status(backend_path="backend", action="heads")`：调用项目自己的 Python `.venv` 中的 Alembic CLI，支持 `heads`、`history`、`current`、`check`。后两种动作可能导入项目 Alembic `env.py`、连接其配置的数据库，但工具不会运行 `upgrade`/`downgrade`。
+- `generate_alembic_migration(backend_path, output_path, revision, down_revision, message, changes)`：从**已明确的结构化变更需求**生成兼容 Alembic 的可审查 Python 迁移文件，自动包含反向 `downgrade()`；当前支持 `create_table`、`add_column` 和 `create_index`，常用 SQLAlchemy 字段类型和 nullable/primary_key/string length。不会执行迁移或修改业务数据库。
+
+```json
+{
+  "backend_path": "backend",
+  "output_path": "backend/alembic/versions/20261013_add_status.py",
+  "revision": "20261013addstatus",
+  "down_revision": "abc123def456",
+  "message": "Add status to users",
+  "changes": [
+    {"action": "add_column", "table": "users",
+     "column": {"name": "status", "type": "String", "length": 40, "nullable": true}}
+  ]
+}
+```
+
+要求项目已初始化 Alembic（`alembic.ini` 与 `alembic/versions` 或 `migrations/versions`），Agent 在选择 `down_revision` 前需查看当前 heads。**这次是确定性迁移脚本生成，不等于 Alembic CLI 的 `--autogenerate` 模型差异自动推断**，也不替代迁移脚本的人工审阅和开发数据库演练。脚本文件创建遵循 Coding Contract、审批和变更日志；实际应用数据库 schema 是单独的、未自动执行的操作。
+
 ## 自动代码审查：当前变更 + 静态诊断
 
 新增只读工具 `review_code_changes()`：获取当前 Git 工作树相对于 HEAD 的文件变化与限量 diff，分析改变过的 Python 源码语法、裸 `except`、可变默认参数，以及 JSON 文件是否可解析，并检查是否缺少测试变更。对新增但尚未跟踪的代码文件同样进行静态语法检查。
