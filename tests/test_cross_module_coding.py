@@ -209,11 +209,11 @@ def test_hitl_rejects_stale_second_file_without_partial_changes(repository, tmp_
         pause = app.run("Fix both source modules")
         assert pause["status"] == "interrupted"
         service = repository / "src" / "service.py"
-        service.write_text(service.read_text(encoding="utf-8") + "# external edit\\n", encoding="utf-8")
+        service.write_text(service.read_text(encoding="utf-8") + "# external edit\n", encoding="utf-8")
         result = app.run(None, thread_id=pause["session_id"], decisions=[{"type": "approve"}])
     assert result["status"] != "completed", result
     assert "return a - b" in (repository / "src" / "logic.py").read_text()
-    assert "# external edit\\n" in service.read_text(encoding="utf-8")
+    assert "# external edit\n" in service.read_text(encoding="utf-8")
     assert "return add(a, b) * 2 + 0" not in service.read_text(encoding="utf-8")
 
 
