@@ -318,7 +318,9 @@ Agent 可以据此直接读取定位文件，然后执行修复与测试，不�
 - 静态提取前端 `fetch("/api/...")`、带字面量 `method` 的 `fetch`、以及 `axios.get/post`、`client.*`、`api.*` 等直接调用；
 - 按 HTTP 方法和路径（支持常见 `{id}` 路由参数）给出已匹配和未匹配请求，以及后端和前端的源码文件、行号。
 
-典型流程：**自动发现前后端 → 找到接口对应关系 → 批量创建/精确修改两端文件 → 分别运行后端测试与前端构建**。不启动服务器、不执行目标代码、不安装新依赖，复用已有 Coding 工具和验收机制。
+典型流程：**自动发现前后端 → 找到接口对应关系 → 批量创建/精确修改两端文件 → 联合执行后端测试与前端构建**。`inspect_fullstack_interfaces` 是只读静态分析，不启动服务器、不执行目标代码；实际检查由下面的执行工具完成。
+
+另新增 `run_fullstack_checks(backend_path="backend", frontend_path="frontend", backend_task="test", frontend_task="build", backend_test_files=None)`，直接复用现有 Python 项目 `.venv`、npm/pnpm 脚本、执行器和错误位置摘要。一次调用先运行后端 pytest/unittest，再运行前端 package.json 中声明的 test/build/lint/typecheck 脚本，即使后端失败也继续收集前端执行结果；返回两端独立状态、日志、错误位置和 `both_passed` 总结。可选 `backend_test_files` 支持定向 Python 测试。运行前应分别准备两个子项目的依赖，必要时完成 ASK 审批。此工具不会替代 Coding Contract 中指定的正式验收命令。
 
 此工具是有限的静态导航：不解析通过 `include_router(prefix=...)` 动态注册的前缀、运行时 base URL、JS 模板字符串、动态计算路径、复杂 axios 实例封装。未匹配只意味着**在此次扫描可识别的字面量路由中没有匹配**，不能直接断言线上接口不存在或无法调用；最终仍要实际联调验收。
 
