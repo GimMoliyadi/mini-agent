@@ -312,15 +312,15 @@ Agent 可以据此直接读取定位文件，然后执行修复与测试，不�
 
 ## FastAPI + 前端跨端接口协同检查
 
-新增只读工具 \`inspect_fullstack_interfaces(backend_path="backend", frontend_path="frontend")\`。Agent 可以先通过 \`discover_workspace_projects\` 找到 Python 后端与 JS/TS 前端，再调用该工具：
+新增只读工具 `inspect_fullstack_interfaces(backend_path="backend", frontend_path="frontend")`。Agent 可以先通过 `discover_workspace_projects` 找到 Python 后端与 JS/TS 前端，再调用该工具：
 
-- 静态提取常见 \`FastAPI\`/\`APIRouter\` 的 \`@app.get/post\`、\`@router.get/post\`、\`@router.api_route(methods=[...])\` 路由、字面量 \`APIRouter(prefix=...)\` 前缀；
-- 静态提取前端 \`fetch("/api/...")\`、带字面量 \`method\` 的 \`fetch\`、以及 \`axios.get/post\`、\`client.*\`、\`api.*\` 等直接调用；
-- 按 HTTP 方法和路径（支持常见 \`{id}\` 路由参数）给出已匹配和未匹配请求，以及后端和前端的源码文件、行号。
+- 静态提取常见 `FastAPI`/`APIRouter` 的 `@app.get/post`、`@router.get/post`、`@router.api_route(methods=[...])` 路由、字面量 `APIRouter(prefix=...)` 前缀；
+- 静态提取前端 `fetch("/api/...")`、带字面量 `method` 的 `fetch`、以及 `axios.get/post`、`client.*`、`api.*` 等直接调用；
+- 按 HTTP 方法和路径（支持常见 `{id}` 路由参数）给出已匹配和未匹配请求，以及后端和前端的源码文件、行号。
 
 典型流程：**自动发现前后端 → 找到接口对应关系 → 批量创建/精确修改两端文件 → 分别运行后端测试与前端构建**。不启动服务器、不执行目标代码、不安装新依赖，复用已有 Coding 工具和验收机制。
 
-此工具是有限的静态导航：不解析通过 \`include_router(prefix=...)\` 动态注册的前缀、运行时 base URL、JS 模板字符串、动态计算路径、复杂 axios 实例封装。未匹配只意味着**在此次扫描可识别的字面量路由中没有匹配**，不能直接断言线上接口不存在或无法调用；最终仍要实际联调验收。
+此工具是有限的静态导航：不解析通过 `include_router(prefix=...)` 动态注册的前缀、运行时 base URL、JS 模板字符串、动态计算路径、复杂 axios 实例封装。未匹配只意味着**在此次扫描可识别的字面量路由中没有匹配**，不能直接断言线上接口不存在或无法调用；最终仍要实际联调验收。
 
 ## 多文件快速创建：新模块脚手架
 
