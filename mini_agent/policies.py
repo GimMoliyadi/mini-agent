@@ -122,7 +122,10 @@ class BoundaryMiddleware(AgentMiddleware):
             if not paths:
                 raise PermissionError("该变更工具没有声明修改路径，不能用于 Coding Contract")
             for argument in paths:
-                path = resolve_path(request.tool_call["args"][argument], self.settings.workspace)
+                chosen = request.tool_call["args"].get(argument)
+                if name == "generate_openapi_types" and argument == "output_path":
+                    chosen = chosen or "frontend/src/openapi.d.ts"
+                path = resolve_path(chosen, self.settings.workspace)
                 if path.relative_to(self.settings.workspace).as_posix() not in contract.allowed_paths:
                     raise PermissionError("修改路径不在 Coding Contract.allowed_paths 中")
         before = request.state.get("preconditions", {}).get(request.tool_call["id"])
