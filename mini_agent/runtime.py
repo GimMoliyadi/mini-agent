@@ -114,7 +114,11 @@ class AgentApplication:
 
     def run(self, task: str | None, *, thread_id: str | None = None,
             contract: CodingTaskContract | None = None, decisions: list[dict] | None = None,
-            stream_updates: bool = False) -> dict:
+            stream_updates: bool = False, continue_incomplete: bool = False) -> dict:
+        if continue_incomplete and (task is not None or contract is not None or decisions is not None):
+            raise ValueError("继续原计划不能同时开始新任务、传入新 Contract 或审批决定")
+        if continue_incomplete and thread_id is None:
+            raise ValueError("继续原计划必须提供已有的 thread_id")
         thread_id = thread_id or uuid.uuid4().hex
         config = self.config(thread_id)
         saved = self.graph.get_state(config)
@@ -141,11 +145,28 @@ class AgentApplication:
                 raise ValueError("未找到 v2 Checkpoint；旧 JSON 会话保留但不能直接恢复")
             if contract is not None:
                 raise ValueError("恢复时使用 Checkpoint 中的原验收契约")
+            if continue_incomplete and saved.next:
+                raise ValueError("当前图仍有待恢复步骤；请先完成 --resume 审批或正常恢复")
             if any(task.interrupts for task in saved.tasks) and decisions is None:
                 return self.result(thread_id, state, saved)
             if not saved.next:
-                return self.result(thread_id, state, saved)
-            payload = Command(resume={"decisions": decisions}) if decisions is not None else None
+                if not continue_incomplete:
+                    return self.result(thread_id, state, saved)
+                plan = plan_summary(state.get("plan"))
+                if state.get("status") != "incomplete" or not plan or plan["completed"] == plan["total"]:
+                    raise ValueError("仅允许继续处于 incomplete 状态且计划尚未完成的任务")
+                # A new input turn on the SAME checkpoint: preserve task_id,
+                # task_start, contract, initial snapshot, and all tool history.
+                payload = {
+                    "messages": [{"role": "user", "content": (
+                        "继续刚才未完成的同一开发任务。请检查 Checkpoint 中现有计划、"
+                        "已完成工作与仍需处理的步骤，先核实结果再推进。"
+                        "不要重复已验证的副作用操作；受阻则明确说明。"
+                    )}],
+                    "status": "running",
+                }
+            else:
+                payload = Command(resume={"decisions": decisions}) if decisions is not None else None
         try:
             budget = RunBudget(environ={**os.environ, **self.settings.budget_options})
             with budget_context(budget):
