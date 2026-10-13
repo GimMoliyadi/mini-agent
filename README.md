@@ -310,6 +310,23 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
 
+## 项目级长期开发记忆
+
+新增 SQLite 项目记忆，可跨同一工作区的不同 Agent 会话复用（与当前 LangGraph 会话 Checkpoint 分开）：
+
+- `remember_project_fact(category, key, content)`：写入一条架构（`architecture`）、已完成功能（`feature`）、开发决策（`decision`）或待办（`todo`）。同分类同 key 更新覆盖旧记录。
+- `recall_project_facts(query="")`：列出最近的项目事实，或按关键字检索；Agent 在接续新任务时可先调此工具。
+- `delete_project_fact(category, key)`：删除不再成立的项目记录。
+
+SQLite 文件位于状态目录 `.mini-agent/project_memory.sqlite`，按工作区绝对路径生成项目隔离键；当工作区路径及 `state_dir` 保持一致时，关闭 Agent、重新启动也能找回记录。此记录是模型可读取的项目资料，不自动修改源代码，也不应存放密钥或私密信息。写入和删除需遵循原有 ASK/DENY 工具审批，读取无需审批。
+
+```text
+remember_project_fact(category="architecture", key="backend", content="FastAPI routes under backend/app/api")
+remember_project_fact(category="feature", key="typed-client", content="OpenAPI TypeScript client scaffold completed")
+remember_project_fact(category="todo", key="frontend-forms", content="Wire the user form to typed API hooks")
+recall_project_facts(query="frontend")
+```
+
 ## Playwright 本地浏览器操作
 
 可选安装 `pip install -e ".[browser]"` 并执行 `playwright install chromium`。然后在 mini-agent 的同一次运行里使用 `browser_action`：
