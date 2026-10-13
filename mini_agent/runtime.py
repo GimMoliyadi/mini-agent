@@ -19,6 +19,7 @@ from .policies import BoundaryMiddleware
 from .planning import build_plan_tools, plan_summary
 from .recovery import decide_recovery, recovery_message, work_signature
 from .git_workflow import build_git_tools
+from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
 from .state import TaskState
@@ -39,7 +40,9 @@ SYSTEM_PROMPT = (
     "需要调整步骤时提供修订原因。每批工具调用至多包含一次计划更新，"
     "规划不代表执行成功，步骤完成必须依据工具与测试结果。"
     "使用 git_worktree_review 检查仓库，执行 Git 本地提交请单独调用 git_commit_files，"
-    "明确指定文件且先完成必要测试；提交不会自动推送远程。"
+    "明确指定文件且先完成必要测试；本地提交不会自动推送远程。"
+    "只有显式配置后才能使用 GitHub 远程工具。先审批 github_push_branch，再单独审批"
+    "github_create_draft_pr；可用 github_pr_status 读取 CI，不得强推或自动合并。"
     "遇到审批拒绝应如实说明。完成目标后给出简洁总结，不要重复已完成的操作。"
 )
 
@@ -70,6 +73,7 @@ class AgentApplication:
             }})
             tools.extend(build_plan_tools())
             tools.extend(build_git_tools(self.settings.workspace))
+            tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
             if self.settings.mcp_config_path is not None:

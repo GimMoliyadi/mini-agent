@@ -25,6 +25,8 @@ class Settings:
     mcp_config_path: Path | None = None
     mcp_timeout: float = 45.0
     budget_options: dict[str, str] = field(default_factory=dict, repr=False)
+    github_repo: str = ""
+    github_token: str = field(default="", repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "workspace", self.workspace.expanduser().resolve())
@@ -74,5 +76,7 @@ class Settings:
             mcp_config_path=mcp_path,
             mcp_timeout=float(values.get("MINI_AGENT_MCP_TIMEOUT") or "45"),
             budget_options={key: str(value) for key, value in values.items()
-                            if key.startswith("MINI_AGENT_") and value is not None},
+                            if key.startswith("MINI_AGENT_") and value is not None and key != "MINI_AGENT_GITHUB_TOKEN"},
+            github_repo=values.get("MINI_AGENT_GITHUB_REPO") or "",
+            github_token=values.get("MINI_AGENT_GITHUB_TOKEN") or "",
         )

@@ -247,9 +247,29 @@ the required fresh passing test must be in the LangGraph trace **before**
 the commit. The Git index/branch ref are not ordinary workspace-file
 mutations and cannot be undone by the file journal.
 
-Complete remote delivery (push, PR creation and merging) remains a separate,
-explicitly authorized integration via an approved GitHub MCP server or the
-developer's normal Git workflow. No remote-push capability is granted here.
+Remote push and PR creation are now optional, separately approved GitHub CLI
+tools, enabled only with explicit private credentials; see the next section.
+Automatic PR merging remains unsupported.
+
+## GitHub 远程交付（可选，需单独授权）
+
+PR #9 新增一个独立、可选的 GitHub 交付通道，使用本机 Git 与官方 [GitHub CLI](https://cli.github.com/)；没有重写 GitHub API 客户端。
+
+在**私有状态目录**（应位于 Git 工作区以外）的 `.env` 或进程环境里明确配置：
+
+```dotenv
+MINI_AGENT_GITHUB_REPO=owner/repository
+MINI_AGENT_GITHUB_TOKEN=your-private-token
+TOOL_APPROVAL_MODE=ASK
+```
+
+Token 使用最小权限，只授予目标仓库所需的 Contents/Pull requests 读写和检查状态读取权限。不要在聊天中发送真实 Token，也不要将其提交到 Git。只有仓库名和 Token 都已配置时，GitHub 工具才会出现在模型的工具列表中。
+
+- `github_push_branch()`：核对工作区与 Git 根目录一致、`origin` 是精确的 HTTPS GitHub 仓库、当前是非保护分支且工作区无未提交内容；如存在 Coding Contract，还需要最新的通过测试和变更范围证据。单独审批后执行非强推的 `git push`。
+- `github_create_draft_pr(title, body, base_branch)`：再次单独审批；确认远端分支 SHA 与本地 HEAD 一致，已有同目标 PR 则直接返回，不重复创建；否则创建 **Draft PR**。
+- `github_pr_status()`：只读当前分支的 PR 链接、分支信息和 CI 状态。
+
+该功能不支持推送到 main/master 等保护名称，不自动合并、强制覆盖远端或访问其它 GitHub 仓库。固定的 Git/gh 子进程接收私有 Token，但模型及事件日志不应接触 Token；远程副作用不能由 SQLite Checkpoint 回滚。默认 ASK 下，每一个远程写步骤都必须由用户批准，且不能与其它工具并行。CI 使用隔离 Git 仓库和模拟的 GitHub 返回值，**不执行真实远程推送**；真实公网联调仍需单独在测试仓库验收。
 
 ## 状态、恢复与副作用边界
 
