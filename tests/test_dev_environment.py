@@ -244,7 +244,11 @@ def test_targeted_tests_fail_closed_for_invalid_paths(python_project):
     ]:
         with pytest.raises((ValueError, PermissionError)):
             pick(project, names)
-    (project / "test_link.py").symlink_to(project / "test_calculator.py")
+    try:
+        (project / "test_link.py").symlink_to(project / "test_calculator.py")
+    except (OSError, NotImplementedError):
+        # Windows runners may not permit symlink creation.
+        return
     with pytest.raises(PermissionError):
         pick(project, ["test_link.py"])
 
