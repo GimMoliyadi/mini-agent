@@ -7,6 +7,7 @@ All commands use the application's bounded no-shell process runner.
 
 from __future__ import annotations
 
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,15 @@ _MAX_DISPLAY_CHARS = 6500
 _RUN_TIMEOUT = 120.0
 _INSTALL_TIMEOUT = 240.0
 _MAX_TARGET_TEST_FILES = 16
+_MAX_DISCOVERY_DIRS = 500
+_MAX_DISCOVERY_ENTRIES = 4000
+_MAX_PROJECTS = 30
+_MAX_DISCOVERY_DEPTH = 8
+_DISCOVERY_SKIP_DIRS = frozenset({
+    ".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".next", ".nuxt", ".tox", "dist", "build",
+    "coverage", ".idea", ".gradle",
+})
 
 
 def _project(workspace: Path, path: str) -> Path:
@@ -68,6 +78,79 @@ def _detect(project: Path) -> dict[str, Any]:
         "node_dependencies_installed": (project / "node_modules").is_dir(),
         "node_scripts": sorted(scripts),
     }
+
+
+def _discover_workspace_projects(
+    workspace: Path, path: str = ".", max_depth: int = 4, max_projects: int = 20,
+) -> dict[str, Any]:
+    """Find Python/Node subprojects and their tasks without running project code."""
+    if isinstance(max_depth, bool) or not isinstance(max_depth, int) or not 0 <= max_depth <= _MAX_DISCOVERY_DEPTH:
+        raise ValueError(f"max_depth 必须在 0–{_MAX_DISCOVERY_DEPTH} 之间")
+    if isinstance(max_projects, bool) or not isinstance(max_projects, int) or not 1 <= max_projects <= _MAX_PROJECTS:
+        raise ValueError(f"max_projects 必须在 1–{_MAX_PROJECTS} 之间")
+    root = workspace.resolve()
+    start = _project(root, path)
+    queue = deque([(start, 0)])
+    projects: list[dict[str, Any]] = []
+    scanned_dirs = 0
+    scanned_entries = 0
+    truncated = False
+    markers = frozenset({"pyproject.toml", "requirements.txt", "setup.py", "package.json"})
+    while queue:
+        if scanned_dirs >= _MAX_DISCOVERY_DIRS or scanned_entries >= _MAX_DISCOVERY_ENTRIES:
+            truncated = True
+            break
+        directory, depth = queue.popleft()
+        scanned_dirs += 1
+        try:
+            with os.scandir(directory) as iterator:
+                entries = []
+                for entry in iterator:
+                    scanned_entries += 1
+                    if scanned_entries > _MAX_DISCOVERY_ENTRIES:
+                        truncated = True
+                        break
+                    entries.append(entry)
+        except OSError:
+            continue
+        names = {
+            item.name for item in entries
+            if item.name in markers and item.is_file(follow_symlinks=False)
+        }
+        if names:
+            relative = directory.relative_to(root).as_posix()
+            try:
+                info = _detect(directory)
+                # Script names suffice to choose tools; don't dump full package metadata.
+                scripts = info["node_scripts"]
+                info["node_scripts"] = scripts[:24]
+                info["node_scripts_truncated"] = len(scripts) > 24
+                projects.append({
+                    "path": relative, "languages": [
+                        name for name in ("python", "node") if info[name]
+                    ], **info,
+                })
+            except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+                projects.append({"path": relative, "error": type(exc).__name__})
+            if len(projects) >= max_projects:
+                truncated = truncated or bool(queue) or depth < max_depth
+                break
+        if depth < max_depth and not truncated:
+            for entry in sorted(entries, key=lambda item: item.name):
+                if entry.name not in _DISCOVERY_SKIP_DIRS and not entry.name.startswith("."):
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            queue.append((Path(entry.path), depth + 1))
+                    except OSError:
+                        continue
+    result: dict[str, Any] = {
+        "path": start.relative_to(root).as_posix(), "scanned_directories": scanned_dirs,
+        "projects": projects, "truncated": truncated or bool(queue),
+    }
+    while len(json.dumps(result, ensure_ascii=False)) > _MAX_DISPLAY_CHARS and projects:
+        projects.pop()
+        result["truncated"] = True
+    return result
 
 
 def _python_exe(project: Path) -> Path:
@@ -205,6 +288,20 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
         directory = _project(root, path)
         return json.dumps(_detect(directory), ensure_ascii=False)
 
+    @tool
+    def discover_workspace_projects(
+        path: str = ".", max_depth: int = 4, max_projects: int = 20,
+    ) -> str:
+        """Discover Python/Node subprojects in a monorepo, including their scripts and environments.
+
+        Returns project-relative paths accepted by inspect_dev_environment,
+        prepare_dev_environment and run_dev_task. No commands are executed.
+        """
+        return redact_text(json.dumps(
+            _discover_workspace_projects(root, path, max_depth, max_projects),
+            ensure_ascii=False,
+        ))
+
     @tool(response_format="content_and_artifact")
     def prepare_dev_environment(
         path: str = ".",
@@ -279,6 +376,7 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
         return _outcome(_execute(argv, directory, root, timeout=_RUN_TIMEOUT))
 
     inspect_dev_environment.metadata = {"risk": "read", "mutation": False, "workspace_arguments": ("path",)}
+    discover_workspace_projects.metadata = {"risk": "read", "mutation": False, "workspace_arguments": ("path",)}
     prepare_dev_environment.metadata = {"risk": "execute", "mutation": False, "workspace_arguments": ("path",), "dependency_install": True}
     run_dev_task.metadata = {"risk": "execute", "mutation": False, "workspace_arguments": ("path",)}
-    return [inspect_dev_environment, prepare_dev_environment, run_dev_task]
+    return [inspect_dev_environment, discover_workspace_projects, prepare_dev_environment, run_dev_task]
