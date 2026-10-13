@@ -90,7 +90,8 @@ class VerificationMiddleware(AgentMiddleware):
         if unfinished:
             self.events.emit(
                 "plan_incomplete", task_id=state.get("task_id"),
-                completed=plan["completed"], total=plan["total"],
+                completed=plan["completed"] if plan else 0,
+                total=plan["total"] if plan else 0,
             )
         if not state.get("contract"):
             return {"status": "completed" if answer.content and not failures and not unfinished else "incomplete"}
