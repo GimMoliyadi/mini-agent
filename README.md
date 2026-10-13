@@ -119,6 +119,20 @@ flowchart LR
 `mutation_paths` 由 `BoundaryMiddleware` 用于审批、contract 路径检查和前置条件
 校验。
 
+## 实时进度事件（同步 LangGraph streaming）
+
+运行 `mini-agent task --task "检查代码并修复" --progress-jsonl --workspace PATH` 时，
+程序仍在 stdout 只输出最终 JSON 结果，但会在 **stderr 持续输出 JSON Lines**：
+`graph_step` 表示 LangGraph 节点已经完成，`tool`、`model`、`verification`
+和 `budget` 为既有中间件事件。每条消息都自带事件类型和时间；
+`graph_step` 只包含节点名称、任务 ID 等元信息，**不输出工具参数、模型文本、文件正文或 API Key**。
+CLI 默认不开启节点流，现有脚本接口不变。
+
+这是 **节点级实时进度**，不是逐 Token 回答流，不代表前端 SSE/async API 已实现。
+中断审批仍使用原来的 checkpoint 和 `--resume` 命令；
+`--progress-jsonl` 也适用于交互式 `start` 命令。
+后续 Web UI 可以直接解析 stderr 的 JSONL 事件而无需读取 LangGraph 内部状态。
+
 ## Checkpoint 任务计划管理
 
 复杂开发任务可调用模型可见工具 `set_task_plan(steps, reason)`、
