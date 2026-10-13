@@ -30,6 +30,7 @@ from .react_query_codegen import build_react_query_tools
 from .openapi_impact import build_openapi_impact_tools
 from .browser_tools import BrowserSession, build_browser_tools
 from .dev_servers import DevServerManager, build_dev_server_tools
+from .code_index import build_code_index_tools
 from .project_memory import build_project_memory_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
@@ -55,6 +56,9 @@ SYSTEM_PROMPT = (
     "需要调整步骤时提供修订原因。每批工具调用至多包含一次计划更新，"
     "规划不代表执行成功，步骤完成必须依据工具与测试结果。"
     "跨模块修改前可先调用 inspect_module_dependencies 检查被依赖与受影响文件；"
+    "可选 Tree-sitter 索引启用后，使用 inspect_code_symbols 和 find_code_references "
+    "按 AST 查找跨 Python/JS/TS 文件的函数、类和候选引用，再定位需要修改的源码；"
+    "静态引用不代表已建立完整的作用域解析或跨模块调用图。"
     "修改多个已有源码文件时优先用 apply_patch_batch 一次提交多个精确补丁，"
     "需要添加全新路由、模块和测试文件时，用 create_files_batch 一次生成多个文件及目录；"
     "创建后再运行相关测试，后续修改已有文件继续用 apply_patch_batch。"
@@ -137,6 +141,7 @@ class AgentApplication:
             server_manager = DevServerManager(self.settings.workspace)
             self.stack.callback(server_manager.close)
             tools.extend(build_dev_server_tools(server_manager))
+            tools.extend(build_code_index_tools(self.settings.workspace))
             tools.extend(build_project_memory_tools(self.settings.workspace, self.settings.state_dir))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
