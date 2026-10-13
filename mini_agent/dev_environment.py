@@ -16,7 +16,7 @@ from typing import Any, Literal
 from langchain.tools import tool
 
 from .process_runner import MAX_COMMAND_OUTPUT_BYTES, run_process
-from .result import ToolResult
+from .result import ResultStatus, ToolResult
 from .sandbox import redact_text, resolve_path
 
 _MAX_MANIFEST_BYTES = 512 * 1024
@@ -110,6 +110,7 @@ def _execute(argv: list[str], project: Path, workspace: Path, *, timeout: float)
     output = f"exit_code={completed.returncode}; timed_out={completed.timed_out}; output_limit={completed.output_limit_exceeded}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
     if len(output) > _MAX_DISPLAY_CHARS:
         output = output[:_MAX_DISPLAY_CHARS // 2] + "\n[output truncated]\n" + output[-_MAX_DISPLAY_CHARS // 2:]
+    status: ResultStatus
     if completed.timed_out:
         status, code = "command_failed", "timeout"
     elif completed.output_limit_exceeded:
