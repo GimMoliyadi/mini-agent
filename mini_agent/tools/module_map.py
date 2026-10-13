@@ -137,14 +137,14 @@ def inspect_module_dependencies(
         scan["bytes"] += len(text.encode("utf-8"))
         if file.suffix == ".py":
             for candidate, kind in _py_imports(text, source):
-                resolved = _resolve_python(candidate, names)
-                if resolved and resolved != source:
-                    edges.add((source, resolved, kind))
+                located = _resolve_python(candidate, names)
+                if located and located != source:
+                    edges.add((source, located, kind))
         else:
             for candidate in _js_imports(text):
-                resolved = _resolve_js(source, candidate, names)
-                if resolved and resolved != source:
-                    edges.add((source, resolved, "javascript"))
+                located = _resolve_js(source, candidate, names)
+                if located and located != source:
+                    edges.add((source, located, "javascript"))
     all_edges = sorted(edges)
     result: dict[str, Any] = {
         "path": path, "files_scanned": len(candidates),
