@@ -57,7 +57,7 @@ def decide_recovery(state: dict[str, Any], pending_nodes: tuple[str, ...]) -> Re
         return RecoveryDecision(True, "unfinished_plan", "plan_progress")
     # Without an unfinished plan, error evidence or a pending contract
     # check, repeated requests cannot be distinguished from wasted quota.
-    if state.get("contract") and state.get("verification", {}).get("accepted") is False:
+    if state.get("contract") and (state.get("verification") or {}).get("accepted") is False:
         return RecoveryDecision(True, "contract_unverified", "verification")
     return RecoveryDecision(False, "no_actionable_failure")
 
