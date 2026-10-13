@@ -24,6 +24,7 @@ _GENERATED_OUTPUT_DEFAULTS = {
     "generate_react_query_hooks": "frontend/src/api-hooks.ts",
     "browser_screenshot": "screenshots/browser.png",
     "generate_pytest_regressions": None,
+    "generate_alembic_migration": None,
 }
 
 
@@ -44,14 +45,14 @@ class BoundaryMiddleware(AgentMiddleware):
             budget.validate_batch_size(len(getattr(message, "tool_calls", [])))
         plan_updates = [call for call in getattr(message, "tool_calls", [])
                         if call["name"] in {"set_task_plan", "update_task_step"}]
-        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client", "generate_react_query_hooks", "browser_screenshot", "generate_pytest_regressions"}
+        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client", "generate_react_query_hooks", "browser_screenshot", "generate_pytest_regressions", "generate_alembic_migration"}
         if any(call["name"] in exclusive for call in getattr(message, "tool_calls", [])) and len(getattr(message, "tool_calls", [])) != 1:
             raise ValueError("Git 提交或 GitHub 远程写入必须单独调用，避免并行操作冲突")
         if len(plan_updates) > 1:
             raise ValueError("每批最多一次计划更新，避免并行写入同一个 Checkpoint 状态")
         preconditions = {}
         for call in getattr(message, "tool_calls", []):
-            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client", "generate_react_query_hooks", "browser_screenshot", "generate_pytest_regressions"}:
+            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client", "generate_react_query_hooks", "browser_screenshot", "generate_pytest_regressions", "generate_alembic_migration"}:
                 try:
                     preconditions[call["id"]] = (
                         patch_batch_precondition(call["args"]["patches"], self.settings.workspace)
@@ -71,7 +72,7 @@ class BoundaryMiddleware(AgentMiddleware):
         return {"preconditions": preconditions}
 
     def approval_description(self, call, state, runtime):
-        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client", "generate_react_query_hooks", "browser_screenshot", "generate_pytest_regressions"}:
+        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client", "generate_react_query_hooks", "browser_screenshot", "generate_pytest_regressions", "generate_alembic_migration"}:
             try:
                 return (
                     preview_patch_batch(call["args"]["patches"], self.settings.workspace)
@@ -110,6 +111,13 @@ class BoundaryMiddleware(AgentMiddleware):
                         f"{call['args'].get('output_path', '')}"
                     )
                     if call["name"] == "generate_pytest_regressions"
+                    else redact_text(
+                        f"生成 Alembic 迁移文件 {call['args'].get('output_path', '')}，"
+                        f"revision={call['args'].get('revision', '')}，"
+                        f"包含 {len(call['args'].get('changes', []))} 条变更及反向 downgrade；"
+                        "本工具不会执行数据库升级"
+                    )
+                    if call["name"] == "generate_alembic_migration"
                     else preview_tool_change(call["name"], call["args"], self.settings.workspace)
                 )
             except (OSError, ValueError, KeyError) as exc:
