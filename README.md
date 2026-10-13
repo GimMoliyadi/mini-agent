@@ -310,6 +310,42 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
 
+## FastAPI 自动导出接口 + 类型化前端客户端
+
+基于已有的 OpenAPI 类型生成，再扩展两项实际功能：
+
+- `export_fastapi_openapi(backend_path="backend", app_import="main:app", output_path="backend/openapi.json")`：通过后端项目独立的 `.venv` 解释器导入 FastAPI 应用并调用 `app.openapi()`，导出 JSON。不要求手工保存接口文档，也不必启动 HTTP 服务；**导入应用模块会执行项目初始化代码**，因此应仅在可信项目使用。后端缺少依赖时先调用 `prepare_dev_environment`。
+- `generate_typed_api_client(frontend_path="frontend", types_path="frontend/src/openapi.d.ts", output_path="frontend/src/api-client.ts", base_url="")`：生成使用 `openapi-fetch` 的类型化 API 客户端，直接引用上一步 `openapi-typescript` 生成的 `paths` 类型。前端 `package.json` 需要事先声明 `openapi-fetch` 依赖（可使用原有依赖安装工具）。
+
+两项工具与原有的 `inspect_openapi_contract`、`generate_openapi_types` 串成一条功能链：
+
+```text
+export_fastapi_openapi(backend_path="backend", app_import="app.main:app")
+inspect_openapi_contract(schema_path="backend/openapi.json")
+generate_openapi_types(
+    schema_path="backend/openapi.json",
+    frontend_path="frontend",
+    output_path="frontend/src/openapi.d.ts",
+)
+generate_typed_api_client(
+    frontend_path="frontend",
+    types_path="frontend/src/openapi.d.ts",
+    output_path="frontend/src/api-client.ts",
+    base_url="",
+)
+```
+
+生成的客户端参考：
+
+```typescript
+import createClient from "openapi-fetch";
+import type { paths } from "./openapi";
+
+export const api = createClient<paths>({ baseUrl: "" });
+```
+
+如果契约中的路径已经包含 `/api`，默认 `base_url=""` 通常更适合避免重复拼接 `/api`。工具允许创建或更新客户端文件，也支持设置其它 `base_url`，但不会强制改写用户原有页面或 API 调用。写入沿用既有审批、Coding Contract 和变更日志；后端导出失败不会覆盖旧文档。仍需后续对真实依赖执行联调和构建；**本轮以功能叠加为主，未进行真实项目端到端验收。**
+
 ## OpenAPI 契约解析与 TypeScript 类型生成
 
 新增两项 Coding Agent 工具：
