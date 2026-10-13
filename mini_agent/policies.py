@@ -17,6 +17,13 @@ from .multi_file import patch_batch_precondition, preview_patch_batch, prepare_p
 from .scaffolding import creation_precondition, preview_file_creations, prepare_file_creations
 
 
+_GENERATED_OUTPUT_DEFAULTS = {
+    "generate_openapi_types": "frontend/src/openapi.d.ts",
+    "export_fastapi_openapi": "backend/openapi.json",
+    "generate_typed_api_client": "frontend/src/api-client.ts",
+}
+
+
 class BoundaryMiddleware(AgentMiddleware):
     state_schema = TaskState
 
@@ -34,14 +41,14 @@ class BoundaryMiddleware(AgentMiddleware):
             budget.validate_batch_size(len(getattr(message, "tool_calls", [])))
         plan_updates = [call for call in getattr(message, "tool_calls", [])
                         if call["name"] in {"set_task_plan", "update_task_step"}]
-        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch", "create_files_batch", "generate_openapi_types"}
+        exclusive = {"git_commit_files", "github_push_branch", "github_create_draft_pr", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client"}
         if any(call["name"] in exclusive for call in getattr(message, "tool_calls", [])) and len(getattr(message, "tool_calls", [])) != 1:
             raise ValueError("Git 提交或 GitHub 远程写入必须单独调用，避免并行操作冲突")
         if len(plan_updates) > 1:
             raise ValueError("每批最多一次计划更新，避免并行写入同一个 Checkpoint 状态")
         preconditions = {}
         for call in getattr(message, "tool_calls", []):
-            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types"}:
+            if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client"}:
                 try:
                     preconditions[call["id"]] = (
                         patch_batch_precondition(call["args"]["patches"], self.settings.workspace)
@@ -49,10 +56,10 @@ class BoundaryMiddleware(AgentMiddleware):
                         else creation_precondition(call["args"]["files"], self.settings.workspace)
                         if call["name"] == "create_files_batch"
                         else capture_precondition(
-                            "write_file", {"path": call["args"].get("output_path", "frontend/src/openapi.d.ts"), "content": ""},
+                            "write_file", {"path": call["args"].get("output_path", _GENERATED_OUTPUT_DEFAULTS[call["name"]]), "content": ""},
                             self.settings.workspace,
                         )
-                        if call["name"] == "generate_openapi_types"
+                        if call["name"] in _GENERATED_OUTPUT_DEFAULTS
                         else capture_precondition(call["name"], call["args"], self.settings.workspace)
                     )
                 except (OSError, ValueError, KeyError):
@@ -61,7 +68,7 @@ class BoundaryMiddleware(AgentMiddleware):
         return {"preconditions": preconditions}
 
     def approval_description(self, call, state, runtime):
-        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types"}:
+        if call["name"] in {"write_file", "apply_patch", "rename_file", "apply_patch_batch", "create_files_batch", "generate_openapi_types", "export_fastapi_openapi", "generate_typed_api_client"}:
             try:
                 return (
                     preview_patch_batch(call["args"]["patches"], self.settings.workspace)
@@ -74,6 +81,16 @@ class BoundaryMiddleware(AgentMiddleware):
                         f"(前端项目 {call['args'].get('frontend_path', 'frontend')})"
                     )
                     if call["name"] == "generate_openapi_types"
+                    else redact_text(
+                        f"从 FastAPI 应用 {call['args'].get('app_import', 'main:app')} 导出 OpenAPI "
+                        f"到 {call['args'].get('output_path', 'backend/openapi.json')}"
+                    )
+                    if call["name"] == "export_fastapi_openapi"
+                    else redact_text(
+                        f"根据 {call['args'].get('types_path', 'frontend/src/openapi.d.ts')} 创建 openapi-fetch "
+                        f"客户端 {call['args'].get('output_path', 'frontend/src/api-client.ts')}"
+                    )
+                    if call["name"] == "generate_typed_api_client"
                     else preview_tool_change(call["name"], call["args"], self.settings.workspace)
                 )
             except (OSError, ValueError, KeyError) as exc:
@@ -123,8 +140,8 @@ class BoundaryMiddleware(AgentMiddleware):
                 raise PermissionError("该变更工具没有声明修改路径，不能用于 Coding Contract")
             for argument in paths:
                 chosen = request.tool_call["args"].get(argument)
-                if name == "generate_openapi_types" and argument == "output_path":
-                    chosen = chosen or "frontend/src/openapi.d.ts"
+                if name in _GENERATED_OUTPUT_DEFAULTS and argument == "output_path":
+                    chosen = chosen or _GENERATED_OUTPUT_DEFAULTS[name]
                 path = resolve_path(chosen, self.settings.workspace)
                 if path.relative_to(self.settings.workspace).as_posix() not in contract.allowed_paths:
                     raise PermissionError("修改路径不在 Coding Contract.allowed_paths 中")
@@ -139,10 +156,10 @@ class BoundaryMiddleware(AgentMiddleware):
                 request.tool_call["args"]["files"], self.settings.workspace,
             ):
                 raise PermissionError("批量创建审批后目标已变化，请重新预览和批准")
-        elif name == "generate_openapi_types":
+        elif name in _GENERATED_OUTPUT_DEFAULTS:
             validate_precondition(
                 "write_file",
-                {"path": request.tool_call["args"].get("output_path", "frontend/src/openapi.d.ts"),
+                {"path": request.tool_call["args"].get("output_path", _GENERATED_OUTPUT_DEFAULTS[name]),
                  "content": ""},
                 self.settings.workspace, before,
             )
