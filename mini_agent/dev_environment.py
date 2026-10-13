@@ -134,8 +134,10 @@ def _prepare_python(project: Path, workspace: Path) -> ToolResult:
         created = _execute([sys.executable, "-m", "venv", str(venv)], project, workspace, timeout=_INSTALL_TIMEOUT)
         if created.status != "success":
             return created
-    if not interpreter.is_file() or interpreter.is_symlink():
-        raise RuntimeError("虚拟环境创建失败或解释器路径不是普通文件")
+    # POSIX venv interpreters are normally symlinks to their system Python;
+    # the project .venv directory itself was checked against redirection.
+    if not interpreter.is_file():
+        raise RuntimeError("虚拟环境创建失败或解释器不可用")
     if (project / "requirements.txt").is_file():
         argv = [str(interpreter), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-r", "requirements.txt"]
     elif (project / "pyproject.toml").is_file() or (project / "setup.py").is_file():
