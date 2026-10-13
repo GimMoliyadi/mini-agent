@@ -46,6 +46,10 @@ def build_parser():
             command.add_argument("--task")
             command.add_argument("--continue-plan", action="store_true",
                                  help="在同一 checkpoint 中继续此前未完成的计划，而不是开启新任务")
+            command.add_argument("--auto-recover", action="store_true",
+                                 help="本次执行中若存在可恢复错误或未完成计划，自动进行有限次修复")
+            command.add_argument("--max-recovery-attempts", type=int, default=2,
+                                 help="自动修复回合上限（1–3，默认 2）")
             decision = command.add_mutually_exclusive_group()
             decision.add_argument("--approve", action="store_true", help="明确批准恢复时所有当前待审批操作")
             decision.add_argument("--reject", action="store_true")
@@ -124,7 +128,9 @@ def run_agent(args, state_dir, workspace):
                 raise ValueError("--continue-plan 只能与 --resume SESSION_ID 单独使用")
             result = app.run(task, thread_id=thread_id, contract=contract,
                              stream_updates=args.progress_jsonl,
-                             continue_incomplete=args.continue_plan)
+                             continue_incomplete=args.continue_plan,
+                             auto_recover=args.auto_recover,
+                             max_recovery_attempts=args.max_recovery_attempts)
             if result["interrupts"] and (args.approve or args.reject):
                 decisions = [{"type": "approve" if args.approve else "reject"}
                              for item in result["interrupts"] for _ in item.get("action_requests", [])]

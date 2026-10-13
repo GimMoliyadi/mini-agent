@@ -168,6 +168,29 @@ Checkpoint 保存的 `plan` 和 `session_id`。无计划的普通短任务不受
 先使用普通 `--resume` 并进行审批。继续运行仍会消耗模型额度，
 并遵守原工具限制及审核策略。
 
+## 自动开发修复闭环（有限次）
+
+新增可选的 `--auto-recover`：当 Agent 停在 `incomplete`，且存在
+**失败的代码工具/测试**、未完成的非阻塞计划或未通过的 Coding Contract 验收时，
+它会读取同一 LangGraph Checkpoint 的实际工具结果，开始下一轮定位、修改、测试，
+而不是立即退出或重新创建任务。
+
+```powershell
+.\mini.cmd task --task "检查仓库并修复失败的测试" --workspace C:\path\to\trusted-project --auto-recover --max-recovery-attempts 2 --progress-jsonl
+```
+
+- 使用已有 `create_agent`、工具权限和 HITL 中断；恢复提示不会执行命令，
+  也不会自动批准副作用或重放不明确的远端调用。
+- 默认需要显式开启，最多自动继续 1–3 回合（默认 2）。
+  同一次 `run` 所有回合共享总任务时限、Token/工具/模型请求额度。
+- 遇到 `blocked` 计划、拒绝审批、待恢复节点或无可操作证据停止自动恢复；
+  如果连续回合没有增加已完成步骤、成功变更或成功命令，也会停止。
+- 事件回调/JSONL 会发送 `recovery_started` 和 `recovery_stopped`
+  （仅类别与计数，不暴露代码正文）。未真正完成时依旧报告 `incomplete`，
+  不会把再次请求模型等同于修复成功。
+- **边界**：目前是单次 CLI/API 调用内有限次自动修复；跨额度周期后台调度、
+  未确定的外部副作用的 exactly-once、真正自主部署及 GitHub PR 提交尚未实现。
+
 ## 开发任务能力
 
 原有的文件读取、全文搜索、补丁修改和测试执行之外，`run_command` 现在支持：
