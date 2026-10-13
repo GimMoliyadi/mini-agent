@@ -244,6 +244,16 @@ checkpoint 中的 `status`、`plan`、失败 ToolMessage 与验收状态，
 外部 MCP 副作用无法保证 exactly-once，自动恢复不会自动重放它。
 CLI 默认不开启以保持以前的脚本行为，可使用 `--auto-recover` 显式开启。
 
+## 可选 GitHub CLI 远程交付
+
+`mini_agent.github_delivery.build_github_tools(settings)` 在设置 `MINI_AGENT_GITHUB_REPO` 和 `MINI_AGENT_GITHUB_TOKEN` 后才注册远程工具。流程为：
+
+`git_commit_files` → `github_push_branch` → `github_create_draft_pr` → `github_pr_status`。
+
+写工具以独立、可审批的调用通过现有 HumanInTheLoopMiddleware；origin URL、工作区、分支、测试和最新 commit 均经过校验。不推送默认/发布分支、不强推、不自动合并。凭据只通过 `run_process(extra_env={"GH_TOKEN": token})` 注入 Git/gh 子进程，不进入模型参数、工具结果和审计事件。固定 Git Credential Helper 用于 GitHub HTTPS 认证，但它属于 Git 内部额外子进程，不是任意 Shell 沙盒。外部网络副作用不具有 Checkpoint 回滚/严格 exactly-once 语义。
+
+CI 仅验证真实本地 Git 预检、Graph/HITL 行为与模拟 gh 网络响应，真实 GitHub 远程写入需要受控测试仓库的另外验收。
+
 ## 同步 API 与扩展点
 
 最小程序化调用：
