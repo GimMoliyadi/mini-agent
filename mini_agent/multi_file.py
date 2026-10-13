@@ -109,7 +109,7 @@ def apply_patch_batch(patches: list[dict[str, str]], *, workspace: Path) -> str:
                 except OSError as error:
                     rollback_errors.append(str(error))
             if rollback_errors:
-                raise RuntimeError("跨文件补丁失败且部分回滚未完成，请人工核对全部相关文件") from exc
+                raise ValueError("跨文件补丁失败且部分回滚未完成，请人工核对全部相关文件") from exc
             raise
     names = [p.relative_to(root).as_posix() for p in after]
     result = json.dumps({"modified": names, "count": len(names), "rollback_required": False}, ensure_ascii=False)
