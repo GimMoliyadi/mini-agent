@@ -202,7 +202,7 @@ def _execute(argv: list[str], project: Path, workspace: Path, *, timeout: float)
         status, code = "command_failed", "exit_nonzero"
     else:
         status, code = "success", "command_succeeded"
-    diagnostics = []
+    diagnostics: list[dict[str, Any]] = []
     if status != "success":
         summary, diagnostics = error_location_summary(stdout, stderr, project)
         output += summary
