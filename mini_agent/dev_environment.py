@@ -23,6 +23,7 @@ _MAX_MANIFEST_BYTES = 512 * 1024
 _MAX_DISPLAY_CHARS = 6500
 _RUN_TIMEOUT = 120.0
 _INSTALL_TIMEOUT = 240.0
+_MAX_TARGET_TEST_FILES = 16
 
 
 def _project(workspace: Path, path: str) -> Path:
@@ -161,6 +162,30 @@ def _prepare_node(project: Path, workspace: Path, manager: str) -> ToolResult:
     return _execute(argv, project, workspace, timeout=_INSTALL_TIMEOUT)
 
 
+def _test_file_targets(project: Path, test_files: list[str]) -> list[str]:
+    """Validate explicit local Python test paths before building any command."""
+    if not isinstance(test_files, list) or len(test_files) > _MAX_TARGET_TEST_FILES:
+        raise ValueError(f"测试文件最多指定 {_MAX_TARGET_TEST_FILES} 个")
+    selected: list[str] = []
+    seen: set[str] = set()
+    for raw in test_files:
+        if not isinstance(raw, str) or not raw.strip() or len(raw) > 260:
+            raise ValueError("测试文件路径必须为长度不超过 260 的非空字符串")
+        # resolve_path rejects traversal, sensitive files and out-of-project links.
+        resolved = resolve_path(raw, project)
+        lexical = project / raw.replace("\\", "/")
+        if lexical.is_symlink():
+            raise PermissionError("测试文件不得是符号链接")
+        if not resolved.is_file() or resolved.suffix.lower() != ".py":
+            raise ValueError("测试目标必须为项目内已有的 Python .py 文件")
+        name = resolved.relative_to(project).as_posix()
+        if name in seen:
+            raise ValueError("不能重复指定同一个测试文件")
+        seen.add(name)
+        selected.append(name)
+    return selected
+
+
 def _outcome(result: ToolResult) -> tuple[str, dict[str, Any]]:
     return result.text, {"status": result.status, "code": result.code,
                          "metadata": dict(result.metadata)}
@@ -201,15 +226,22 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
         path: str = ".",
         language: Literal["auto", "python", "node"] = "auto",
         script: str = "",
+        test_files: list[str] | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        """Run a selected project test, lint, build or declared npm script via project-local environment.
+        """Run project tests, including a bounded list of Python test files, or build/lint.
 
         For Python script mode, script is an existing relative .py entrypoint.
         For Node, task maps to package.json scripts; custom script names must
-        already appear in package.json. No arbitrary shell strings accepted.
+        already appear in package.json. For Python test/unittest only,
+        test_files selects up to 16 existing project-relative .py files.
+        Omitting test_files keeps the existing whole-suite behavior.
+        No arbitrary shell strings accepted.
         """
         directory = _project(root, path)
         manager = _manager(directory, language)
+        if test_files and (manager != "python" or task not in {"test", "unittest"}):
+            raise ValueError("test_files 仅可用于 Python 的 test 或 unittest 任务")
+        targets = _test_file_targets(directory, test_files or [])
         if manager == "python":
             interpreter = _python_exe(directory)
             if not interpreter.is_file():
@@ -229,7 +261,14 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
                     raise ValueError("Python 脚本路径必须对应项目内的普通 .py 文件")
                 argv = [str(interpreter), str(entry)]
             else:
-                argv = [str(interpreter), *modules[task]]
+                args = list(modules[task])
+                if targets:
+                    args = (
+                        ["-m", "pytest", "-q", "--", *targets]
+                        if task == "test"
+                        else ["-m", "unittest", "--", *targets]
+                    )
+                argv = [str(interpreter), *args]
         else:
             package = _manifest(directory)
             scripts = (package or {}).get("scripts", {})

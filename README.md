@@ -277,7 +277,7 @@ Token 使用最小权限，只授予目标仓库所需的 Contents/Pull requests
 
 - inspect_dev_environment(path)：检查子项目是否有 requirements.txt、pyproject.toml、package.json、npm/pnpm lockfile，列出可用的 Node scripts。
 - prepare_dev_environment(path, language)：Python 创建项目本地 .venv，按 manifest 安装依赖；Node 使用 npm ci/install 或 pnpm install。
-- run_dev_task(task, path, language, script)：Python 支持 pytest/unittest/ruff/mypy/build、项目 .py 脚本；Node 执行 package.json 已声明的 scripts。
+- run_dev_task(task, path, language, script, test_files)：Python 支持 pytest/unittest/ruff/mypy/build、项目 .py 脚本；Node 执行 package.json 已声明的 scripts。Python 的 test/unittest 可额外提供最多 16 个项目相对路径的 .py 测试文件。未提供 test_files 时，执行行为保持不变。
 
 例如可对 backend 和 frontend 两个子目录分别调用 inspect_dev_environment，
 再调用 prepare_dev_environment(path="backend", language="python") 与
@@ -288,6 +288,10 @@ Python 不向 mini-agent 自身解释器安装依赖；Node 使用声明的锁�
 所有命令通过已有的有界无 Shell 进程执行器。失败退出码提供结构化 tool artifact，自动修复循环可以识别。
 依赖安装和 package.json 脚本只能在可信项目使用，ASK 模式需要审批；网络依赖安装无法保证成功。
 npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契约指定测试作为最终验收，不把任意脚本运行当成契约证据。
+
+例如依赖图建议 `tests/test_service.py` 时，可在 Python 项目根目录调用：
+`run_dev_task(path=".", language="python", task="test", test_files=["tests/test_service.py"])`；
+无需 pytest 第三方依赖的 unittest 项目可将 `task` 设为 `"unittest"`。传入路径经工作区边界检查、禁止重复和越界；目标文件必须真实存在。JavaScript/TypeScript 的测试文件候选暂不支持直接映射到 npm 脚本，仍按项目已有的 `test` script 运行。**定向测试只是快速反馈，不能替代 Coding Contract 的正式验收。**
 ## 跨模块理解与多文件联合开发
 
 这轮新增两项实际 Coding 工具，面向 Python 后端及 JavaScript/TypeScript 前端：
