@@ -90,6 +90,21 @@ def _resolve_js(source: str, candidate: str, files: set[str]) -> str | None:
     return next((name for name in candidates if name in files), None)
 
 
+
+def _is_test_module(path: str) -> bool:
+    """Recognize common Python and JS/TS test-file naming conventions."""
+    name = Path(path).name
+    if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
+        return True
+    return any(
+        name.endswith(f".{marker}{extension}")
+        for marker in ("test", "spec")
+        for extension in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+    ) or ("__tests__" in Path(path).parts and Path(path).suffix in {
+        ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    })
+
+
 def inspect_module_dependencies(
     path: str = ".",
     focus: str = "",
@@ -166,6 +181,8 @@ def inspect_module_dependencies(
             "dependencies": dependencies,
             "direct_dependents": dependents,
             "transitive_dependents": sorted(found - {relative_focus}),
+            # Test candidates are dependency-derived hints, not verified coverage.
+            "candidate_test_files": sorted(name for name in found if _is_test_module(name)),
             "edges": [
                 {"from": a, "to": b, "language": kind}
                 for a, b, kind in all_edges if a == relative_focus or b == relative_focus
