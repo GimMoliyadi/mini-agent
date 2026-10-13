@@ -42,7 +42,7 @@ def _column(entry: dict[str, Any]) -> str:
         raise ValueError("Column 只允许 name、type、nullable、primary_key、length")
     name = _identifier(entry.get("name"), "column.name")
     kind = entry.get("type")
-    if kind not in _TYPES:
+    if not isinstance(kind, str) or kind not in _TYPES:
         raise ValueError(f"不支持 SQLAlchemy Column 类型：{kind}")
     length = entry.get("length")
     if length is not None:
