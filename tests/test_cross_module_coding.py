@@ -199,6 +199,24 @@ def test_hitl_requests_single_batch_approval(repository, tmp_path):
     assert "return a + b" in (repository / "src" / "logic.py").read_text()
 
 
+
+def test_hitl_rejects_stale_second_file_without_partial_changes(repository, tmp_path):
+    model = ScriptedModel(replies=[
+        call("apply_patch_batch", patches=_patches()),
+        "Changes were applied.",
+    ])
+    with AgentApplication(_settings(repository, tmp_path, mode="ASK"), model=model) as app:
+        pause = app.run("Fix both source modules")
+        assert pause["status"] == "interrupted"
+        service = repository / "src" / "service.py"
+        service.write_text(service.read_text(encoding="utf-8") + "# external edit\\n", encoding="utf-8")
+        result = app.run(None, thread_id=pause["session_id"], decisions=[{"type": "approve"}])
+    assert result["status"] != "completed", result
+    assert "return a - b" in (repository / "src" / "logic.py").read_text()
+    assert "# external edit\\n" in service.read_text(encoding="utf-8")
+    assert "return add(a, b) * 2 + 0" not in service.read_text(encoding="utf-8")
+
+
 def test_batch_tool_must_be_only_call_in_model_batch(repository, tmp_path):
     initial = call("apply_patch_batch", patches=_patches())
     initial.tool_calls.append({
