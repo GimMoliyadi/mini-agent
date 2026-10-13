@@ -7,6 +7,8 @@ AgentApplication. Playwright is an optional installed dependency.
 from __future__ import annotations
 
 import json
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -22,9 +24,37 @@ _MAX_TEXT = 3500
 class BrowserSession:
     def __init__(self, workspace: Path):
         self.workspace = workspace.resolve()
+        # Playwright's sync API is thread-affine; all browser calls use one worker.
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mini-agent-browser")
         self.playwright: Any = None
         self.browser: Any = None
         self.page: Any = None
+
+    def invoke(self, action: str, url: str, selector: str, value: str) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            if action == "open":
+                return self.open(url)
+            if action == "click":
+                return self.click(selector)
+            if action == "fill":
+                return self.fill(selector, value)
+            if action == "inspect":
+                return self.inspect(selector)
+            self.close()
+            return {"closed": True}
+
+        ctx = contextvars.copy_context()
+        return self.executor.submit(ctx.run, run).result(timeout=40)
+
+    def capture(self, output_path: str) -> dict[str, Any]:
+        ctx = contextvars.copy_context()
+        return self.executor.submit(ctx.run, self.screenshot, output_path).result(timeout=30)
+
+    def shutdown(self) -> None:
+        try:
+            self.executor.submit(self.close).result(timeout=15)
+        finally:
+            self.executor.shutdown(wait=True, cancel_futures=True)
 
     def close(self) -> None:
         page, browser, playwright = self.page, self.browser, self.playwright
@@ -121,17 +151,7 @@ def build_browser_tools(session: BrowserSession) -> list[Any]:
         Browser must be installed as optional dependency and Chromium provisioned.
         """
         try:
-            if action == "open":
-                result = session.open(url)
-            elif action == "click":
-                result = session.click(selector)
-            elif action == "fill":
-                result = session.fill(selector, value)
-            elif action == "inspect":
-                result = session.inspect(selector)
-            else:
-                session.close()
-                result = {"closed": True}
+            result = session.invoke(action, url, selector, value)
             return sandbox.redact_text(json.dumps(result, ensure_ascii=False))
         except (OSError, ValueError):
             raise
@@ -148,7 +168,7 @@ def build_browser_tools(session: BrowserSession) -> list[Any]:
         Requires approval when the Agent runs in ASK mode.
         """
         try:
-            result = session.screenshot(output_path)
+            result = session.capture(output_path)
         except (OSError, ValueError):
             raise
         except Exception as exc:
