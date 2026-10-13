@@ -36,6 +36,10 @@ def build_parser():
         location = command.add_mutually_exclusive_group()
         location.add_argument("--workspace")
         location.add_argument("--desktop", action="store_true")
+        command.add_argument(
+            "--progress-jsonl", action="store_true",
+            help="将执行中的脱敏任务事件实时输出到 stderr，每行一个 JSON 对象；stdout 保持最终 JSON 结果",
+        )
         command.add_argument("--resume", metavar="SESSION_ID")
         command.add_argument("--contract", help="JSON Coding Task Contract")
         if name == "task":
@@ -97,6 +101,9 @@ def run_agent(args, state_dir, workspace):
     settings = Settings.load(workspace, state_dir)
     contract = load_contract(args.contract) if args.contract else None
     def display_event(event):
+        if args.progress_jsonl:
+            print(json.dumps(redact_result(event), ensure_ascii=False), file=sys.stderr, flush=True)
+            return
         if event["event"] == "tool":
             print(f"工具 · {event['name']} · {event['status']}", file=sys.stderr)
         elif event["event"] == "verification":
@@ -109,31 +116,31 @@ def run_agent(args, state_dir, workspace):
                 raise ValueError("task 需要 --task、--contract 或 --resume")
             if (args.approve or args.reject) and not thread_id:
                 raise ValueError("审批只能用于 --resume 的待审批操作")
-            result = app.run(task, thread_id=thread_id, contract=contract)
+            result = app.run(task, thread_id=thread_id, contract=contract, stream_updates=args.progress_jsonl)
             if result["interrupts"] and (args.approve or args.reject):
                 decisions = [{"type": "approve" if args.approve else "reject"}
                              for item in result["interrupts"] for _ in item.get("action_requests", [])]
-                result = app.run(None, thread_id=result["session_id"], decisions=decisions)
+                result = app.run(None, thread_id=result["session_id"], decisions=decisions, stream_updates=args.progress_jsonl)
             return emit_result(result)
         print(f"Mini Agent · LangGraph · 工作目录 {workspace}\n退出：exit")
         if thread_id:
-            result = app.run(None, thread_id=thread_id)
+            result = app.run(None, thread_id=thread_id, stream_updates=args.progress_jsonl)
         elif contract:
-            result = app.run(contract.instruction, contract=contract)
+            result = app.run(contract.instruction, contract=contract, stream_updates=args.progress_jsonl)
         else:
             result = None
         while True:
             if result:
                 thread_id = result["session_id"]
                 while result["interrupts"]:
-                    result = app.run(None, thread_id=thread_id, decisions=interactive_decisions(result))
+                    result = app.run(None, thread_id=thread_id, decisions=interactive_decisions(result), stream_updates=args.progress_jsonl)
                 print(f"会话 {thread_id} · {result['status']}")
                 print(result.get("answer") or result.get("error") or "尚未完成")
             task = input("You > ").strip()
             if task.casefold() in {"exit", "quit", "q"}:
                 return 0
             if task:
-                result = app.run(task, thread_id=thread_id)
+                result = app.run(task, thread_id=thread_id, stream_updates=args.progress_jsonl)
 
 
 def main(argv=None) -> int:

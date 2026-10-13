@@ -113,7 +113,8 @@ class AgentApplication:
                 "max_concurrency": 1, "recursion_limit": self.settings.max_model_calls * 8 + 20}
 
     def run(self, task: str | None, *, thread_id: str | None = None,
-            contract: CodingTaskContract | None = None, decisions: list[dict] | None = None) -> dict:
+            contract: CodingTaskContract | None = None, decisions: list[dict] | None = None,
+            stream_updates: bool = False) -> dict:
         thread_id = thread_id or uuid.uuid4().hex
         config = self.config(thread_id)
         saved = self.graph.get_state(config)
@@ -148,7 +149,17 @@ class AgentApplication:
         try:
             budget = RunBudget(environ={**os.environ, **self.settings.budget_options})
             with budget_context(budget):
-                self.graph.invoke(payload, config=config, durability="sync")
+                if stream_updates:
+                    # LangGraph owns streaming/checkpoint behavior. Only publish node names:
+                    # tool arguments, prompts, model content and file bodies stay private.
+                    for updates in self.graph.stream(
+                        payload, config=config, stream_mode="updates", durability="sync",
+                    ):
+                        if isinstance(updates, dict):
+                            for node_name in updates:
+                                self.events.emit("graph_step", task_id=task_id, node=str(node_name))
+                else:
+                    self.graph.invoke(payload, config=config, durability="sync")
             self.events.emit("budget", task_id=task_id, **budget.snapshot())
         except KeyboardInterrupt:
             saved = self.graph.get_state(config)
