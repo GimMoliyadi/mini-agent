@@ -54,6 +54,7 @@ def test_python_reverse_impact_and_graph_closure(repository):
     assert graph["focus"] == "src/logic.py"
     assert "src/service.py" in graph["direct_dependents"]
     assert "tests/test_service.py" in graph["transitive_dependents"]
+    assert "tests/test_service.py" in graph["candidate_test_files"]
     assert graph["truncated"] is False
     assert any(edge["from"] == "src/service.py" and edge["to"] == "src/logic.py"
                for edge in graph["edges"])
@@ -70,9 +71,14 @@ def test_js_ts_dependency_graph_handles_relative_imports(repository):
     (repository / "web" / "app.tsx").write_text(
         'import { store } from "./store"\nexport default store\n', encoding="utf-8",
     )
+    (repository / "web" / "store.spec.ts").write_text(
+        'import { store } from "./store"\\nexport const expected = store\\n',
+        encoding="utf-8",
+    )
     graph = json.loads(inspect_module_dependencies(workspace=repository, focus="web/util.ts"))
     assert graph["direct_dependents"] == ["web/store.ts"]
     assert "web/app.tsx" in graph["transitive_dependents"]
+    assert graph["candidate_test_files"] == ["web/store.spec.ts"]
 
 
 def test_batch_validates_all_files_before_first_write(repository):
