@@ -185,3 +185,81 @@ def test_agent_python_interpreter_is_not_used_for_project_scripts(tmp_path, monk
     tool.invoke({"task": "script", "language": "python", "script": "runner.py"})
     assert recorded[0][0] == str(env)
     assert recorded[0][1] == str(root / "runner.py")
+
+
+def test_targeted_unittest_executes_selected_file_without_full_discovery(python_project, tmp_path):
+    project = python_project / "api"
+    (project / "test_unrelated_failure.py").write_text(
+        "import unittest\nclass Unrelated(unittest.TestCase):\n"
+        "    def test_fails(self):\n        self.fail('unrelated suite failed')\n",
+        encoding="utf-8",
+    )
+    model = ScriptedModel(replies=[
+        call("prepare_dev_environment", path="api", language="python"),
+        call("run_dev_task", path="api", language="python", task="unittest",
+             test_files=["test_calculator.py"]),
+        "The selected unittest passed.",
+    ])
+    with AgentApplication(config(python_project, tmp_path), model=model) as app:
+        result = app.run("Run only the requested calculator unittest")
+    assert result["status"] == "completed", result
+    assert any(x["event"] == "tool" and x["name"] == "run_dev_task"
+               and x["status"] == "success" for x in result["trace"])
+
+
+def test_targeted_pytest_uses_explicit_arg_separator(node_project, tmp_path, monkeypatch):
+    root = tmp_path / "pyroot"
+    root.mkdir()
+    (root / "requirements.txt").write_text("", encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_ok.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+    interpreter = dev_environment._python_exe(root)
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"fake project-local python")
+    seen = []
+    def record(argv, cwd, **kwargs):
+        seen.append((argv, cwd))
+        return ProcessResult(returncode=0, stdout=b"1 passed", stderr=b"")
+    monkeypatch.setattr(dev_environment, "run_process", record)
+    tool = next(x for x in build_dev_environment_tools(root) if x.name == "run_dev_task")
+    tool.invoke({"language": "python", "task": "test",
+                 "test_files": ["tests/test_ok.py"]})
+    assert seen == [([str(interpreter), "-m", "pytest", "-q", "--", "tests/test_ok.py"], root)]
+    tool.invoke({"language": "python", "task": "unittest"})
+    assert seen[1][0] == [str(interpreter), "-m", "unittest", "discover"]
+
+
+def test_targeted_tests_fail_closed_for_invalid_paths(python_project):
+    project = python_project / "api"
+    (project / "notes.txt").write_text("not a test", encoding="utf-8")
+    pick = dev_environment._test_file_targets
+    assert pick(project, ["test_calculator.py"]) == ["test_calculator.py"]
+    for names in [
+        ["test_calculator.py", "test_calculator.py"],
+        ["no_such_test.py"],
+        ["notes.txt"],
+        ["../test_calculator.py"],
+        ["test_calculator.py"] * 17,
+        [""],
+    ]:
+        with pytest.raises((ValueError, PermissionError)):
+            pick(project, names)
+    (project / "test_link.py").symlink_to(project / "test_calculator.py")
+    with pytest.raises(PermissionError):
+        pick(project, ["test_link.py"])
+
+
+def test_targeted_tests_rejected_for_build_and_node_without_running(
+    python_project, node_project, tmp_path, monkeypatch,
+):
+    called = []
+    monkeypatch.setattr(dev_environment, "run_process", lambda *a, **k: called.append(a))
+    py_tool = next(x for x in build_dev_environment_tools(python_project) if x.name == "run_dev_task")
+    with pytest.raises(ValueError, match="test_files"):
+        py_tool.invoke({"path": "api", "language": "python", "task": "build",
+                        "test_files": ["test_calculator.py"]})
+    node_tool = next(x for x in build_dev_environment_tools(node_project) if x.name == "run_dev_task")
+    with pytest.raises(ValueError, match="test_files"):
+        node_tool.invoke({"path": "frontend", "language": "node", "task": "test",
+                          "test_files": ["test_calculator.py"]})
+    assert called == []
