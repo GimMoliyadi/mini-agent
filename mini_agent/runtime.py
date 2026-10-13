@@ -28,6 +28,7 @@ from .openapi_contract import build_openapi_tools
 from .fullstack_codegen import build_fullstack_codegen_tools
 from .react_query_codegen import build_react_query_tools
 from .openapi_impact import build_openapi_impact_tools
+from .browser_tools import BrowserSession, build_browser_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -65,6 +66,8 @@ SYSTEM_PROMPT = (
     "类型生成后可使用 generate_typed_api_client 创建基于 openapi-fetch 的类型化 API 客户端。"
     "后端导出需要可导入的 app 模块与项目 .venv；前端客户端需已声明 openapi-fetch。"
     "React 前端可调用 generate_react_query_hooks 基于 API 客户端生成 openapi-react-query 的类型化 hooks。"
+    "进行本地前端页面调试时可使用 browser_action 在 Playwright 中打开页面、点击、填写、读取 DOM，"
+    "再使用 browser_screenshot 将当前页面截图保存到工作区；首次使用需安装可选 browser 依赖。"
     "若后端 OpenAPI 契约发生变化，使用 inspect_openapi_changes 对比两个 JSON 版本，"
     "定位需同步调整的前端 API 调用及数据模型；仅把静态分析结果视为候选影响范围。"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
@@ -118,6 +121,9 @@ class AgentApplication:
             tools.extend(build_fullstack_codegen_tools(self.settings.workspace))
             tools.extend(build_react_query_tools(self.settings.workspace))
             tools.extend(build_openapi_impact_tools(self.settings.workspace))
+            browser_session = BrowserSession(self.settings.workspace)
+            self.stack.callback(browser_session.shutdown)
+            tools.extend(build_browser_tools(browser_session))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
