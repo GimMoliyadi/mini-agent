@@ -21,6 +21,7 @@ from .recovery import decide_recovery, recovery_message, work_signature
 from .git_workflow import build_git_tools
 from .dev_environment import build_dev_environment_tools
 from .multi_file import build_multi_file_tools
+from .scaffolding import build_scaffold_tools
 from .github_delivery import build_github_tools
 from .sandbox import redact_text
 from .settings import Settings
@@ -43,6 +44,8 @@ SYSTEM_PROMPT = (
     "规划不代表执行成功，步骤完成必须依据工具与测试结果。"
     "跨模块修改前可先调用 inspect_module_dependencies 检查被依赖与受影响文件；"
     "修改多个已有源码文件时优先用 apply_patch_batch 一次提交多个精确补丁，"
+    "需要添加全新路由、模块和测试文件时，用 create_files_batch 一次生成多个文件及目录；"
+    "创建后再运行相关测试，后续修改已有文件继续用 apply_patch_batch。"
     "失败则重新读取相关文件并修复，不要忽略任何失败。"
     "面对包含前后端或多个包的仓库，先调用 discover_workspace_projects 识别子项目路径、技术栈和可运行脚本；"
     "开发不同项目时先用 inspect_dev_environment 识别 Python/Node 项目与脚本；"
@@ -87,6 +90,7 @@ class AgentApplication:
             tools.extend(build_git_tools(self.settings.workspace))
             tools.extend(build_dev_environment_tools(self.settings.workspace))
             tools.extend(build_multi_file_tools(self.settings.workspace))
+            tools.extend(build_scaffold_tools(self.settings.workspace))
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))

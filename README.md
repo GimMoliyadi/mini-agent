@@ -304,6 +304,24 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 多文件修改仍使用原有 Coding Contract 文件范围、Checkpoint、变更日志与 HITL 审批。默认 ASK 会呈现整组差异供一次批准，审批后内容变化会重新拦截；同时最多允许一个批次补丁调用。若出现外部进程在文件写入间竞争修改等异常，需要重新核对工作区。该工具只做已有源码文件的精确替换，新建文件仍使用 write_file。
 
+## 多文件快速创建：新模块脚手架
+
+新增 `create_files_batch(files)`，一次创建 **2–12 个尚不存在的 UTF-8 文件**，可自动建立必要的子目录。典型用途：新增 Python service + API route + unittest，或搭建前后端项目中的多个配套源文件。已有文件修改继续使用 `apply_patch_batch`，普通单文件创建继续使用 `write_file`，不必替换之前的工具。
+
+例如 Agent 可以一次调用：
+
+```json
+{
+  "files": [
+    {"path": "src/__init__.py", "content": ""},
+    {"path": "src/service.py", "content": "def double(x):\\n    return x * 2\\n"},
+    {"path": "tests/test_service.py", "content": "import unittest\\nfrom src.service import double\\n..."}
+  ]
+}
+```
+
+批量创建复用既有 LangGraph create_agent、HITL 审批、Coding Contract 允许路径、任务日志和恢复状态，不提供第二套执行引擎；已有文件不会被覆盖。常规执行异常会尝试清理已创建的文件和空目录，但不宣称进程崩溃时的跨文件磁盘事务保证。创建结束后可以使用 `run_dev_task` 或 `run_command` 执行实际测试，再依原 Contract 验收。
+
 ## 状态、恢复与副作用边界
 
 同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
