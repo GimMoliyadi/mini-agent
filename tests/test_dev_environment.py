@@ -1,7 +1,6 @@
 """Project execution: real Python environment and bounded npm/pnpm task integration."""
 
 import json
-import subprocess
 import sys
 
 import pytest
