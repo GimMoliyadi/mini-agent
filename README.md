@@ -310,6 +310,18 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
 
+## React Query 类型化 Hooks
+
+新增 `generate_react_query_hooks(frontend_path="frontend", client_path="frontend/src/api-client.ts", output_path="frontend/src/api-hooks.ts")`。
+它把现有 `api-client.ts` 包装为 `openapi-react-query` 的 `$api`，提供根据 OpenAPI 路径推导参数、响应的 `$api.useQuery` / `$api.useMutation` / `$api.useSuspenseQuery` 等 Hooks，而不是为每个接口复制一套手工类型。
+前端需要声明 `openapi-fetch`、`openapi-react-query`、`@tanstack/react-query`。实际组件还需配置 `QueryClientProvider`。这次仅负责生成工具层，不主动覆盖应用入口。
+
+```tsx
+import { $api } from "./api-hooks";
+const { data } = $api.useQuery("get", "/api/users");
+const updateUser = $api.useMutation("patch", "/api/users/{user_id}");
+```
+
 ## FastAPI 自动导出接口 + 类型化前端客户端
 
 基于已有的 OpenAPI 类型生成，再扩展两项实际功能：
