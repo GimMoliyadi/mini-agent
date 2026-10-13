@@ -3,9 +3,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
-from pathlib import Path
 
-from mini_agent.cli import build_parser, emit_result, run_agent
+from mini_agent.cli import build_parser
 from mini_agent.runtime import AgentApplication
 from mini_agent.settings import Settings
 from helpers import ScriptedModel, call
