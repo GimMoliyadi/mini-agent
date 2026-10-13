@@ -49,7 +49,7 @@ class BoundaryMiddleware(AgentMiddleware):
                         else creation_precondition(call["args"]["files"], self.settings.workspace)
                         if call["name"] == "create_files_batch"
                         else capture_precondition(
-                            "write_file", {"path": call["args"]["output_path"], "content": ""},
+                            "write_file", {"path": call["args"].get("output_path", "frontend/src/openapi.d.ts"), "content": ""},
                             self.settings.workspace,
                         )
                         if call["name"] == "generate_openapi_types"
