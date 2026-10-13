@@ -267,3 +267,73 @@ def test_targeted_tests_rejected_for_build_and_node_without_running(
         node_tool.invoke({"path": "frontend", "language": "node", "task": "test",
                           "test_files": ["test_calculator.py"]})
     assert called == []
+
+
+def test_discover_workspace_projects_finds_python_and_node_and_scripts(tmp_path):
+    root = tmp_path / "mono"
+    (root / "backend").mkdir(parents=True)
+    (root / "frontend").mkdir()
+    (root / "frontend" / "node_modules" / "nested").mkdir(parents=True)
+    (root / "backend" / "pyproject.toml").write_text(
+        "[project]\nname='api'\nversion='0.1'\n", encoding="utf-8",
+    )
+    (root / "frontend" / "package.json").write_text(json.dumps({
+        "name": "web", "scripts": {"build": "vite build", "test": "vitest run"},
+    }), encoding="utf-8")
+    (root / "frontend" / "package-lock.json").write_text("{}", encoding="utf-8")
+    (root / "frontend" / "node_modules" / "nested" / "package.json").write_text("{}", encoding="utf-8")
+    result = dev_environment._discover_workspace_projects(root)
+    assert result["truncated"] is False
+    assert [p["path"] for p in result["projects"]] == ["backend", "frontend"]
+    assert result["projects"][0]["languages"] == ["python"]
+    assert result["projects"][1]["languages"] == ["node"]
+    assert result["projects"][1]["node_scripts"] == ["build", "test"]
+    assert result["projects"][1]["node_manager"] == "npm"
+
+
+def test_discover_workspace_projects_depth_and_limit(tmp_path):
+    root = tmp_path / "workspace"
+    (root / "apps" / "api").mkdir(parents=True)
+    (root / "apps" / "api" / "requirements.txt").write_text("", encoding="utf-8")
+    (root / "package.json").write_text('{"scripts": {"dev": "vite"}}', encoding="utf-8")
+    shallow = dev_environment._discover_workspace_projects(root, max_depth=0)
+    assert [p["path"] for p in shallow["projects"]] == ["."]
+    deep = dev_environment._discover_workspace_projects(root, max_depth=2)
+    assert [p["path"] for p in deep["projects"]] == [".", "apps/api"]
+    limited = dev_environment._discover_workspace_projects(root, max_projects=1)
+    assert len(limited["projects"]) == 1
+    assert limited["truncated"] is True
+    for args in ({"max_depth": -1}, {"max_depth": 9}, {"max_projects": 0}):
+        with pytest.raises(ValueError):
+            dev_environment._discover_workspace_projects(root, **args)
+
+
+def test_discover_workspace_projects_handles_invalid_manifest_and_subpath(tmp_path):
+    root = tmp_path / "mono"
+    (root / "bad").mkdir(parents=True)
+    (root / "good").mkdir()
+    (root / "bad" / "package.json").write_text("{invalid-json", encoding="utf-8")
+    (root / "good" / "requirements.txt").write_text("", encoding="utf-8")
+    result = dev_environment._discover_workspace_projects(root)
+    assert [p["path"] for p in result["projects"]] == ["bad", "good"]
+    assert result["projects"][0]["error"] == "JSONDecodeError"
+    scoped = dev_environment._discover_workspace_projects(root, path="good")
+    assert [p["path"] for p in scoped["projects"]] == ["good"]
+    with pytest.raises(PermissionError):
+        dev_environment._discover_workspace_projects(root, path="../outside")
+
+
+def test_agent_can_discover_projects_using_registered_tool(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "server").mkdir()
+    (workspace / "server" / "requirements.txt").write_text("", encoding="utf-8")
+    model = ScriptedModel(replies=[
+        call("discover_workspace_projects", path="."),
+        "Found the Python server project.",
+    ])
+    with AgentApplication(config(workspace, tmp_path), model=model) as app:
+        result = app.run("Identify code projects in this workspace")
+    assert result["status"] == "completed", result
+    assert any(event["event"] == "tool" and event["name"] == "discover_workspace_projects"
+               and event["status"] == "success" for event in result["trace"])
