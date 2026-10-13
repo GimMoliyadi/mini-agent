@@ -304,6 +304,12 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 多文件修改仍使用原有 Coding Contract 文件范围、Checkpoint、变更日志与 HITL 审批。默认 ASK 会呈现整组差异供一次批准，审批后内容变化会重新拦截；同时最多允许一个批次补丁调用。若出现外部进程在文件写入间竞争修改等异常，需要重新核对工作区。该工具只做已有源码文件的精确替换，新建文件仍使用 write_file。
 
+## 自动提取测试与构建失败位置
+
+`run_dev_task` 的 Python pytest/unittest/ruff/mypy/build 以及 Node npm/pnpm 脚本，失败时会从原始输出中额外提取常见 Python traceback、pytest 行号、TypeScript compiler 和 Vite/Node 报错位置。工具会向原有 `ToolMessage.artifact.metadata.diagnostics` 附加结构化的 `file`、`line`、可选 `column` 和错误消息，并在模型可见结果末尾增加 `ERROR_LOCATIONS` 摘要。
+
+Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
+
 ## 多文件快速创建：新模块脚手架
 
 新增 `create_files_batch(files)`，一次创建 **2–12 个尚不存在的 UTF-8 文件**，可自动建立必要的子目录。典型用途：新增 Python service + API route + unittest，或搭建前后端项目中的多个配套源文件。已有文件修改继续使用 `apply_patch_batch`，普通单文件创建继续使用 `write_file`，不必替换之前的工具。
