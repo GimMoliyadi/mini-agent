@@ -310,6 +310,27 @@ npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契�
 
 Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
 
+## OpenAPI 契约解析与 TypeScript 类型生成
+
+新增两项 Coding Agent 工具：
+
+- `inspect_openapi_contract(schema_path="backend/openapi.json")`：读取已有的 OpenAPI 3.x JSON，列出接口方法/路径、operationId、请求体、响应状态码和 components schemas。只读，不运行后端。
+- `generate_openapi_types(schema_path, frontend_path, output_path)`：调用**前端项目本地安装的 [openapi-typescript](https://openapi-ts.dev/cli)** CLI，将 OpenAPI JSON 生成 TypeScript 类型声明；支持在输出目录已存在时创建或更新 `.ts`/`.d.ts` 文件。类型推导完全交给成熟工具，不在 mini-agent 内手工实现 JSON Schema 转 TypeScript。
+
+准备流程：FastAPI 导出 `openapi.json` 并保存到工作区 `backend/openapi.json`；前端 `package.json` 需要声明 `openapi-typescript` 和 `typescript`，通过原有 `prepare_dev_environment(path="frontend", language="node")` 安装依赖。然后执行：
+
+```text
+inspect_openapi_contract(schema_path="backend/openapi.json")
+generate_openapi_types(
+    schema_path="backend/openapi.json",
+    frontend_path="frontend",
+    output_path="frontend/src/openapi.d.ts",
+)
+run_fullstack_checks(backend_task="test", frontend_task="typecheck")
+```
+
+第二步自动使用已安装的 `frontend/node_modules/openapi-typescript/bin/cli.js`，不依赖 `npx` 临时下载，也不需要重建 Agent 主流程。生成前会校验本地 schema 与项目位置；CLI 失败不会覆盖已有输出。生成写入仍复用原有 Coding Contract 路径约束、ASK 审批、文件变更日志。此次先支持 FastAPI 常见的 **OpenAPI JSON 文件**，暂未自动启动 FastAPI 导出文件，也不推断动态运行时路由。生成类型后，应重新执行前端 typecheck/build 并验收实际接口行为。
+
 ## FastAPI + 前端跨端接口协同检查
 
 新增只读工具 `inspect_fullstack_interfaces(backend_path="backend", frontend_path="frontend")`。Agent 可以先通过 `discover_workspace_projects` 找到 Python 后端与 JS/TS 前端，再调用该工具：
