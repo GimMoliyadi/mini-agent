@@ -275,11 +275,12 @@ Token 使用最小权限，只授予目标仓库所需的 Contents/Pull requests
 
 面对 Python 后端 + Node 前端的仓库，Agent 新增三个真实可调用工具：
 
+- discover_workspace_projects(path, max_depth, max_projects)：自动扫描工作区中的 Python、Node 子项目，汇总后端/前端路径、依赖清单、包管理器和可运行脚本，支持普通多目录仓库和 monorepo，不执行项目代码。结果路径可直接交给其他项目工具。
 - inspect_dev_environment(path)：检查子项目是否有 requirements.txt、pyproject.toml、package.json、npm/pnpm lockfile，列出可用的 Node scripts。
 - prepare_dev_environment(path, language)：Python 创建项目本地 .venv，按 manifest 安装依赖；Node 使用 npm ci/install 或 pnpm install。
 - run_dev_task(task, path, language, script, test_files)：Python 支持 pytest/unittest/ruff/mypy/build、项目 .py 脚本；Node 执行 package.json 已声明的 scripts。Python 的 test/unittest 可额外提供最多 16 个项目相对路径的 .py 测试文件。未提供 test_files 时，执行行为保持不变。
 
-例如可对 backend 和 frontend 两个子目录分别调用 inspect_dev_environment，
+例如先调用 `discover_workspace_projects(path=".")` 找出 `backend`、`frontend` 两个子项目，然后分别调用 inspect_dev_environment，
 再调用 prepare_dev_environment(path="backend", language="python") 与
 prepare_dev_environment(path="frontend", language="node")，
 最后用 run_dev_task(path="backend", task="unittest") 或 run_dev_task(path="frontend", task="build") 完成测试与构建。
