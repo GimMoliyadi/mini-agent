@@ -158,6 +158,11 @@ def _prepare_node(project: Path, workspace: Path, manager: str) -> ToolResult:
     return _execute(argv, project, workspace, timeout=_INSTALL_TIMEOUT)
 
 
+def _outcome(result: ToolResult) -> tuple[str, dict[str, Any]]:
+    return result.text, {"status": result.status, "code": result.code,
+                         "metadata": dict(result.metadata)}
+
+
 def build_dev_environment_tools(workspace: Path) -> list[Any]:
     """Development tools bound to the trusted workspace, not the Agent Python env."""
     root = workspace.resolve()
@@ -172,11 +177,11 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
         directory = _project(root, path)
         return json.dumps(_detect(directory), ensure_ascii=False)
 
-    @tool
+    @tool(response_format="content_and_artifact")
     def prepare_dev_environment(
         path: str = ".",
         language: Literal["auto", "python", "node"] = "auto",
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         """Create project-local Python .venv and install declared dependencies, or npm/pnpm install.
 
         Runs package installers only for trusted projects with human approval
@@ -185,15 +190,15 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
         directory = _project(root, path)
         manager = _manager(directory, language)
         result = _prepare_python(directory, root) if manager == "python" else _prepare_node(directory, root, manager)
-        return result
+        return _outcome(result)
 
-    @tool
+    @tool(response_format="content_and_artifact")
     def run_dev_task(
         task: Literal["test", "lint", "typecheck", "build", "script", "unittest"] = "test",
         path: str = ".",
         language: Literal["auto", "python", "node"] = "auto",
         script: str = "",
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         """Run a selected project test, lint, build or declared npm script via project-local environment.
 
         For Python script mode, script is an existing relative .py entrypoint.
@@ -229,7 +234,7 @@ def build_dev_environment_tools(workspace: Path) -> list[Any]:
             if not selected or selected not in scripts:
                 raise ValueError("package.json 中没有该脚本；请先查看 inspect_dev_environment 的 node_scripts")
             argv = [manager, "run", selected]
-        return _execute(argv, directory, root, timeout=_RUN_TIMEOUT)
+        return _outcome(_execute(argv, directory, root, timeout=_RUN_TIMEOUT))
 
     inspect_dev_environment.metadata = {"risk": "read", "mutation": False, "workspace_arguments": ("path",)}
     prepare_dev_environment.metadata = {"risk": "execute", "mutation": False, "workspace_arguments": ("path",), "dependency_install": True}
