@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import contextvars
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
@@ -19,6 +20,8 @@ from . import sandbox
 from . import dev_environment as dev
 
 _MAX_TEXT = 3500
+_MAX_BROWSER_EVENTS = 100
+_MAX_EVENT_MESSAGE = 550
 
 
 class BrowserSession:
@@ -29,6 +32,8 @@ class BrowserSession:
         self.playwright: Any = None
         self.browser: Any = None
         self.page: Any = None
+        self.events: deque[dict[str, Any]] = deque(maxlen=_MAX_BROWSER_EVENTS)
+        self.events_seen = 0
 
     def invoke(self, action: str, url: str, selector: str, value: str) -> dict[str, Any]:
         def run() -> dict[str, Any]:
@@ -49,6 +54,76 @@ class BrowserSession:
     def capture(self, output_path: str) -> dict[str, Any]:
         ctx = contextvars.copy_context()
         return self.executor.submit(ctx.run, self.screenshot, output_path).result(timeout=30)
+
+    def diagnostic_snapshot(self, reset: bool = False) -> dict[str, Any]:
+        ctx = contextvars.copy_context()
+        return self.executor.submit(ctx.run, self.diagnostics, reset).result(timeout=10)
+
+    @staticmethod
+    def _safe_url(url: str) -> str:
+        try:
+            parsed = urlsplit(url)
+            if not parsed.hostname:
+                return ""
+            host = parsed.hostname
+            port = f":{parsed.port}" if parsed.port else ""
+            return f"{parsed.scheme}://{host}{port}{parsed.path}"
+        except (ValueError, TypeError):
+            return ""
+
+    def _record(self, kind: str, message: str, url: str = "",
+                method: str = "", status: int | None = None) -> None:
+        event: dict[str, Any] = {
+            "kind": kind,
+            "message": sandbox.redact_text(str(message)[:_MAX_EVENT_MESSAGE]),
+            "url": self._safe_url(url),
+        }
+        if method:
+            event["method"] = method
+        if status is not None:
+            event["status"] = status
+        self.events.append(event)
+        self.events_seen += 1
+
+    def _attach_diagnostics(self, page: Any) -> None:
+        def on_console(message: Any) -> None:
+            if message.type in {"error", "warning"}:
+                self._record("console_" + message.type, message.text, page.url)
+
+        def on_page_error(exc: Any) -> None:
+            self._record("javascript_exception", str(exc), page.url)
+
+        def on_request_failed(request: Any) -> None:
+            self._record(
+                "request_failed", str(request.failure or "network request failed"),
+                request.url, request.method,
+            )
+
+        def on_response(response: Any) -> None:
+            if response.status >= 400:
+                self._record(
+                    "http_error", f"HTTP {response.status}",
+                    response.url, response.request.method, response.status,
+                )
+
+        page.on("console", on_console)
+        page.on("pageerror", on_page_error)
+        page.on("requestfailed", on_request_failed)
+        page.on("response", on_response)
+
+    def diagnostics(self, reset: bool = False) -> dict[str, Any]:
+        rows = list(self.events)
+        result = {
+            "url": self._safe_url(self.page.url) if self.page is not None else "",
+            "events_seen": self.events_seen,
+            "dropped_older_events": max(0, self.events_seen - len(rows)),
+            "events": rows,
+            "notice": "Only console errors/warnings, JS exceptions, failed requests and HTTP >=400 are captured; no request bodies or headers.",
+        }
+        if reset:
+            self.events.clear()
+            self.events_seen = 0
+        return result
 
     def shutdown(self) -> None:
         try:
@@ -89,6 +164,9 @@ class BrowserSession:
                 self.playwright = sync_playwright().start()
                 self.browser = self.playwright.chromium.launch(headless=True)
                 self.page = self.browser.new_page(viewport={"width": 1280, "height": 800})
+                self.events.clear()
+                self.events_seen = 0
+                self._attach_diagnostics(self.page)
             except Exception as exc:
                 self.close()
                 raise ValueError(f"浏览器启动失败：{type(exc).__name__}: {exc}") from exc
@@ -178,8 +256,30 @@ def build_browser_tools(session: BrowserSession) -> list[Any]:
             "success", "browser_screenshot_saved", result,
         ))
 
+    @tool
+    def browser_diagnostics(reset: bool = False) -> str:
+        """Return browser console errors, JS exceptions and failed/4xx/5xx requests.
+
+        Open a local page with browser_action first. Returns bounded recent
+        event metadata, URL paths without query strings, and no request bodies
+        or headers. reset=True clears the current in-memory diagnostic list.
+        """
+        try:
+            result = session.diagnostic_snapshot(reset)
+            # Keep the tool reply bounded even when many errors were observed.
+            while result["events"] and len(json.dumps(result, ensure_ascii=False)) > 7200:
+                result["events"].pop(0)
+                result["dropped_older_events"] += 1
+            return sandbox.redact_text(json.dumps(result, ensure_ascii=False))
+        except (OSError, ValueError):
+            raise
+        except Exception as exc:
+            raise ValueError(f"浏览器诊断信息读取失败：{type(exc).__name__}: {exc}") from exc
+
+    browser_diagnostics.metadata = {"risk": "read", "mutation": False}
+
     browser_screenshot.metadata = {
         "risk": "write", "mutation": True, "mutation_paths": ("output_path",),
         "workspace_arguments": ("output_path",),
     }
-    return [browser_action, browser_screenshot]
+    return [browser_action, browser_screenshot, browser_diagnostics]
