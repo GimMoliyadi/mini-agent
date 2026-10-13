@@ -93,7 +93,8 @@ def apply_patch_batch(patches: list[dict[str, str]], *, workspace: Path) -> str:
     root = Path(workspace).resolve()
     before, after = prepare_patch_batch(patches, root)
     applied: list[Path] = []
-    with sandbox.file_change(after, root):
+    recorded: dict[Path, bytes | None] = dict(after)
+    with sandbox.file_change(recorded, root):
         try:
             for target, updated in after.items():
                 # Fail closed on external modifications during the batch.
