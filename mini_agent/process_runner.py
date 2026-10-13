@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -243,7 +244,9 @@ def _wait_for_result(process: subprocess.Popen, capture: _OutputCapture, deadlin
         capture.limit_reached.wait(PROCESS_CHECK_INTERVAL_SECONDS)
 
 
-def run_process(argv: list[str], cwd: Path, *, workspace: Path, timeout_seconds: float, output_limit_bytes: int = MAX_COMMAND_OUTPUT_BYTES) -> ProcessResult:
+def run_process(argv: list[str], cwd: Path, *, workspace: Path, timeout_seconds: float,
+                output_limit_bytes: int = MAX_COMMAND_OUTPUT_BYTES,
+                extra_env: Mapping[str, str] | None = None) -> ProcessResult:
     workspace_root = Path(workspace).resolve()
     execution_cwd = Path(cwd).resolve()
     if not execution_cwd.is_relative_to(workspace_root):
@@ -258,7 +261,15 @@ def run_process(argv: list[str], cwd: Path, *, workspace: Path, timeout_seconds:
     if budget is not None:
         budget.check()
     deadline = time.monotonic() + timeout_seconds
-    process, job = _start_process(argv, execution_cwd, command_environment(workspace_root))
+    environment = command_environment(workspace_root)
+    if extra_env:
+        # Only approved GitHub subprocesses may receive this single secret.
+        if (set(extra_env) != {"GH_TOKEN"} or not isinstance(extra_env["GH_TOKEN"], str)
+                or not extra_env["GH_TOKEN"] or not argv or Path(argv[0]).name.lower() not in
+                {"gh", "gh.exe", "git", "git.exe"}):
+            raise ValueError("只允许向受信 GitHub 命令注入 GH_TOKEN")
+        environment["GH_TOKEN"] = extra_env["GH_TOKEN"]
+    process, job = _start_process(argv, execution_cwd, environment)
     capture = _OutputCapture(output_limit_bytes)
     threads: list[threading.Thread] = []
     try:
