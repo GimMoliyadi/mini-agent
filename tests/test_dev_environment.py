@@ -9,7 +9,6 @@ from helpers import ScriptedModel, call
 from mini_agent import dev_environment
 from mini_agent.dev_environment import build_dev_environment_tools
 from mini_agent.process_runner import ProcessResult
-from mini_agent.result import ToolResult
 from mini_agent.runtime import AgentApplication
 from mini_agent.settings import Settings
 
@@ -20,7 +19,7 @@ def config(root, tmp_path, approval="ALLOW"):
 
 @pytest.fixture
 def python_project(tmp_path):
-    folder = tmp_path / "workspace"
+    folder = tmp_path / "python_workspace"
     folder.mkdir()
     project = folder / "api"
     project.mkdir()
@@ -35,7 +34,7 @@ def python_project(tmp_path):
 
 @pytest.fixture
 def node_project(tmp_path):
-    root = tmp_path / "workspace"
+    root = tmp_path / "node_workspace"
     root.mkdir()
     frontend = root / "frontend"
     frontend.mkdir()
@@ -69,7 +68,7 @@ def test_python_project_creates_real_venv_and_runs_unittest(python_project, tmp_
     ])
     with AgentApplication(config(python_project, tmp_path), model=model) as app:
         result = app.run("Prepare and test the api project")
-    assert result["status"] == "completed", result
+    assert result["status"] == "completed", f"error={result.get('error')!r}; trace={result.get('trace')!r}"
     assert (python_project / "api" / ".venv" / (
         "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
     )).is_file()
