@@ -58,9 +58,10 @@ def _contract(root: Path, runtime: ToolRuntime[Any, TaskState]) -> None:
     state = dict(runtime.state)
     if unresolved_tool_failures(state):
         raise PermissionError("存在未解决工具失败，不允许远程交付")
-    if not state.get("contract"):
+    contract_data = state.get("contract")
+    if not isinstance(contract_data, dict):
         return
-    contract = CodingTaskContract.from_dict(state["contract"])
+    contract = CodingTaskContract.from_dict(contract_data)
     gate = evaluate_finish_request(contract, verification_facts(state), root)
     if not gate.accepted:
         raise PermissionError("Coding Contract 尚未通过指定测试或变更范围核对")
