@@ -189,6 +189,23 @@
       "tool_calls": 2
     }
   ],
+  "additional_A_retained_repeat": {
+    "scenario": "bug-reproduction-fix-tests-retained",
+    "passed": false,
+    "status": "failed",
+    "duration_seconds": 12.56,
+    "model_calls": 1,
+    "input_tokens": 10204,
+    "output_tokens": 86,
+    "usage_missing": 0,
+    "error": "OpenAIPermissionDeniedError: Error code: 403 - {'error': {'message': 'Request processing failed. The service is temporarily unavailable. Please try again later or contact support.', 'type': 'upstream_unavailable', 'param': '', 'code': 'upstream_unavailable'}}",
+    "verification": null,
+    "tool_calls": 1,
+    "tool_errors": 0,
+    "auto_recovery_rounds": 0,
+    "cached_input_tokens": 1201
+  },
+  "recording_limits": "Original A and checkpoint harness retained aggregate results, not complete conversation; durable A repeat captured all messages but failed with provider403. B/C retain messages and trace.",
   "B_failed_stages": [
     {
       "scenario": "task-web-B",
@@ -311,6 +328,9 @@
   },
   "review": {
     "method": "OCR deterministic preview/rules; two read-only agents; three bounded rounds",
+    "source_files": 25,
+    "ocr_reviewable": 9,
+    "ocr_excluded_manually_reviewed": 16,
     "resolved": [
       "Corepack",
       "pnpm cache",
