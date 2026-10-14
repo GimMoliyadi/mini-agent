@@ -250,11 +250,22 @@ def test_actual_fastapi_react_openapi_and_chromium_flow(tmp_path):
         browser.invoke("click", "", "#change-name", "")
         _wait_for_text(browser, "Hello, Agent!")
         diagnostics = browser.diagnostic_snapshot()
-        assert not [event for event in diagnostics["events"]
-                    if event["kind"] in {
-                        "console_error", "javascript_exception",
-                        "request_failed", "http_error",
-                    }], diagnostics
+        # React StrictMode can cancel an initial in-flight query on a dev
+        # remount. Playwright correctly records net::ERR_ABORTED, but the
+        # subsequent successful data fetch and rendered answer prove this
+        # particular cancellation is not a broken HTTP request.
+        unexpected = [
+            event for event in diagnostics["events"]
+            if event["kind"] in {
+                "console_error", "javascript_exception", "request_failed", "http_error",
+            } and not (
+                event["kind"] == "request_failed"
+                and event["message"].startswith("net::ERR_ABORTED")
+                and event["method"] == "GET"
+                and event["url"].endswith("/api/greeting")
+            )
+        ]
+        assert not unexpected, diagnostics
         screenshot = browser.capture("screenshots/acceptance.png")
         assert screenshot["bytes"] > 100
         assert (root / screenshot["output"]).read_bytes().startswith(b"\x89PNG")
