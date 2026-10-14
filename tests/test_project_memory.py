@@ -1,7 +1,5 @@
 """Project memory persists across sessions and isolates different workspaces."""
 
-import json
-
 from helpers import ScriptedModel, call
 from mini_agent.project_memory import ProjectMemoryStore
 from mini_agent.runtime import AgentApplication

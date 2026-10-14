@@ -337,6 +337,20 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## 真实 FastAPI + React + Chromium 验收（CI 专用）
+
+在原有纯离线回归矩阵之外，新增独立的 **Real FastAPI + React + Chromium acceptance** CI 作业（Ubuntu / Python 3.11 / Node 22）。作业会实际安装 FastAPI、浏览器、npm 项目依赖，并运行测试 `tests/test_real_web_acceptance.py`。该测试在临时工作区构建一个最小前后端应用：
+
+1. 后端真实创建 FastAPI 应用和 `GET /api/greeting`，测试真实 HTTP API。
+2. 同一个 LangGraph Agent 使用**脚本化模型**依次调用真正的 `export_fastapi_openapi`、`inspect_openapi_contract`、`generate_openapi_types`、`generate_typed_api_client`、`generate_react_query_hooks` 工具。除模型回复外，接口生成、文件写入和类型生成均为真实执行。
+3. 调用项目自带的 Python/Node 检查工具，运行实际后端 pytest、前端 TypeScript typecheck 和 Vite 构建。
+4. 使用 `DevServerManager` 启动真实 Uvicorn/Vite 本地服务；使用 `BrowserSession` 的 Chromium 打开 React 页面、点击按钮、验证返回内容变化、核对浏览器网络/JS 错误，并保存实际 PNG 截图。
+5. 测试结束时关闭 Chromium 和本地服务进程，断言没有遗留被管理的开发服务器。
+
+本地需要 Python 安装 `pip install -e '.[dev,browser]' fastapi uvicorn`，运行 `python -m playwright install chromium`，Node/npm 可用；通过 `MINI_AGENT_RUN_REAL_WEB_ACCEPTANCE=1 python -m pytest -vv -s tests/test_real_web_acceptance.py` 启动。默认离线回归会跳过此耗联网安装的测试。CI 会独立运行真实浏览器验收，不能把本地 pytest 跳过结果视为它成功。
+
+**模型边界：** 这里刻意使用脚本化 LangGraph 模型调用来保证测试可重复。它验证的是 mini-agent 真正使用项目工具的完整开发环境及网页操作能力，**不是外部 LLM 自主决策质量验收**。真实外部模型的稳定性、重复修复和用户需求完成率仍须独立评测。
+
 ## 有证据的自主开发工作流
 
 新的 `start_development_workflow(goal, profile, require_browser=False, require_migration=False, deliver_pr=False)` 可为复杂开发任务启用自主编排模式：

@@ -90,7 +90,7 @@ class VerificationMiddleware(AgentMiddleware):
         unfinished = bool(plan is not None and plan["completed"] != plan["total"])
         workflow = evaluate_workflow(state)
         workflow_unfinished = bool(workflow is not None and not workflow["complete"])
-        if workflow_unfinished:
+        if workflow is not None and workflow_unfinished:
             self.events.emit("development_workflow_incomplete", task_id=state.get("task_id"),
                              next_stage=workflow["next_stage"], completed=workflow["completed"],
                              total=workflow["total"])
