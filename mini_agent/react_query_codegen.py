@@ -39,7 +39,7 @@ def generate_react_query_hooks(
     package = dev._manifest(frontend) or {}
     deps = package.get("dependencies", {})
     dev_deps = package.get("devDependencies", {})
-    declared = set()
+    declared: set[str] = set()
     for group in (deps, dev_deps):
         if isinstance(group, dict):
             declared.update(group)
