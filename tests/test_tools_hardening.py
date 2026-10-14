@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -35,6 +36,17 @@ def process_is_running(pid: int) -> bool:
         return False
     status = Path(f"/proc/{pid}/stat")
     return not status.exists() or status.read_text().split()[2] != "Z"
+
+
+def wait_for_process_exit(pid: int, *, timeout: float = 3.0) -> bool:
+    """Allow a bounded interval for OS process-group termination and reaping.
+
+    Cleanup is still required; timeout never turns a surviving child into a pass.
+    """
+    deadline = time.monotonic() + timeout
+    while process_is_running(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not process_is_running(pid)
 
 
 class ToolsHardeningTests(unittest.TestCase):
@@ -217,7 +229,7 @@ class ToolsHardeningTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "fixture cancelled"):
                     process_runner.run_process([sys.executable, "-c", parent_code], self.workspace, workspace=self.workspace, timeout_seconds=5)
             pid = int((self.workspace / "child_pid").read_text())
-            self.assertFalse(process_is_running(pid))
+            self.assertTrue(wait_for_process_exit(pid), f'owned child PID {pid} survived cancellation')
             self.assertIsNone(unrelated.poll())
         finally:
             unrelated.kill()
@@ -228,7 +240,8 @@ class ToolsHardeningTests(unittest.TestCase):
         parent_code = f"import subprocess, sys, os, time; from pathlib import Path; child=subprocess.Popen([sys.executable, '-c', {child_code!r}]); Path('child_pid').write_text(str(child.pid)); os.write(1, b'x'*100000); time.sleep(30)"
         result = process_runner.run_process([sys.executable, "-c", parent_code], self.workspace, workspace=self.workspace, timeout_seconds=5, output_limit_bytes=1024)
         self.assertTrue(result.output_limit_exceeded)
-        self.assertFalse(process_is_running(int((self.workspace / "child_pid").read_text())))
+        pid = int((self.workspace / "child_pid").read_text())
+        self.assertTrue(wait_for_process_exit(pid), f"owned child PID {pid} survived output-limit cleanup")
 
     def test_child_git_cannot_discover_repository_above_workspace(self):
         environment = process_runner.command_environment(self.workspace)
