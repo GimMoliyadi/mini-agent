@@ -163,4 +163,9 @@ python examples/final_system_acceptance.py --config-dir <existing-config-directo
 
 ## 9. Draft交付记录
 
-待本QA提交与远程CI核验后补充；所有任务结论以上述实际本机结果为准，不把尚未执行的远程检查计为通过。
+- [Draft PR #35](https://github.com/GimMoliyadi/mini-agent/pull/35)，目标为PR #33整合分支；未合并、未发布。
+- 源码修复提交 `018019b16242de46f9b0898772603d29a47883e8`；报告/证据提交 `33237a6f6be890e8f72cc4a9b8796a21c0a5ad91`，后续提交仅更新验收文档。
+- 该受验源码的远程 [CI 38546076627](https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627) 已实际完成：**6/6 job成功**，Ubuntu/Windows × Python3.11/3.13离线，Ubuntu/Windows真实FastAPI+React+Chromium。
+- 该运行Ubuntu两组各332 passed/6 skipped/148 subtests，Windows两组各334 passed/4 skipped/148 subtests；各平台MCP均6 passed，包装6/6及Quick Start通过；实际Web各2 passed（Ubuntu26.01s、Windows79.61s）。平台与可用工具差异导致skip数量不同，不将跳过算通过。
+- PR创建后等待超过3分钟并检查reviews、comments、reviewThreads；截至2026-10-14 10:01 UTC，无评论或未解决thread。源码审查缺陷已修复并回归；最新文档提交的CI状态可直接在PR查看。
+- 工程修复与验收证据交付完成；真实LLM B/C闭环失败和A重试403仍是明确的产品限制，绿色CI不改变第7节暂缓main合并的结论。

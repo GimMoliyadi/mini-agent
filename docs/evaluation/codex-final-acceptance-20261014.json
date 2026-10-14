@@ -62,7 +62,81 @@
     "baseline_remote_ci": {
       "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38503846584",
       "jobs_passed": 5
-    }
+    },
+    "qa_remote_ci": {
+      "conclusion": "success",
+      "headSha": "33237a6f6be890e8f72cc4a9b8796a21c0a5ad91",
+      "jobs": [
+        {
+          "conclusion": "success",
+          "name": "Real FastAPI + React + Chromium (ubuntu-latest)",
+          "status": "completed",
+          "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627/job/115792342543"
+        },
+        {
+          "conclusion": "success",
+          "name": "offline (ubuntu-latest, 3.11)",
+          "status": "completed",
+          "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627/job/115792342776"
+        },
+        {
+          "conclusion": "success",
+          "name": "offline (ubuntu-latest, 3.13)",
+          "status": "completed",
+          "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627/job/115792342867"
+        },
+        {
+          "conclusion": "success",
+          "name": "offline (windows-latest, 3.13)",
+          "status": "completed",
+          "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627/job/115792342871"
+        },
+        {
+          "conclusion": "success",
+          "name": "offline (windows-latest, 3.11)",
+          "status": "completed",
+          "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627/job/115792343005"
+        },
+        {
+          "conclusion": "success",
+          "name": "Real FastAPI + React + Chromium (windows-latest)",
+          "status": "completed",
+          "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627/job/115792344538"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38546076627"
+    },
+    "qa_remote_offline_counts": [
+      {
+        "job": "offline (ubuntu-latest, 3.11)",
+        "passed": 332,
+        "skipped": 6,
+        "subtests_passed": 148,
+        "seconds": 52.84
+      },
+      {
+        "job": "offline (ubuntu-latest, 3.13)",
+        "passed": 332,
+        "skipped": 6,
+        "subtests_passed": 148,
+        "seconds": 55.69
+      },
+      {
+        "job": "offline (windows-latest, 3.13)",
+        "passed": 334,
+        "skipped": 4,
+        "subtests_passed": 148,
+        "seconds": 109.89
+      },
+      {
+        "job": "offline (windows-latest, 3.11)",
+        "passed": 334,
+        "skipped": 4,
+        "subtests_passed": 148,
+        "seconds": 106.19
+      }
+    ]
   },
   "live_scenarios": [
     {
@@ -367,6 +441,12 @@
     "github_delivery": 3
   },
   "delivery": {
-    "status": "pending Draft PR and QA CI"
+    "status": "Draft PR delivered; source CI passed",
+    "pull_request": "https://github.com/GimMoliyadi/mini-agent/pull/35",
+    "draft": true,
+    "merged": false,
+    "release": false,
+    "initial_review_wait_minimum_seconds": 180,
+    "unresolved_threads_observed": 0
   }
 }
