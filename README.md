@@ -1,982 +1,657 @@
 # mini-agent-lab
 
-从零手搓一个最小但真正可运行的 CLI Agent。
+一个面向受信任本地项目的受控 coding agent。v2 使用 LangChain 的
+`create_agent` 组装标准工具循环，使用 LangGraph 保存会话状态、处理中断和
+恢复；文件安全、命令白名单、审批策略和任务验收仍由本项目负责。
 
-## 最终目标
+当前公开入口是同步的 Windows/package CLI。传输测试使用本地、脚本化的
+OpenAI-compatible HTTP 服务验证了模型请求、工具调用、文件修改、错误返回和
+SQLite 恢复。真实模型也已完成一次文件与代码维护验收：5 次模型调用、9 次工具
+调用，指定测试与独立验收通过；完整证据和复现步骤见 [迁移与验证记录](docs/migration.md)。
 
-```
-用户输入任务 → LLM 判断下一步 → 选择工具 → 执行工具 → 结果回喂 LLM
-             → 继续判断 → 连续执行多步 → 直到任务完成
-```
+## 安装与配置
 
-我们要亲手把这个循环搭出来，而不是套框架。
-
-## 技术选型（一句话）
-
-- **Python 3.11** —— 标准库够 Phase 0 用；后面装 LLM SDK 也只需一个包
-- **LLM 走 OpenAI 兼容协议** —— 用官方 `openai` SDK，但 `OPENAI_BASE_URL` 可指向任何兼容服务
-  （OpenAI / DeepSeek / GLM / Kimi / OpenRouter / 本地 Ollama）
-- **不用** LangChain / LangGraph / MCP / 数据库 / RAG / Memory —— 全部自己写，因为要经历它
-
-选 OpenAI 兼容协议的真正原因：程序从 `.env` 读取 `OPENAI_API_KEY`、
-`OPENAI_BASE_URL` 和 `OPENAI_MODEL`，再交给 `openai` SDK；更换兼容服务时只需修改配置。
-
-## 首次使用（Windows）
-
-需要 Python 3.11，以及支持工具调用的 OpenAI 兼容模型。克隆仓库后，在项目目录运行：
+需要 Python 3.11 或更高版本。Windows 从源码目录运行：
 
 ```powershell
 py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -c requirements.lock -e ".[dev]"
 .\mini.cmd config
-.\mini.cmd start
 ```
 
-`config` 会依次询问 API 地址、模型名和 API Key；密钥输入不回显，配置只保存到本地
-`.env`。以后修改配置仍运行 `.\mini.cmd config`，直接回车可保留已有值。
-如需手动配置，也可以复制 `.env.example` 为 `.env` 并填写这三项。
-
-默认只操作项目内的 `demo_workspace`；文件写入和重命名默认询问批准。运行
-`.\mini.cmd start --desktop` 才会把工作区切换到桌面。`.env` 和本地会话文件已被 Git 忽略。
-`mini start` 这种省略路径的写法需要自行把项目目录或转发脚本加入 PATH；克隆仓库后
-直接使用上面的 `.\mini.cmd start`。
-
-## 当前状态：Phase 25
-
-### Runtime Capability Introspection
-
-**Runtime Tool Capability ≠ Runtime Feature**。`inspect_capabilities()` 只读返回
-`callable_tools` 与 `runtime_features`：前者从当前 `TOOL_REGISTRY` 生成，报告工具描述、
-风险、审批要求、当前可用性和不可用原因；后者报告 Session、Context、Sandbox、
-Finish Gate、Verifier、verification freshness、stage-aware recovery 等 Runtime 能力，
-并区分 `supported`、`active`、`current_state`。Runtime 能保存 Session，不表示模型能直接调用
-Session Tool；当前有工作区内 `rename_file`，没有任意位置的 move Tool。`run_command` 受现有 command policy 限制，
-不是任意 shell。能力问题优先调用 `inspect_capabilities()`，不靠 sandbox 源码推测。
-
-需要核对具体实现时，`inspect_project()` 可列出并分页读取 Agent 自身的一小组核心项目文件。
-这是只读入口；`.env`、会话、测试产物和项目外文件不在可读列表中。普通任务文件继续通过
-`list_files` / `read_file` 访问 `AGENT_WORKSPACE`，写入和命令执行边界不变。
-
-### Windows 交互式启动
-
-首次安装步骤见上方。之后在项目目录运行 `.\mini.cmd start`，或在 CMD 输入
-`agent.cmd`、在 PowerShell 输入 `.\agent.cmd`，即进入现有 `main.py` 交互式 CLI。
-`agent.cmd` 使用脚本自身目录定位 `.venv\Scripts\python.exe` 和 `main.py`，不改全局 PATH；
-可从其他当前目录用脚本路径启动。`--resume SESSION_ID` 参数会原样传给正式入口。
-单任务 JSON 入口仍为 `cli.py --task ...`。
-
-`.\mini.cmd start --resume SESSION_ID` 恢复会话，`.\mini.cmd help` 显示用法。
-需要从任意目录使用时，可通过项目内 `mini.cmd` 的完整路径启动。
-
-要处理桌面文件，**新开会话**运行 `.\mini.cmd start --desktop`。此模式把工作区限定为桌面；
-`read_file`、`write_file` 和 `rename_file` 才能看到桌面文件，写入和重命名仍按审批模式处理。
-`rename_file` 拒绝覆盖已有目标文件。普通 `.\mini.cmd start` 仍使用 `demo_workspace`。
-
-终端执行记录只显示工具名、简要参数和结果摘要；`inspect_capabilities` 显示可用工具数量，
-不会把整段 JSON 打满屏幕。完整工具结果仍会交给模型并保存在会话消息中；任务 Trace 数据不变。
-
-Phase 24.4 已加入第 8 次固定 required test 实际 FAIL 后的阶段式恢复控制。
-恢复最多允许 2 次有效修改、2 次固定测试、1 次有效 finish 和 2 次无进展轮，
-总模型调用数不超过 15；普通任务仍限 8 次。两次固定前缀真实验证中，
-一次因无进展额度耗尽而未接受，另一次在第 15 次调用完成并通过独立验收。
-实现、验证结果与复现方式见 [Phase 24.4 报告](eval/phase24_4_report.md)。
-
-Phase 24.5 修复了真实修改后读取、搜索和固定测试被旧重复调用记录拦截的问题。
-两次追加的固定前缀真实运行都在第 11 次调用通过独立验收；
-样本与限制见 [Phase 24.5 报告](eval/phase24_5_report.md)。
-
-用户只给一个**目标**，Agent 自己看目录、自己挑文件、自己读、
-自己判断要不要再读一个，最后把整理好的结果**写回工作目录**并汇报：
-
-```
-用户任务 → list_files（探索）→ read_file（读取）→ write_file / apply_patch / run_command（受控执行）→ 最终回答
-```
-
-Phase 7 已完成 Context Management：默认模式为 `WRITE_ONLY`，只压缩发给模型的历史
-`write_file` 内容，canonical `messages` 保持完整；同时保留 `OFF` 和 `FULL` 两种模式。
-
-Phase 8 已完成 Session Persistence：交互式运行会把稳定的 canonical `messages` 保存到
-`sessions/<session_id>.json`，可用 `main.py --resume SESSION_ID` 恢复同一段对话。
-Session 不是 Memory：不做跨 Session 搜索、合并、自动摘要或知识提取。
-
-Phase 9 已完成 Long File Reading：`read_file(path, start_line=1, max_lines=100)`
-按完整行返回分页结果，并让 metadata 精确描述实际返回范围。工具层使用独立的安全字符预算，
-给分页 metadata 和边界标记预留空间；`MAX_TOOL_RESULT_CHARS = 4000` 仍是所有工具结果的最终兜底。
-Python 不自动循环翻页，模型根据 `has_more` 和 `next_start_line` 自主决定是否继续读取。
-
-Phase 9 真实验证已通过：模型实际读取 `1-100 → 101-200 → 201-300 → 301-400 → 401-450`，
-在第 377 行找到 `TARGET_FACT = "phase9-secret-value"`，随后正常给出 Final Answer，未撞步数上限。
-
-Phase 10 已完成 Tool Permission / Side-effect Approval：`list_files` / `read_file` 属于
-`READ_ONLY`，自动执行；`write_file` / `apply_patch` 属于 `SIDE_EFFECT`，必须先通过 Runtime 审批。
-交互式 CLI 默认 `ASK`，自动入口和测试显式使用 `ALLOW` 或 `DENY`。拒绝也会生成合法的
-`role="tool"` 结果，但不会写文件、不会进入成功重复调用集合，也不会被当作成功写入压缩。
-
-Phase 11 已完成 Generalized Tool Capability / Permission Policy：工具的 Schema、Handler
-和 `risk_level` 现在由同一个 `ToolDefinition` 放进 `TOOL_REGISTRY`。发给模型的
-`AVAILABLE_TOOLS` 只是 Registry 派生出的 OpenAI-compatible Schema 视图；Permission
-Runtime 只读取 `risk_level`，不再按 `write_file` 这样的具体工具名写分支。`READ_ONLY`
-自动执行，`SIDE_EFFECT` 走现有 `ASK` / `ALLOW` / `DENY` 审批；`EXECUTION` 和
-`EXTERNAL_SIDE_EFFECT` 作为统一风险 metadata 使用。
-
-当前正式工具：
-
-| 新增 | 说明 |
-|---|---|
-| `list_files` | 列工作目录一层内容，标 `[f]`/`[d]` 和字节数。`path` 可选，省略就是列根目录 |
-| `write_file` | 写 UTF-8 文本，父目录不存在会自动创建，但只能创建在沙盒内 |
-| `apply_patch` | 对已有 UTF-8 文本做 `old_text → new_text` 精确替换，`old_text` 必须唯一匹配 |
-| `rename_file` | 在当前工作区内重命名已有文件；目标已存在时拒绝覆盖 |
-| `run_command` | 以 `shell=False` 执行白名单内的 Python 测试或 Git 只读命令 |
-| `TOOL_REGISTRY` | 工具名 → `ToolDefinition(name, schema, handler, risk_level)`。新增正式工具只在这里注册 |
-
-「先看目录、再决定读哪个」这件事**没有**写进系统提示词，程序里也不强制。
-工具说明书里只有一句「如果你不知道有哪些文件，先用这个工具，不要猜文件名」——
-让模型自己从工具描述里学出用法，而不是照着脚本走。
-系统提示词只说「有哪些工具、各干什么」，最后一句是「用哪个工具、用什么顺序，你自己决定」。
-
-Phase 6 在同一个循环上叠了三层**互相独立**的防线，解决真模型实测暴露的
-「任务已经完成，但 Agent 不知道什么时候该停」：
-
-| 层 | 谁负责 | 机制 |
-|---|---|---|
-| 1. 自己判断 | 模型 | 系统提示词里一句收敛原则：每次拿到工具结果后判断目标是否已满足，满足就直接给最终回答 |
-| 2. 重复调用检测 | 程序（Runtime） | 同一工具名 + 规范化后完全相同的参数，且上一次**成功执行**过 → 不真执行，回喂一条重复提示 |
-| 3. 最大步数 | 程序 | `MAX_AGENT_STEPS`（默认 8），数的是「问了几次模型」，撞线就停并明确告知 |
-
-第 1 层是主力，第 2 层只在模型自己没停下来的时候提醒它一次，第 3 层是最后保险丝。
-第 2 层**不会**代替模型做决定：拦下后照样按正常协议回喂一条工具结果，让模型继续下一轮；
-是否结束仍然由模型自己说。
-
-可观测性：每次问模型都会打印 `finish_reason` 和 token 用量。服务商没返回 `usage`
-时显示 `unavailable`，不崩、不编造。日志里不含 API Key、Authorization 头或任何完整 HTTP 头。
-
-重复调用检测只认「工具名相同 + 参数语义相同」：参数先 `json.loads` 再
-`json.dumps(sort_keys=True)` 归一成规范串，所以键序换了、多了空格算同一个；
-读不同文件、写同一文件但内容不同、列不同目录，都**不会**被误判。
-失败过的调用不进检测表——模型换参数重试必须被允许。
-
-刻意**不做**的两件事：不写死「写完文件以后禁止 read_file」（内容变了就是模型在改，得放行），
-也不写死「write_file 成功以后立刻结束」（那样验证写入成功就被禁止了）。
-所以「读回自己刚写的文件确认」这种正常验证是放行的；拦下来的只有
-「同一个工具、完全相同的参数、上一次已经成功」这一种情况。
-
-```bash
-cd mini-agent-lab
-.venv\Scripts\python.exe main.py
-```
-
-```bash
-cd mini-agent-lab
-.venv\Scripts\python.exe main.py
-```
-
-先用本地假服务器跑通接线（不需要 Key）：
-
-```bash
-# 终端 1
-.venv\Scripts\python.exe tests\mock_server.py
-# 然后把 .env 里的 BASE_URL 指向它
-#   OPENAI_API_KEY=any-value
-#   OPENAI_BASE_URL=http://127.0.0.1:8765/v1
-#   OPENAI_MODEL=mock-model
-```
-
-预期输出（用户只给目标、不给文件名：模型自己选文件、自己写结果）：
-
-```
-Mini Agent Lab
-模型：mock-model @ http://127.0.0.1:8765/v1
-工作目录：C:\...\mini-agent-lab\demo_workspace（就绪）
-可用工具：list_files, read_file, write_file
-单个任务最多 8 步（模型问了几轮就停，防止无限循环）
-工具结果上限 4000 字符（超过会截断并告知模型）
-审批模式：ASK
-输入一句话开始对话；输入 exit 退出。
-
-你 > 看看工作目录里有什么学习资料。找到和 Agent 有关的资料，读取需要的内容，整理成一份简短学习摘要，保存为 notes/agent_summary.md。完成后告诉我你做了什么。
-
-── Turn 1 ──
-  finish_reason     : tool_calls
-  prompt_tokens     : 861
-  completion_tokens : 29
-  total_tokens      : 890
-
-Agent 想调用工具：list_files({})
-Tool 结果 > 工作目录 . 的内容：
-[f] agent_notes.md  (1363 字节)
-[f] python_notes.md  (972 字节)
-[f] todo.txt  (483 字节)
-
-Agent 想调用工具：read_file({"path": "agent_notes.md"})
-Tool 结果 > # Agent 学习笔记
-...
-Agent 想调用工具：write_file({"path": "notes/agent_summary.md", "content": "# Agent 学习摘要 ..."})
-Tool 结果 > 已写入 agent_summary.md（304 字节，已写入新文件）
-
-Agent > [mock 回复] 任务完成，我一共调用了 3 次工具：list_files → read_file → write_file。摘要已写入 notes/agent_summary.md。
-```
-
-注意三次「Agent 想调用工具」用的是**三个不同的工具**，中间每次都夹着一份「Tool 结果」——
-模型是根据上一份结果决定下一步的，不是照着固定脚本走。
-它列完目录后只读了 `agent_notes.md`，没去读 `python_notes.md` 和 `todo.txt`：
-读哪几个、读几个、按什么顺序，都是它自己的决定。
-
-mock 服务器还支持几个触发词，用来手动触发各种分支（不用 Key）：
-
-| 输入里带上 | 触发什么 |
-| --- | --- |
-| `列文件` | 正常列出工作目录（`[f]` / `[d]` + 字节数）|
-| `todo.txt` | 正常读到文件 |
-| `越界` | 模型试图读 `../.env`，被沙盒拦下 |
-| `不存在` | 读一个没有的文件 |
-| `坏参数` | 模型给出非法 JSON 参数 |
-| `big_notes.txt` | 读一个大文件，验证结果会被截断到 4000 字符并明说省略了多少 |
-| `写个测试文件` | 正常写进工作目录（自动创建 `notes/`）|
-| `重复调用` | 对同一文件提两次**完全相同**的调用：第一次真执行，第二次被重复检测拦下并回喂提示 |
-| `写越界` | 模型试图写 `../evil.txt`，被沙盒拦下 |
-| `写绝对路径` | 模型试图写 `C:/evil.txt`，被沙盒拦下 |
-| `假工具` | 模型调用一个不存在的工具名，验证它变成 Tool Result 而不是程序崩溃 |
-| `总是调用` | 拿到结果后模型还要工具，验证会被最大步骤数拦下来 |
-| `中途崩` | 工具跑完、结果已回传之后那次请求故意 500 |
-| `对比` | 连续读两个文件再总结，验证 Agent 循环真的能跑多步 |
-| `agent_summary` | 多工具任务：`list_files` → `read_file` → `write_file` → 汇报 |
-
-触发词必须是**连续出现的字面串**：输入「越界 的情况」不会触发（连续串是「越界」，
-中间隔着别的字就不算），但「尝试读 ../.env 越界试试」会触发。
-`总是调用` / `对比` / `中途崩` 本身不指定文件名，要搭配一个文件名触发词
-（例如「总是调用 todo.txt 帮我看下」），mock 才知道先动哪个文件。
-`big_notes.txt` 不在仓库里，要临时造一个够长的文件才看得见截断：
-
-```bash
-.venv\Scripts\python.exe -c "open('demo_workspace/big_notes.txt','w',encoding='utf-8').write('# 大文件\n' + ('这是一行占位内容，用来把文件撑大到超过工具结果上限。\n' * 150))"
-```
-
-Phase 10 的非交互测试/评测需要显式设置：
+`config` 交互式写入 `OPENAI_BASE_URL`、`OPENAI_MODEL` 和
+`OPENAI_API_KEY`。配置文件位于状态目录的 `.env`，不会写入模型请求参数，也不
+应提交到 Git。状态目录由 `MINI_AGENT_STATE_DIR` 决定；源码 checkout 默认使用
+项目目录以保持现有 `.env` 约定，安装后的默认位置是用户目录下的
+`.mini-agent`。需要切换位置时，在运行命令前设置变量：
 
 ```powershell
-$env:TOOL_APPROVAL_MODE = "ALLOW"
+$env:MINI_AGENT_STATE_DIR = "$HOME\.mini-agent"
+.\mini.cmd config
 ```
 
-真实 CLI 保持默认 `ASK`。有路径的副作用工具会显示目标文件和 `CREATE` /
-`OVERWRITE`；输入 `Y` 才执行，其他输入均视为拒绝。
+也可以直接使用安装后的入口：
 
-mock 服务器还内置了一个协议校验器：它检查 `tool_calls` 和 `tool` 结果是否
-成对出现、顺序是否正确，不满足就返回 400。真实服务商不满足这个条件也会直接
-400。它能证明「请求中途失败后把半截历史清掉」这件事真的做对了——如果清不干净，
-下一轮请求就会被它拦下来。
-
-唯一第三方依赖是 `openai`，装在 `.venv` 里。涉及 `main.py` 的本地测试都用 venv 的
-Python 跑（`test_loop.py` / `test_permissions.py` 要 `import main`，间接要 `openai`）：
-
-```bash
-.venv\Scripts\python.exe tests\test_sandbox.py   # 沙盒边界 + 注册表一致性
-.venv\Scripts\python.exe tests\test_loop.py      # 重复调用检测 + 协议合法性
-.venv\Scripts\python.exe tests\test_permissions.py # Phase 10 审批与拒绝链路
+```powershell
+.\.venv\Scripts\mini-agent.exe config
 ```
 
-`tests/inputs/` 里放的是喂给 `main.py` 的 stdin 输入文件，用来复现某次实测：
+Linux/macOS 使用等价的 `python3.11 -m venv .venv`、`.venv/bin/pip` 和
+`.venv/bin/mini-agent`。模型配置仍使用同名环境变量；`OPENAI_BASE_URL` 必须
+指向兼容 Chat Completions 的服务地址。
 
-```bash
-cmd /c '.venv\Scripts\python.exe main.py < tests\inputs\real_retest_v2.txt'
+## 常用命令
+
+选择工作目录后启动交互式会话：
+
+```powershell
+.\mini.cmd start --workspace C:\path\to\trusted-project
 ```
 
-## 写文件的边界和覆盖策略（刻意的设计选择）
+一次性任务以一行 JSON 输出结果，适合脚本和 Web UI：
 
-`write_file` 复用 `read_file` 同一套沙盒校验，四类越界一律 `PermissionError`：
-`../` 跳级、`..\\` 反斜杠、绝对路径（`C:/evil.txt`、`/etc/passwd`）、符号链接。
-校验发生在 `mkdir(parents=True)` **之前**，所以自动创建的父目录也保证在沙盒内。
-没有删除文件的能力，也没有执行程序的入口。
-
-权限检查在 Runtime 的 `run_tool_round` 中、真正调用 `write_file` 之前发生。它先复用
-`resolve_inside_workspace` 做 Sandbox 预检，再根据目标文件是否存在显示 `CREATE` 或
-`OVERWRITE` 并调用审批 callback；因此用户批准也不能越过沙盒。`write_file` 本身不包含
-审批或 `input()`，只负责在 Runtime 放行后写入。
-
-**允许覆盖已有文本文件**，这是刻意的：沙盒已经把破坏范围锁死在一个专用目录里；
-而拒绝覆盖会让「重跑同一个任务」直接失败，还得再引入一个 `force` 参数让模型学习怎么绕过——
-那比覆盖本身更复杂。为了让覆盖不静默，返回值会明确说
-`已写入 xxx.md（304 字节，已覆盖已有文件）` 或 `（304 字节，已写入新文件）`。
-本项目不做版本控制，覆盖前不自动备份。
-
-`apply_patch(path, old_text, new_text)` 是已有文件的小范围修改入口。它先通过同一条
-`resolve_inside_workspace` 沙盒校验和 `SIDE_EFFECT` 审批，再以 UTF-8 文本做字面匹配：
-匹配 0 次或超过 1 次都返回 `[工具失败]` 且保持文件不变，只有恰好 1 次才写入。
-不做 fuzzy matching、正则、AST 猜测或自动空白修正；`new_text` 为空可用于局部删除。
-读取和写入会保留文件的 LF/CRLF 换行风格。返回值只报告路径、替换次数和 old/new 字符长度，
-不会把整份新文件重新塞回上下文。`write_file` 仍保留给新建文件或必要的整文件覆盖。
-
-## Phase 11：Tool Registry 与统一 Permission Policy
-
-### 1. 什么是 Tool Registry
-
-`TOOL_REGISTRY` 是 Runtime 的正式工具注册表。每个名字对应一个
-`ToolDefinition`，里面同时放着：
-
-- `name`：模型 Tool Call 使用的名字
-- `schema`：发给模型的 OpenAI-compatible Tool Schema
-- `handler`：真正执行工作的 Python 函数
-- `risk_level`：Runtime 用来决定权限路径的风险等级
-
-`AVAILABLE_TOOLS` 不再是独立登记表，而是从 Registry 生成的 Schema 列表。
-因此 Schema、Handler、Risk 不会因分别维护而漂移。
-
-### 2. Risk level 和 approval mode 的区别
-
-`risk_level` 是工具自身声明的能力风险：`READ_ONLY` 表示只读，`SIDE_EFFECT`
-表示会改变状态；`EXECUTION` 和 `EXTERNAL_SIDE_EFFECT` 是统一的风险 metadata。
-它回答「这个工具是什么性质」。
-
-`ASK`、`ALLOW`、`DENY` 是本次运行选择的审批策略，回答「遇到需要审批的风险时
-怎么处理」。因此 `READ_ONLY` 不请求审批，`SIDE_EFFECT` 才进入现有策略；用户批准
-仍不能越过 Sandbox 预检。
-
-### 3. 为什么 Runtime 不应该认识 `write_file`
-
-如果 Permission Runtime 判断 `if tool_name == "write_file"`，每增加一个有副作用的
-工具就必须修改 Runtime，容易漏掉风险规则。现在 Runtime 只查 Registry 中的
-`risk_level`；测试注册的 `mock_side_effect` 即使名字完全不同，也会自动走同一条
-审批路径。测试工具不会进入 `AVAILABLE_TOOLS`。
-
-这还不是 MCP：这里仍是本地 Python 函数、项目自己的 JSON Schema 和本地 Registry。
-没有远程 Tool Server、MCP 握手、传输协议或跨进程能力发现。
-
-## Phase 12：Controlled Command Execution
-
-`run_command(command, args=[], cwd=".")` 是第一个 `EXECUTION` Tool。它不接受完整
-shell script，而是接收程序名和参数数组，并始终使用 `subprocess.run(..., shell=False)`。
-
-第一版 Command Policy 只允许：
-
-- `python -m pytest ...`
-- `python -m unittest ...`
-- `git status`、`git diff`、`git log`
-
-`python -c`、`python -m pip`、写入型 Git 子命令、PowerShell、cmd、bash、网络命令、
-未知程序和 shell 操作符都会被拒绝。`cwd` 解析后必须位于 `WORKSPACE_DIR` 内，且
-Sandbox 预检发生在 Permission callback 之前。
-
-`EXECUTION` 自动复用 Phase 11 Permission Runtime：交互式运行默认 `ASK`，测试和自动
-入口使用 `ALLOW` / `DENY`。拒绝时不会启动 subprocess，但仍回传合法 `role="tool"`
-结果。结果包含 `Command`、`CWD`、`Exit code`、`Timed out`、`STDOUT` 和 `STDERR`；
-默认超时为 30 秒，stdout/stderr 各有独立输出上限，超时和非零退出都会作为正常 Tool
-Result 返回给模型。
-
-2026-09-21 的 Phase 12.5 真实验证已证明完整核心链路：模型主动请求 `run_command`，
-`EXECUTION` 获 `ALLOW`，`python -m unittest tests.test_long_file -v` 实际运行并通过 10 项
-测试，模型随后给出 Final Answer。后续已修复 `cli.py` 的 Windows GBK stdout 问题，并用
-ASCII、中文、emoji 及中文+emoji+JSON 回归验证输出内容完整保留，Phase 12 真实闭环正式关闭。
-详见 `REAL_RUN_LOG.md`。
-
-## Phase 13：Bounded Coding Loop
-
-Phase 13 用一个隔离的 `tests/fixtures/coding_workspace/` 小项目验证有限 Coding Loop：
-
-```
-read_file → write_file / apply_patch → run_command（测试）→ Tool Result → 再决定 → Final Answer
+```powershell
+.\mini.cmd task `
+  --task "修复计算逻辑并运行测试" `
+  --workspace C:\path\to\trusted-project
 ```
 
-Runtime 没有新增 Planner、Coding 状态机或自动修复分支。测试进程退出码 `1` 仍是正常
-`Tool Result`，模型可以读取 stdout/stderr 和 `exit_code` 后决定下一次修改；只有 Runtime
-异常才会被当作工具失败。非零 `run_command` 结果不会进入成功重复调用集合，因此修改后
-可以再次运行同一条测试命令。
+JSON 结果包含 `session_id`、`task_id`、`status`、`answer`、`interrupts`、
+`pending_nodes`、`trace` 和 `error`。副作用工具处于 `ASK` 审批模式时，命令会
+返回 `status: "interrupted"` 和完整的审批动作；批准或拒绝使用同一个会话：
 
-本阶段增加了任务级内存 Trace（模型轮次、工具参数摘要、审批、结果摘要、退出码、写入目标、
-调用计数和 token 汇总），并继续使用已有 `MAX_AGENT_STEPS` 作为上限保险丝。`write_file`
-仍是 `SIDE_EFFECT`，`run_command` 仍是 `EXECUTION`，三者都必须经过现有 Permission Runtime；
-fixture 仍只能位于 `WORKSPACE_DIR` 内。Mock A 验证一次修复，Mock B 验证失败后第二次修复，
-Mock C 验证撞上限时停止；一次真实小任务也已读、写、测试并给出 Final Answer。
-
-## 工具结果长度保护
-
-`config.py` 里 `MAX_TOOL_RESULT_CHARS = 4000`。超过就截断，并明确告诉模型
-「已截断、原始内容多少字符、省略多少字符」，**不静默丢内容**——
-静默截断会让模型以为拿到的是全文，然后基于不完整信息下结论。
-
-裁在 `main.py` 的 `execute_tool_call` 里，那里是所有工具结果的唯一出口，
-所以现在的工具和以后任何新工具自动都有保护；工具本身不需要知道模型的上下文预算。
-用字符数而不是 token 数：数 token 要引 tokenizer、要装依赖，
-对「别把上下文撑爆」这个目的完全没必要。
-
-## 项目结构
-
-```
-mini-agent-lab/
-├── main.py               # 程序入口：聊天循环 + Agent 循环 + 执行工具并回喂模型
-├── config.py             # 配置：读 .env，产出模型连接信息、沙盒目录、最大步数、结果上限
-├── session.py            # Session JSON 的创建、保存、加载和 canonical message 校验
-├── tools.py              # 工具层：工具 Schema/Handler/Policy + 沙盒校验 + Registry
-├── requirements.txt      # 唯一第三方依赖：openai
-├── README.md             # 本文件
-├── REAL_RUN_LOG.md       # 真模型实测记录（含 Phase 5.5、Phase 6、Phase 9、Phase 10、Phase 12.5、Phase 13）
-├── .env.example          # 环境变量模板，复制成 .env 再填 Key
-├── .gitignore            # 保证 .env 和 __pycache__ 不进版本库
-├── eval/                 # Phase 6.5：轻量 Eval（不新增 Agent 能力，只测稳定性）
-│   ├── tasks.json        # 任务集：6 个基准任务 + Task 1 重复 2 次（共 8 个）
-│   ├── run_task.py       # 单任务执行器：驱动 main.py + 收集指标 + 判定 success
-│   ├── run_eval.py       # 总控：工作目录快照隔离 + 跑完全部任务 + 失败分类
-│   ├── test_metrics.py   # 20 个单测：只测「尺子准不准」，不发任何网络请求
-│   ├── results.json      # 最近一轮 Eval 的完整原始数据
-│   ├── REPORT.md         # 人类可读报告：为什么稳、哪里不稳、下一步该修什么
-│   └── .run_log.txt      # 过程日志（已 gitignore，每次跑会重新生成）
-├── tests/
-│   ├── mock_server.py    # 本地假服务器，没有 Key 也能验证接线
-│   ├── test_sandbox.py   # 沙盒边界 + 注册表一致性单元测试
-│   ├── test_loop.py      # 重复调用检测 + 工具调用协议合法性
-│   ├── test_session.py   # Session 保存/恢复、密钥排除和上下文视图测试
-│   ├── test_long_file.py # Phase 9 分段读取、完整行和 mock 分页测试
-│   ├── test_permissions.py # Phase 10 审批、拒绝、协议和 Mock Agent 测试
-│   ├── test_coding_loop.py # Phase 13 fixture、Mock A/B/C 和边界测试
-│   ├── test_apply_patch.py # Phase 16 精确 patch、权限、重复和 Coding 闭环测试
-│   ├── fixtures/coding_workspace/ # 隔离的 calculator.py + test_calculator.py fixture
-│   └── inputs/           # 喂给 main.py 的 stdin 输入，用来复现某次实测
-├── sessions/             # 本地 Session JSON（已加入 .gitignore，不提交实际会话）
-└── demo_workspace/       # Agent 唯一允许读写的工作目录（沙盒）
-    ├── agent_notes.md    # Agent 学习笔记
-    ├── python_notes.md   # Python 速记
-    └── todo.txt          # 任务清单
+```powershell
+.\mini.cmd task --resume SESSION_ID --approve --workspace C:\path\to\trusted-project
+.\mini.cmd task --resume SESSION_ID --reject  --workspace C:\path\to\trusted-project
 ```
 
-为什么 `demo_workspace/` 是独立的：Agent 要能读文件，就已经有泄露能力了。
-把它关在一个专用沙盒里，你才能放心地让它试错。
+`--approve` 和 `--reject` 只处理当前 checkpoint 中的待审批动作，恢复时仍会
+重新校验工作区和工具前置条件。`ALLOW` 适用于已信任的临时项目，`DENY` 会拒绝
+副作用工具；默认 `ASK` 不会静默放宽审批。
 
-## 现在有了能力，但「智能」还在外面
-
-Phase 6 之后，Agent 已经能**自己把一件事做完并且自己收口**：看目录、挑文件、读、
-整理、写回、判断目标已满足、汇报。新增的三层防线都没动 Agent 循环——
-`main.py` 里连一个工具名都没写，工具集也没有增加。
-
-| 仍然缺失 | 现状 |
-|---|---|
-| 模型的选择不可靠 | 挑哪个文件、读几个、要不要再读，全靠模型判断。它可能漏读关键文件，也可能读了不相干的 |
-| 只拦「完全相同」的重复 | 重复检测认的是工具名 + 规范化参数全等。模型换成不同参数原地打转（读 A、读 B、再读 A 的同类变体）不会被发现，仍只靠步数上限兜住 |
-| 没有 Memory | Session 只恢复同一段 canonical 对话，不做跨 Session 搜索、合并或自动记忆 |
-| 没有工具返回值校验 | 工具结果整段塞回模型，除了长度上限，没有检查它是不是模型能用上的 |
-
-这四处刻意不补。Phase 6 只解决「做完了不知道自己该停」这一件事本身；
-往里塞记忆、做更聪明的打转检测，出了问题会分不清是哪一层。
-
-## Phase 6.5：Eval / 稳定性验证
-
-**这个阶段没有加任何 Agent 能力。** 没有新工具、没有记忆、没有 RAG、没有压缩、
-没有 GUI。`main.py` 一个字都没改——Eval 只**驱动**它，不复写它的逻辑，
-所以测出来的东西就是你在终端里手打时会遇到的东西。
-
-要回答的问题只有一个：**Phase 6 已经跑通过一次了，那它到底稳不稳定？**
-
-### 怎么跑的
-
-```bash
-.venv\Scripts\python.exe eval\test_metrics.py   # 20 个单测，不发网络请求，先证明「尺子」是准的
-.venv\Scripts\python.exe eval\run_eval.py eval\tasks.json   # 真跑一轮 Eval（8 个任务）
-```
-
-三个设计决定：
-
-1. **一个任务一个进程。** `config.WORKSPACE_DIR` 在 import 那一刻就定死了，同进程改不了。
-   所以「每个任务都从同一份干净工作目录开始」只能在进程之外做：
-   `run_eval.py` 先把 `demo_workspace/` 备份成快照，每个任务开跑前清回快照，
-   再起一个子进程跑。不隔离的话，第 3 次跑同一个写文件任务会因为「文件已存在」
-   而产生完全不同的行为——那测的不是模型，是文件残留。
-
-2. **success 只用机器能验证的规则，不用另一个 LLM 打分。**
-   要求最终回答 → 历史里有没有一条不带 `tool_calls` 的 assistant 消息；
-   要求写文件 → 文件在不在、是不是空的、写到指定路径没有；
-   要求指定路径 → 是不是那个路径；不该撞步数上限 → 撞了没有；
-   不该报错 → 有没有异常。
-   至于「摘要写得好不好」「比较说得对不对」这类主观指标，
-   **一律不给分，只记 `needs_manual_review = true` 留给人看。**
-
-3. **指标是照着历史回放出来的，不是现场数。**
-   `run_agent_loop` 把「模型提了调用」和「调用结果」严格成对写进历史，
-   而且重复调用的判定只依赖两个输入——工具指纹、已执行过的集合——
-   所以走一遍历史就能还原每一次调用当时是「真执行」「被拦」还是「失败」。
-   回放顺序必须和 `main` 一致：先看指纹在不在集合里，再更新集合；
-   失败调用不进集合（否则模型换参数重试会被当成重复）。
-
-### 这一轮的结论（详见 `eval/REPORT.md`）
-
-8 个任务**全部成功**，0 撞步数上限，0 编造文件，31 次工具调用里 0 次重复被拦。
-
-但同一个任务跑三次，token 消耗是 9,172 / 5,884 / 12,962 —— **最大比最小 2.20 倍**。
-
-| 结论 | 依据 |
-|---|---|
-| 结果稳定 | 8/8 成功，最终回答都在，编造文件 0 次 |
-| 过程不稳定 | 同一任务 token 方差 2.20 倍，模型调用数在 4～6 浮动 |
-| 钱花在哪 | 46,011 token 里 **40,816（88.71%）是 prompt** |
-| 为什么越来越贵 | 8 次运行的每轮 `prompt_tokens` **严格单调递增，无一例外** |
-| 自动判定够不够用 | **7/8 任务必须人工看**；Task 3「技术上正确但实质不完整」被规则漏掉 |
-
-上下文增长的机制（本轮只记录，不解决，是以后 Context Management 阶段的证据）：
-
-- 第 1 轮是固定底数 831～859 token（波动 1.7%），只有 SYSTEM_PROMPT + 工具 Schema + 任务文本。
-- 第 2 轮只涨 80～104，那是加上模型那句工具调用和一个小结果。
-- 跳得大的轮次都是读完整文件的轮次：读 `agent_notes.md` 约 +437，读 `python_notes.md` 约 +911。
-- 原因是 Agent 的工作方式就是「工具结果回喂模型」——历史写进去之后，
-  **之后每一次请求都要把整条历史原样重发一遍**。读一个大文件不只那一次贵，
-  它让后面每一轮都永久变贵。
-
-两个顺带观察：
-
-- **重复调用拦截功能 0 次触发。** Phase 5.5 修的那个「相同 Tool Call 反复执行」
-  在这 8 次运行里根本没出现过——它是那次运行的偶发问题，不是系统性问题。
-  功能本身正确（19 个单测覆盖），只是没被真正需要过。
-- **步数上限余量只有 2**：最多用到第 6 轮，上限是 8。稍微复杂一点的任务就会逼近上限。
-
-## Phase 14：Coding Task Contract / Machine-Verifiable Acceptance
-
-Phase 13 的 Trace 记录 Agent 怎么做，但 Trace 和 Final Answer 都不是任务成功本身。
-Phase 14 增加独立的 `acceptance.py`，用结构化 Contract 和确定性 Verifier 判断最终状态。
-它不调用 LLM、不读取 Session、不进入普通 Agent Loop，也没有新增 Agent Tool。
-
-最小 Contract 形状如下；`instruction` 是给模型看的任务文本，其余字段是 Runtime / Eval
-独立读取的事实：
+Coding Contract 通过 JSON 文件限定允许修改的相对路径和验收测试：
 
 ```json
 {
-  "task_id": "calculator_fix",
-  "instruction": "修复 calculator.py，让对应测试通过",
+  "task_id": "fix-calculator",
+  "instruction": "修复 calculator.py 的加法错误",
   "allowed_paths": ["calculator.py"],
-  "test_command": {
-    "command": "python",
-    "args": ["-m", "unittest", "test_calculator", "-q"],
-    "cwd": "."
-  },
+  "test_command": {"command": "python", "args": ["-m", "pytest", "-q"], "cwd": "."},
   "require_test_pass": true
 }
 ```
 
-Prompt 只能告诉模型规则，不能证明模型遵守了规则。Verifier 在任务开始做文件快照，
-结束时比较 SHA-256，得到 `changed_files` 和 `unexpected_changes`；普通新增、删除、
-修改都能检测，Python 运行时生成的 `__pycache__` / `.pyc` 不计入源码变化。随后它用
-Contract 中固定的命令，通过现有 `run_command` 的安全策略独立重跑最终测试，不相信 Agent
-Trace 里的旧 `exit_code`。
-
-只有以下条件全部满足才是 `accepted=true`：有 Final Answer、没有 `MAX_AGENT_STEPS`、
-没有 Runtime exception、没有越界修改、Verifier 最终测试退出码为 0。结果同时返回
-`agent_ran_required_test`、`final_test_exit_code`、`final_test_passed`、`reasons` 等证据。
-
-Mock A（只改 `calculator.py`，最终测试通过）PASS；Mock B（改测试让测试通过）因
-`unexpected file changed: test_calculator.py` FAIL；Mock C（有 Final Answer 但最终测试失败）
-因 `final_test_failed` FAIL。这样明确区分了「模型说完成」「测试曾经通过」和「最终任务被接受」。
-
-Contract 单任务入口：
+运行 contract：
 
 ```powershell
-$env:AGENT_WORKSPACE = "C:\\path\\to\\coding_workspace"
-$env:TOOL_APPROVAL_MODE = "ALLOW"
-.venv\\Scripts\\python.exe cli.py --contract tests\\fixtures\\coding_contract.json
+.\mini.cmd task --contract C:\path\to\contract.json --workspace C:\path\to\trusted-project
 ```
 
-普通 `--task` 入口仍保留原有行为；只有传入 Contract 时，JSON 结果才附带独立 `acceptance`
-对象。Phase 14 本地共 66 项测试通过；一次真实模型运行的详细结果见 `REAL_RUN_LOG.md`，
-模型修复了允许文件且最终测试通过，但撞步数上限、没有 Final Answer，所以被 Verifier 正确拒绝。
+`doctor --workspace PATH` 只检查本地路径和配置存在性，不访问模型；`sessions`
+读取 SQLite checkpoint，`sessions --legacy` 只列出历史 JSON 文件；`version` 返回
+包版本。Windows 下 `agent.cmd` 仍是调用 `mini.cmd start` 的兼容包装器。
 
-## Phase 15：Coding Completion & Budget Control
+## v2 架构
 
-Phase 15 保持 `MAX_AGENT_STEPS = 8`，解决的是“产物已经正确但 Agent 继续调用工具”的可观测性与
-收口提示，不把步数上限改大，也不让 Runtime 代替模型生成 Final Answer。
-
-Coding Task Trace 现在给每个 Tool Call 标注：`PRODUCTIVE`、`BLOCKED_DUPLICATE`、
-`POLICY_REJECTED`、`FAILED_COMMAND` 或 `SUCCESSFUL_COMMAND`，并汇总
-`executed_tools`、`duplicate_blocked`、`policy_rejected`、`failed_commands` 和
-`successful_commands`。Contract 验收结果另外拆成：
-
-- `artifact_passed`：没有越界文件变化，且独立最终测试满足 Contract；
-- `interaction_completed`：有 Final Answer，且没有撞 `MAX_AGENT_STEPS`；
-- `accepted`：两者都成立，并通过其余现有必要条件。
-
-Contract 模式会给模型一段很短的目标文件、严格 required test 和收口规则。只有严格匹配
-Contract 的 `command + args + cwd` 且 exit code 为 0 时，Tool Result 才附加 Completion Hint；
-普通成功命令不会被误报为任务完成。Verifier 仍然独立拍快照并重跑固定测试。
-
-Mock A（成功测试后 Final）、Mock B（失败测试后修复再测）、Mock C（重复调用）、Mock D（策略
-拒绝后恢复）均按预期工作；Mock E（顽固模型）仍由 8 步保险丝停止。Phase 15.5 baseline
-本地全量为 68 项测试；Phase 16 增加 20 项 patch 测试后，全量为 88 项并通过。Phase 16
-真实模型使用 `apply_patch` 完成 calculator fixture，详见 `REAL_RUN_LOG.md`。
-
-## Phase 16：Patch-based Editing
-
-Phase 16 增加最小的局部编辑能力，不改变现有 `write_file` 职责，也没有实现 Git unified diff、
-AST rewrite、fuzzy matching、Planner、MCP 或 Patch Context Compression。
-
-```text
-apply_patch(path, old_text, new_text)
+```mermaid
+flowchart LR
+    CLI[mini.cmd / mini-agent] --> Settings[Settings + workspace]
+    Settings --> App[AgentApplication]
+    App --> Model[ChatOpenAI<br/>OpenAI-compatible HTTP]
+    App --> Graph[create_agent<br/>CompiledStateGraph]
+    Graph --> MW[Context / Boundary / HITL / Verification middleware]
+    Graph --> Tools[StructuredTool registry]
+    Tools --> FS[filesystem + command policy]
+    FS --> Work[trusted workspace]
+    Graph --> SQLite[SqliteSaver<br/>state/.mini-agent/checkpoints/v2.sqlite3]
 ```
 
-唯一匹配规则：`old_text` 出现 0 次时返回“目标文本不存在”；出现超过 1 次时返回“目标文本不唯一”；
-只有恰好 1 次才替换。两种失败都是正常 `role="tool"` 结果，文件保持不变，模型可以重新
-`read_file → apply_patch`。成功结果包含 path、`replaced occurrence count = 1`、old/new 字符长度。
+应用装配发生在 `mini_agent.runtime.AgentApplication`：它读取
+`mini_agent.settings.Settings`，调用 `mini_agent.models.create_model`，通过
+`mini_agent.tools.registry.build_tools` 得到唯一的模型可见工具集合，再把模型、
+工具、middleware 和 `SqliteSaver` 交给 `langchain.agents.create_agent`。完整模块
+职责、状态字段和扩展边界见 [`docs/architecture.md`](docs/architecture.md)。
 
-`apply_patch` 注册为 `RiskLevel.SIDE_EFFECT`，沿用 `TOOL_REGISTRY`、`resolve_inside_workspace`、
-`ASK/ALLOW/DENY`、重复调用保护、Session canonical history 和 Acceptance 的 changed_files 逻辑。
-Verifier 不依赖具体编辑工具。Trace 额外记录 `apply_patch_calls`、`patch_successes` 和
-`patch_failures`；patch 参数暂不做专门压缩，先记录真实大小。
+工具适配层使用 LangChain `StructuredTool` 和 Pydantic 参数模型。工作区以绑定
+参数注入 handler，不出现在模型 schema 中；工具返回
+`content_and_artifact`，其中 `ToolResult` 的状态、错误码和元数据留在
+`ToolMessage.artifact`。`risk`、`mutation`、`workspace_arguments` 和
+`mutation_paths` 由 `BoundaryMiddleware` 用于审批、contract 路径检查和前置条件
+校验。
 
-本地验证覆盖：唯一/0/多匹配、局部删除、中文、多行、CRLF、沙盒越界、ALLOW/DENY、重复调用、
-失败重试、Session、Context、Mock A-D、`patch → test → Final → Acceptance`，以及既有长文件、
-Command、Completion Control 和 Verifier 回归；全量 `87` 项测试通过。
+## 实时进度事件（同步 LangGraph streaming）
 
-Phase 16 的一次真实样本中，模型选择 `apply_patch` 而非 `write_file`，最终
-`artifact_passed=true`、`interaction_completed=true`、`accepted=true`。这是单次观察，不能推出
-统计结论；本 fixture 很小，patch 的 old/new 两段合计字符数反而可能大于完整文件，优势主要在真实
-大文件中避免重新生成未修改内容和降低误覆盖范围。
+运行 `mini-agent task --task "检查代码并修复" --progress-jsonl --workspace PATH` 时，
+程序仍在 stdout 只输出最终 JSON 结果，但会在 **stderr 持续输出 JSON Lines**：
+`graph_step` 表示 LangGraph 节点已经完成，`tool`、`model`、`verification`
+和 `budget` 为既有中间件事件。每条消息都自带事件类型和时间；
+`graph_step` 只包含节点名称、任务 ID 等元信息，**不输出工具参数、模型文本、文件正文或 API Key**。
+CLI 默认不开启节点流，现有脚本接口不变。
 
-## Phase 17：Repository Navigation / Code Search
+这是 **节点级实时进度**，不是逐 Token 回答流，不代表前端 SSE/async API 已实现。
+中断审批仍使用原来的 checkpoint 和 `--resume` 命令；
+`--progress-jsonl` 也适用于交互式 `start` 命令。
+后续 Web UI 可以直接解析 stderr 的 JSONL 事件而无需读取 LangGraph 内部状态。
 
-Phase 17 增加一个只读的固定字符串搜索工具：
+## Checkpoint 任务计划管理
 
-```text
-search_text(query, path=".", max_results=20)
-```
+复杂开发任务可调用模型可见工具 `set_task_plan(steps, reason)`、
+`update_task_step(step_id, status, note)` 与 `get_task_plan()`。
 
-`list_files` 只回答“这一层有什么”，`search_text` 递归回答“这个字符串出现在哪些文件的哪几行”，
-然后模型再用 `read_file` 精读候选文件。第一版只做 literal search，不引入正则、Embedding、RAG、
-AST、LSP、MCP、Planner 或自动改写 query。0 matches 是正常 Tool Result，模型可以自行换关键词、
-缩小 path 或结束任务。
+- 计划包含 2–12 个有序步骤，支持 `pending → in_progress → completed`，
+  以及 `blocked → pending` 恢复；修订计划需提供原因。
+- 计划直接写入当前 LangGraph `TaskState`/SQLite checkpoint，
+  不新增独立 JSON 存储。切换到新任务时清空旧计划，同一会话中断恢复时读取原计划。
+- `task` JSON 响应及 `session_info` 增加 `plan` 字段，包含
+  `revision`、步骤状态、`completed`、`total`。计划只属于当前任务；
+  工具修改的是任务状态，不代表对文件系统的修改或 Coding Contract 验收。
+- 同批工具调用最多更新一次计划，避免多个并发工具写同一个状态键。
+  计划进度是执行过程记录，是否真正完成仍依靠原有工具、审批与测试验收。
 
-搜索路径沿用 `resolve_inside_workspace()`，拒绝 `..`、越界绝对路径和搜索根的外部符号链接。默认
-忽略 `.git`、`.venv`、`__pycache__`、`sessions`、`eval/runs` 及常见 cache 目录；不能按 UTF-8
-读取或含 NUL 的文件直接跳过。结果主动限制为最多 100 个匹配、每个匹配一行前后一行上下文，并返回：
+## 未完成计划的续跑与成功判定
 
-```text
-matches_shown
-matches_total
-truncated
-```
+如果 Agent 建立了开发计划，但最后仍有 pending/in_progress/blocked 步骤，
+任务结果会返回 `status: "incomplete"`（而不是误报 `completed`），同时返回
+Checkpoint 保存的 `plan` 和 `session_id`。无计划的普通短任务不受影响。
+对于 Coding Contract，即使指定测试验收通过，计划未完成仍保持 incomplete，
+但原有 `verification` 证据不被伪造或覆盖。
 
-`search_text` 注册为 `RiskLevel.READ_ONLY`，复用现有 Registry / Permission / Session / Context 链，
-不增加工具名特判。新增多目录 `repo_fixture`：用户只说“修复 calculate_discount 的错误”，模型即可
-`search_text → read_file → apply_patch → run_command → Final`，Acceptance 只允许修改
-`src/pricing.py`。
-
-本地验证：`python -m unittest discover -s tests -q` 共 104 项通过，1 项 Windows 符号链接能力测试因
-运行环境权限跳过；其余旧的 Patch、Command、Permission、Session、Context、Completion Control 和
-Acceptance 测试均通过。真实 Provider 最小请求成功，真实 Coding Task 也完成并被 Verifier 接受；模型
-本次选择了 `list_files` 而不是 `search_text`，详见 `REAL_RUN_LOG.md` 和 `eval/phase17_real_run.json`。
-
-## 阶段完成情况
-
-每一步都需要你确认才继续，不会自动往下走。
-
-- **Phase 1 · 接上 LLM** ✅ —— 读 `.env`，让模型回一句话。证明「能问能答」。
-- **Phase 2 · 第一个工具** ✅ —— `read_file` 已声明，模型能决定去读哪个文件。
-- **Phase 3 · 工具执行** ✅ —— 解析工具调用并真正执行，把结果回喂给模型。
-- **Phase 4 · Agent 循环** ✅ —— 装进循环，一个任务能连续跑多步，带最大步数保护。
-- **Phase 5 · 多工具 Agent** ✅ —— `list_files` / `write_file` + 工具注册表 + 工具结果长度保护。
-- **Phase 5.5 · 真模型首次实测** ✅ —— 不换代码，只把 Phase 5 指向真实模型跑同一个任务。
-  结论：8 步耗尽、无 Final Answer，任务是「做完了不知道收手」。见 `REAL_RUN_LOG.md`。
-- **Phase 6 · 完成判断 / 循环控制 / 可观测性** ✅ —— 不新增 Agent 能力，
-  只在同一个循环上叠三层防线：提示词收敛原则、重复调用检测、`MAX_AGENT_STEPS`；
-  并把 `finish_reason` 和 token 用量打印出来。同一任务复测：5 步收口，正常 Final Answer。
-- **Phase 6.5 · Eval / 稳定性验证** ✅ —— 仍然不新增 Agent 能力，`main.py` 一字未改。
-  建了 `eval/tasks.json`（8 个任务）+ 总控 + 19 个单测，跑了一轮真模型。
-  结论：**结果稳定（8/8 成功），过程不稳定（同一任务 token 差 2.20 倍）**。
-- **Phase 7 · Context Management** ✅ —— 增加 `OFF / WRITE_ONLY / FULL` 模式，默认
-  `WRITE_ONLY`；canonical history 与发给模型的上下文视图分离，并完成离线基准与受控验证。
-- **Phase 8 · Session Persistence** ✅ —— 增加 `sessions/<session_id>.json` 保存/恢复，
-  `python main.py --resume SESSION_ID` 恢复同一 Session；保存前校验 tool-call 配对，
-  不保存 API Key，不进入 Memory。
-- **Phase 9 · Long File Reading** ✅ —— 扩展现有 `read_file` 的 `start_line` / `max_lines`，
-  只返回安全预算内的完整行，并由实际返回范围生成 `has_more` / `next_start_line`；
-  Python 不自动翻页，保留全局结果长度兜底。mock、多段本地测试和一次真实模型验证均通过。
-- **Phase 10 · Tool Permission / Side-effect Approval** ✅ —— 增加 `READ_ONLY` / `SIDE_EFFECT`
-  风险分类和 Runtime 审批层；`ASK` / `ALLOW` / `DENY` 通过可注入 callback 选择策略。
-  审批前仍先做 Sandbox 校验，批准才执行 `write_file`，拒绝仍回传合法 Tool Result。
-- **Phase 11 · Generalized Tool Capability / Permission Policy** ✅ —— 用统一的
-  `ToolDefinition` / `TOOL_REGISTRY` 收拢 Schema、Handler 和 `risk_level`；`AVAILABLE_TOOLS`
-  从 Registry 派生，Permission Runtime 不再依赖具体工具名。增加仅测试使用的
-  `mock_side_effect` 验证通用审批。
-- **Phase 12 · Controlled Command Execution** ✅ —— 增加 `run_command`，以 `shell=False`
-  执行受限的 Python 测试和 Git 只读命令；增加 workspace cwd 预检、命令审批、超时、
-  stdout/stderr 截断、非零退出结果和本地/Mock 测试。
-- **Phase 13 · Bounded Coding Loop** ✅ —— 保留普通 `LLM → Tool Call → Tool Result → LLM`
-  循环，用隔离 calculator fixture 验证 `read → write → test → Final`、测试失败后的二次修复、
-  Permission、Sandbox、Session/Context/Long-file/Command 回归和 `MAX_AGENT_STEPS` 兜底；
-  增加最小任务 Trace，没有引入 Planner 或 Coding 状态机。
-- **Phase 14 · Coding Task Contract / Machine-Verifiable Acceptance** ✅ —— 增加结构化
-  Contract、文件快照差异和独立最终测试 Verifier；Mock A/B/C/D、增删文件、命令安全策略和
-  全量 66 项本地测试通过。真实模型样本被正确判为未接受，暴露出当前 Agent 收口仍受步数上限影响。
-- **Phase 15 · Coding Completion & Budget Control** ✅ —— 增加 Tool Call 分类、产物/交互双状态、
-  Contract 收口 Guidance、严格 required-test Completion Hint 和 Mock A-E 回归；保持独立 Verifier
-  与 `MAX_AGENT_STEPS = 8`。本地 68 项测试通过；Phase 15.5 真实模型对照已 accepted。
-- **Phase 16 · Patch-based Editing** ✅ —— 增加唯一精确匹配的 `apply_patch`，复用 Permission / Sandbox /
-  Duplicate / Session / Contract 链路；Mock A-D、一次真实 calculator Coding Task 和全量 88 项测试通过。
-- **Phase 17 · Repository Navigation / Code Search** ✅ —— 增加只读 literal `search_text`，复用 Registry /
-  Sandbox / Permission / Session / Context；多目录 fixture 的 Search → Locate → Read → Patch → Test →
-  Final → Acceptance Mock 闭环通过，全量 104 项测试通过（1 项 Windows 符号链接测试跳过）。真实模型请求
-  因 Provider 连接错误未进入 Agent，未伪造真实调用或 token 结论。
-
-阶段式恢复及修改后的重复调用刷新已完成 Phase 24.5；四次固定前缀真实验证仍不足以判断通过率或 token 成本的稳定性。
-
-> **一处有意的偏离**：原计划把「真正拦截沙盒之外」放在 Phase 5，
-> 实际在 Phase 2 就和 `read_file` 一起做掉了。
-> 理由：`read_file` 是第一个吃路径的工具，若不带边界，Phase 3 一执行
-> 就能把 `.env` 里的 API Key 读进模型上下文——那是先按构造引入泄密能力，
-> 再打算以后再补。边界必须和第一个吃路径的工具同时出生。
-
-## 约定
-
-### 单任务入口与最新评测
+可在同一个任务 Checkpoint 上明确继续执行：
 
 ```powershell
-.venv\Scripts\python.exe cli.py --task "读取 agent_notes.md 并总结"
+.\\mini.cmd task --resume SESSION_ID --continue-plan --workspace C:\\path\\to\\trusted-project --progress-jsonl
 ```
 
-运行日志输出到 stderr，结果 JSON 输出到 stdout。`completed` 返回退出码 0，
-`incomplete` / `failed` 返回 1，`cancelled` 返回 130。完成表示模型给出了最终回答，
-并不代替产物验收。已完成的文件写入不会因取消或请求失败自动撤销。
-交互式聊天仍使用 `main.py`。
+该命令保留原 task_id、任务计划、文件修改历史、测试证据和 Contract，不创建新任务；
+适合大模型提前结束、额度中断后已保存的 incomplete 计划。
+无法用于已完成任务、无计划任务或仍有待审批节点的会话；如有待审批节点，
+先使用普通 `--resume` 并进行审批。继续运行仍会消耗模型额度，
+并遵守原工具限制及审核策略。
 
-可通过进程环境变量 `AGENT_WORKSPACE` 指定工作目录，默认仍为 `demo_workspace`。
-该变量在模块加载时读取，应在启动 Python 前设置。不要将密钥目录用作工作目录。
+## 自动开发修复闭环（有限次）
 
-可通过 `TOOL_APPROVAL_MODE=ASK|ALLOW|DENY` 选择副作用审批策略；未设置时交互式 CLI 默认为
-`ASK`。自动化评测应显式设置 `ALLOW`，拒绝路径测试显式设置 `DENY`，避免等待键盘输入。
-
-评测现已改为独立临时工作区，每题保存结果与输出内容；运行及验收说明见
-[eval/RUNNING.md](eval/RUNNING.md)。历史 8/8 只代表旧规则，不代表新规则全部通过。
-
-- Agent 只能读写配置的工作目录（默认 `demo_workspace/`）内的文件，路径边界由代码强制执行。
-- `.env` 永不进版本库。
-- 每个阶段先跑通，再进下一阶段。
-
-## Phase 18 · Repository Navigation Eval
-
-Phase 18 新增独立评测 harness，不新增 Agent Tool，也不修改 `search_text` 的 Prompt 或描述。
-`eval/navigation_fixtures.py` 确定性生成 SMALL（7 文件）、MEDIUM（25 文件）和
-LARGE-SYNTHETIC（75 文件）fixture；`eval/navigation_metrics.py` 从真实历史中的 tool call/result
-计算 `first_correct_file_turn`、目录/搜索/读取次数、candidate files 和 token 成本，不使用 LLM Judge。
-
-真实入口是 `python -m eval.navigation_eval`，结构化结果为 `eval/navigation_results.json`，报告为
-`eval/NAVIGATION_REPORT.md`。四个有效场景各运行一次并被接受；首次使用未监听的 `127.0.0.1:7897`
-未进入 Agent loop，随后使用 Phase 17 已验证的 `127.0.0.1:9674` relay 完成有效运行。离线 fixture、
-ground truth、search/read、Coding Contract 和全量回归通过；完整记录见 `REAL_RUN_LOG.md`。
-
-## Phase 18.5 · Repository Navigation Stability Check
-
-Phase 18.5 在 Phase 18 的 `0aaae56` 基线之上，仅重复 SMALL / MEDIUM / LARGE-SYNTHETIC 三个 symbol 场景，
-每个场景新增 2 次真实运行，并与基线合并为 `n=3`。Agent runtime、Tool schema、Prompt、上下文/验收逻辑均未修改；
-评测代码、原始结果和报告分别见 `eval/navigation_stability.py`、`eval/navigation_stability_results.json` 和
-`eval/NAVIGATION_STABILITY_REPORT.md`。
-
-六次有效新增运行均无 Provider failure。SMALL 三次均为 `search_text → read_file → Final`；MEDIUM 三次均先
-`list_files ×3` 再 `search_text`，其中 2/3 被接受，1 次因达到 max steps 且缺少 Final Answer 未被接受（但产物与最终
-测试均通过）；LARGE 三次均使用 `search_text`，3/3 被接受。一次早期稳定性 harness 在 LARGE 新运行上超时，因未
-成功序列化而单独记录在 `eval/navigation_stability_prior_failures.json`，不混入 n=3 模型统计，也不重写为模型失败。
-
-综合结论：SMALL 的搜索路径稳定；MEDIUM 的仓库导航稳定但 Coding 收尾存在路径/步数波动；LARGE 的搜索使用稳定，
-具体 tool chain 仍是多路径。当前没有足够证据新增 Navigation Guidance，下一步继续做受控重复观察即可。
-
-## Phase 19 · Required-Test Visibility Experiment
-
-Phase 19 只修改评测层，Runtime、Tool Schema、Completion Hint、Acceptance、MAX_AGENT_STEPS、Permission、
-Sandbox 和 Context 均保持不变。Control 直接复用 Phase 18.5 的 MEDIUM 三次结果；Treatment 使用相同的
-MEDIUM fixture 和任务，只在模型上下文中增加事实性的 `Required test command: python -m unittest discover -s tests -p test_discount.py -q`，
-没有增加“必须 Final”或“优先执行”等指导。
-
-Treatment 计划运行 3 次，实际有 2 次有效运行和 1 次 `APIConnectionError` provider failure；有效两次均执行
-exact required test、触发 Completion Hint、给出 Final Answer 并被接受。Control 为 exact test `0/3`、Hint `0/3`、
-Final `2/3`、accepted `2/3`、MAX_AGENT_STEPS `1/3`；Treatment 有效分母为 `2`，对应指标均为 `2/2`。
-该 n=3 实验只说明可见性与更稳定的收口行为一致，不单独证明因果关系。
-
-评测入口为 `python -m eval.required_test_visibility`；结果为 `eval/required_test_visibility_results.json`，报告为
-`eval/REQUIRED_TEST_VISIBILITY_REPORT.md`。完整 raw result、实际 run_command、zero-test 和 provider failure 记录均保留在结果文件中。
-Phase 19 专项测试与 Navigation/稳定性测试通过；全量回归为 `117` 项通过、`1` 项 Windows 符号链接测试跳过。
-
-## Phase 19.5R · Provider Recovery & Resume 启动方式
-
-Recovery harness 必须从 repo root 以 module invocation 启动，并显式把 `eval` 放入
-`PYTHONPATH`，以兼容现有 eval 模块的顶层导入；不修改 Runtime 或 Python import 逻辑：
+新增可选的 `--auto-recover`：当 Agent 停在 `incomplete`，且存在
+**失败的代码工具/测试**、未完成的非阻塞计划或未通过的 Coding Contract 验收时，
+它会读取同一 LangGraph Checkpoint 的实际工具结果，开始下一轮定位、修改、测试，
+而不是立即退出或重新创建任务。
 
 ```powershell
-$env:PYTHONPATH = (Join-Path (Get-Location) "eval")
-.venv\Scripts\python.exe -m eval.required_test_visibility_recovery
+.\mini.cmd task --task "检查仓库并修复失败的测试" --workspace C:\path\to\trusted-project --auto-recover --max-recovery-attempts 2 --progress-jsonl
 ```
 
-启动 smoke test 使用 `--help`，不会发起真实模型请求。
+- 使用已有 `create_agent`、工具权限和 HITL 中断；恢复提示不会执行命令，
+  也不会自动批准副作用或重放不明确的远端调用。
+- 默认需要显式开启，最多自动继续 1–3 回合（默认 2）。
+  同一次 `run` 所有回合共享总任务时限、Token/工具/模型请求额度。
+- 遇到 `blocked` 计划、拒绝审批、待恢复节点或无可操作证据停止自动恢复；
+  如果连续回合没有增加已完成步骤、成功变更或成功命令，也会停止。
+- 事件回调/JSONL 会发送 `recovery_started` 和 `recovery_stopped`
+  （仅类别与计数，不暴露代码正文）。未真正完成时依旧报告 `incomplete`，
+  不会把再次请求模型等同于修复成功。
+- **边界**：目前是单次 CLI/API 调用内有限次自动修复；跨额度周期后台调度、
+  未确定的外部副作用的 exactly-once、真正自主部署及 GitHub PR 提交尚未实现。
 
-## Phase 21 · Explicit Task Finish + Deterministic Finish Gate
+## 开发任务能力
 
-Phase 21 把 Coding Task 的“完成”从模型的普通文本收口，改成 Runtime 可判定的一次显式请求。
-模型仍然自己决定何时收口，但“是否真的完成”不再由自然语言推断，而由一份确定性规则决定。
+原有的文件读取、全文搜索、补丁修改和测试执行之外，`run_command` 现在支持：
+`python -m pytest/unittest/ruff/mypy/compileall/build`、工作区内 `python path/to/script.py`
+以及只读的 `git status/diff/log/ls-files`。
 
-### 1. `finish_task(summary=...)`
+这让 Coding Agent 能实际运行仓库内的 Python 脚本、静态检查和构建步骤，而不是只会改代码和跑单元测试。
+命令仍使用现有的无 shell 进程执行器、工作区限定、超时和输出上限；
+默认 `ASK` 审批对执行工具仍然生效。这不是操作系统隔离：**仅用于受信任项目**。
+`pip install` 不在默认命令列表中，依赖安装应在开发者管理的虚拟环境完成。
 
-新增第七个工具 `finish_task`，唯一参数 `summary`（非空字符串），是接受时被展示给用户的最终说明。
-它不执行任何文件操作、不跑测试、不询问用户。Tool Registry 里的 `tool_kind` 把它标为
-`CONTROL_FLOW`，与 `risk_level` 正交：前者描述它参与循环的方式，后者描述它的副作用风险。
+项目导航工具同样使用已有的工作区保护：`find_files(pattern, path)` 递归列出匹配路径，
+`inspect_python_symbols(path, query)` 通过 Python AST 定位类、函数、方法和行号，
+不执行被分析代码。两者都限制扫描范围和结果长度，避免把整个项目直接塞进模型上下文。
 
-三个隔离点，任一都不足以单独保证正确：
+## 知识库和 MCP 外部工具（可选）
 
-1. `run_tool_round` 在普通工具分发之前先查 `tool_kind`，命中就交给专用分发器，`break` 结束本轮。
-2. `check_tool_permission` 对 `CONTROL_FLOW` 直接放行，因此它永远不进普通 Approval。
-3. `execute_tool_call` 对 `CONTROL_FLOW` 返回失败提示，作为最后一道防线。
+本分支支持在原 LangChain `create_agent` 中按需注册两类外部工具：
 
-它也不进重复调用指纹表：finish 的结果从不写入 `executed`，所以
-`finish_task("done") → rejected → run required test → PASS → finish_task("done")`
-这条链路必须成立，第二次完全相同的调用不会被拦成“无新信息”。
+- 配置 `RAG_CHAIN_URL=http://127.0.0.1:8000` 后，新增只读
+  `search_knowledge(query, top_k)`，调用独立 rag-chain 的 `GET /api/search`，
+  返回原文与引用来源，不需要第二次 RAG LLM 调用。
+- 安装 `pip install -e ".[mcp,dev]"` 并配置 `MINI_AGENT_MCP_CONFIG` 后，
+  通过官方 LangChain MCP Adapter 发现显式允许的 MCP 工具；
+  现有同步 CLI 使用独立 asyncio bridge 来调用异步 MCP 工具。
 
-### 2. Control Flow 分发与本轮截断
+默认两种工具都关闭，不改变既有工具集。未明确标记只读的远端 MCP 工具
+默认需要执行审批；外部 MCP Server 不会自动继承工作区沙盒权限。
+详细安装、示例配置和数据隐私边界见 [集成说明](docs/integrations.md)。
 
-一个 assistant response 里可以并列多个 tool call。Runtime 只处理到**第一个** `CONTROL_FLOW` 调用为止，
-`tool_calls_through_control_flow` 返回这段前缀，并把它作为 assistant message 写回历史。
+真实 MCP stdio/HTTP、本地 RAG HTTP 和真实模型协作已完成独立验收。
+模型在临时工作区完成仓库分析、Bug 修复、RAG/MCP 辅助开发和跨应用恢复四项任务。
+测试范围、首次失败记录、运行数据和可复现步骤见
+[2026-10-12 验收报告](docs/evaluation/MCP_RAG_QA_20261012.md)。
 
-这解决的不只是执行顺序：被截掉的调用如果写进 canonical history，就会留下没有对应 tool result 的
-`tool_call_id`，下一次请求会被提供商直接 400。所以截断同时作用于「执行」和「历史记录」两处，
-`session._validate_messages` 的配对校验会兜住任何漏网情况。
+## Local Git review and delivery
 
-Gate 拒绝也一样：`finish_task` 后面的 read / run 本轮不执行。它们不是被丢弃的错误，
-而是等模型在下一轮重新提出。
+On an existing trusted Git repository whose root is exactly the selected workspace,
+the agent can use `git_worktree_review()` to inspect the current branch,
+working-tree status, and summary statistics for staged/unstaged changes.
 
-### 3. Task State
+The new `git_commit_files(paths, message)` tool creates a **local Git commit only**.
+It works with an exact allowlist of 1–30 relative **file** paths (including tracked deletions).
+The tool rejects ambiguous/sensitive/outside-workspace paths, symbolic links,
+a repository whose root differs from the workspace, and any pre-existing staged
+changes. It never stages unrelated files or silently pushes to remotes.
+A generated commit disables repository hooks and GPG signing, and runs Git
+subprocesses using the existing bounded, no-shell process runner.
 
-`acceptance.TaskState` 是一份极小的持久化生命周期，刻意不用时间戳：
+Git commits are treated as approval-requiring execution effects
+(`TOOL_APPROVAL_MODE=ASK` by default). In a Coding Contract task,
+the specified paths must exactly match the contract's changed files and
+the required fresh passing test must be in the LangGraph trace **before**
+the commit. The Git index/branch ref are not ordinary workspace-file
+mutations and cannot be undone by the file journal.
 
-```
-status                            RUNNING | FINISHED | LIMIT_REACHED | ERROR
-event_seq                         任务内单调逻辑时钟，每个工具尝试消耗一个
-last_mutation_event_seq           真正改变 workspace 的那次事件序号
-last_successful_exact_required_test_seq   成功 exact required test 的事件序号
-finish_message                    Gate 接受时写入，作为对用户的最终回答
-last_finish_rejection             最近一次被拒的尝试（含 reasons）
-unresolved_runtime_error          Runtime 级失败
-finish_attempts                   全部尝试，保留拒绝历史
-initial_snapshot                  任务开始时的 workspace 摘要
-```
+Remote push and PR creation are now optional, separately approved GitHub CLI
+tools, enabled only with explicit private credentials; see the next section.
+Automatic PR merging remains unsupported.
 
-关键在比较 `last_successful_exact_required_test_seq > last_mutation_event_seq`：
-它比“测试时间戳晚于写入时间戳”稳得多，测试重跑、时钟回拨都不影响判断。
+## GitHub 远程交付（可选，需单独授权）
 
-### 4. Finish Gate
+PR #9 新增一个独立、可选的 GitHub 交付通道，使用本机 Git 与官方 [GitHub CLI](https://cli.github.com/)；没有重写 GitHub API 客户端。
 
-`acceptance.evaluate_finish_request(contract, task_state, workspace)` 是纯函数式的判定：
-只读 Contract、TaskState 和 workspace 摘要，不调模型、不改文件、不跑测试。
+在**私有状态目录**（应位于 Git 工作区以外）的 `.env` 或进程环境里明确配置：
 
-按顺序检查：
-
-1. Contract 存在（缺失返回 `coding_contract_missing`）。
-2. `unexpected_changes` 为空 —— 改动了 `allowed_paths` 之外的文件则逐条 `unexpected_change:<path>`。
-3. `require_test_pass` 时，必须存在成功的 exact required test（`successful_exact_required_test_missing`）。
-4. 若发生过 mutation，成功测试必须发生在最后那次 mutation 之后（`successful_exact_required_test_stale`）。
-5. 没有未解决的 Runtime error。
-
-拒绝是**信息性**的：返回体带 `required_test` 的精确命令，让模型知道该补哪一步。
-Gate 从不判断“用户想要的大概完成了没有”。
-
-### 5. Freshness 只认两种事件
-
-`event_seq` 对所有工具尝试递增，但两个游标只在明确条件下移动：
-
-- `last_mutation_event_seq`：仅当工具定义标了 `workspace_mutation`（`write_file`、`apply_patch`）、
-  已获批准、无失败前缀，且前后 workspace 摘要确实不同。失败、被拒、duplicate、no-op 都不移动。
-- `last_successful_exact_required_test_seq`：仅当 `run_command` 的 command + args + cwd 与 Contract 完全一致，
-  且退出码为 0。较新的固定测试若实际执行且以非零码失败，会清除此游标；后续 PASS 可重新建立。
-
-真实文件修改会清除先前成功的工具调用记录，使相同的读取、搜索和固定测试能针对新内容重新执行；
-失败修改和 no-op 不会清除记录。
-
-失败的历史测试不留下永久污染：`test FAIL → patch → exact test PASS → finish_task` 最终可以通过，
-因为游标记的是「当前最新有效状态」，不是「历史上有没有失败过」。
-
-### 6. 普通 Final 的行为
-
-- **Contract 生效时**：普通 Final 不算完成。Runtime 追加一条 `CODING_FINISH_PROTOCOL_NOTICE`
-  （“Coding task is still RUNNING / call finish_task”）再问一次模型，状态保持 `RUNNING`。
-- **普通聊天**：完全不变。没有 Contract 时普通 Final 直接结束循环，`finish_task` 即使在 Schema 里可见
-  也只会被 Gate 拒绝并回喂原因，不影响任何状态。
-
-### 7. MAX_AGENT_STEPS 与 Finish 的优先级
-
-`MAX_AGENT_STEPS` 仍数「问了几次模型」，但每个被允许的模型响应都会先完整处理到第一个 CONTROL_FLOW 调用为止。
-因此最后一步上的合法 `finish_task` 优先进入 `FINISHED`，不会被步数上限抢先覆盖；
-若那一步被 Gate 拒绝，已处理完的工具结果仍留在 canonical history，随后状态进入 `LIMIT_REACHED`，
-拒绝记录照常保留。
-
-代价是：Contract 生效且模型反复给普通 Final 时，nudge 会让实际请求数最多接近两倍。
-这是 Phase 21 的设计取舍，不是缺陷。
-
-### 8. Session 持久化
-
-Session version 升到 2，同时接受 1。v1 记录被明确禁止携带 Coding 状态。
-`coding_contract` 与 `task_state` 必须成对出现，缺一即报错，避免存下一个无法解释的状态。
-
-保存的是 canonical messages，不是压缩视图；`build_model_context` 的压缩只作用于发往模型的出站副本。
-旧 Session 缺少 `task_state` 时，`restore_coding_session` 返回 `(None, None)` 并以普通聊天恢复——
-不 crash，也不伪造“测试已通过”。状态不是 `RUNNING` 的 Coding Session 拒绝继续执行。
-
-### 9. Acceptance
-
-`verify_contract` 的判定拆成两条互不替代的线：
-
-- `artifact_passed` 仍由独立 Verifier 决定，它重新执行 Contract 里的固定测试命令，与 Agent 自述无关。
-- `interaction_completed` 在传入 `task_state` 时等于 `status is FINISHED`；未传 `task_state` 的
-  旧调用方（Phase 18–20 评测脚本不驱动 finish 协议）保留「普通 Final + 未触上限」的语义，
-  否则会被记上一个它们从未被告知要调用工具的 `finish_task_not_accepted`。
-
-`accepted` 仍是两者与无 Runtime 异常的组合。Finish Gate 只是 Runtime 内的快速判定，
-独立 Verifier 不因此被绕过。另有 `agent_self_verified` 表示「测试成功且晚于最后一次改动」。
-
-### 10. Completion Hint
-
-required test 通过后的提示从“如果完成请 Final Answer”改为“请调用 `finish_task(summary=...)`”，
-同步更新了 coding task guidance、duplicate notice 和系统提示词。提示只是引导，
-真正完成仍必须走 `finish_task → Gate → FINISHED`。
-
-## Phase 21.1 · Runtime Hardening
-
-这不是新的 Agent 能力阶段。Phase 21 的协议、状态机、Gate 规则、Acceptance 判定和
-Session schema 全部不变；本阶段只修 Phase 21 真实运行暴露出来的两个环境问题。
-
-### 1. ASK 审批在无交互环境下快速失败
-
-问题：`DEFAULT_APPROVAL_MODE=ASK` 在子进程、评测 harness、CI 里没有交互通道，
-`input()` 返回 EOF，`ask_for_approval` 按安全默认拒绝。副作用工具每次都拿到拒绝，
-模型反复重试直到 `MAX_AGENT_STEPS`，结果是 `finish_task_calls=0`、`LIMIT_REACHED`、
-`total_tokens` 白白花掉。这是环境失败，不是推理失败。
-
-现在：
-
-- `ApprovalUnavailableError` 是独立异常，**不会被改写成 `[用户拒绝执行]`**。
-  「环境没有审批通道」和「用户明确拒绝」是两回事，混在一起会让日志和 Session 记录同时失真。
-- `cli.py` 的 Coding Task 在第一次模型调用之前做一次 preflight：Contract 生效 + 模式为 ASK +
-  检测不到交互通道 → 直接返回 `{"status": "failed", "error": ...}`，`model_calls=0`，
-  不进循环、不消耗额度。
-- `ask_for_approval` 在打印提示之前先检测；检测不到就抛异常，不靠 EOFError 当正常控制流。
-- `main.py` 的循环把该异常与 API 通信类失败一起处理，报清晰错误，不甩 traceback；
-  Contract 生效时记入 `task_state` 的 `ERROR`，普通聊天回滚本轮悬空消息。
-
-交互通道的检测用「stdin 和 stdout **都是**终端」两端条件。只看 stdin 在 Windows 上不够：
-`isatty()` 对 `NUL` 这类字符设备也返回 True，stdin 指向 `NUL` 的子进程会被误判成交互终端。
-代价是 `python main.py > transcript.txt` 这种只重定向输出的跑法里，副作用工具会报
-「审批不可用」——提示本来也看不见，报清晰错误比让人盲打更对。
-
-安全语义没有变：没有用户明确批准，SIDE_EFFECT / EXECUTION 不执行。
-ASK + 无 TTY 不会被自动降级成 ALLOW，也不会跳过 Approval。
-ALLOW / DENY 不检测终端，行为不变；READ_ONLY 和 CONTROL_FLOW 在回调之前就已放行，不受影响。
-
-### 2. Snapshot 忽略测试运行器缓存
-
-问题：Contract 的 required test 用 `python -m pytest` 时，`pytest` 生成 `.pytest_cache/`，
-被 `snapshot_workspace` 当作 Agent 的改动 → `unexpected_change:<path>` → Finish Gate 永久拒绝。
-
-扩展的是**同一份** ignore 集合，不是另写一套规则：
-
-```python
-_GENERATED_FILE_SUFFIXES = {".pyc", ".pyo"}
-_GENERATED_DIRECTORY_NAMES = {"__pycache__", ".pytest_cache"}
+```dotenv
+MINI_AGENT_GITHUB_REPO=owner/repository
+MINI_AGENT_GITHUB_TOKEN=your-private-token
+TOOL_APPROVAL_MODE=ASK
 ```
 
-`_is_generated_artifact` 是唯一的过滤点，`snapshot_workspace` 调用它，
-Finish Gate 和独立 Verifier 都从 `snapshot_workspace` 取摘要，两边的判定天然一致。
-按目录名锚定匹配，所以根目录里同名的 `README.md` 仍然被跟踪。
+Token 使用最小权限，只授予目标仓库所需的 Contents/Pull requests 读写和检查状态读取权限。不要在聊天中发送真实 Token，也不要将其提交到 Git。只有仓库名和 Token 都已配置时，GitHub 工具才会出现在模型的工具列表中。
 
-为什么清单保持刻意地短：任何宽泛的忽略规则（忽略所有点目录、所有隐藏文件、所有未知新文件）
-都会让真实的越界改动逃出 Verifier，而那正是这个机制要抓的东西。
-「只忽略明确列举的缓存」是唯一不会放过真问题的形状。
-`.coverage`、`.mypy_cache`、`.ruff_cache` 等本轮未确认的问题不加，
-它们仍然会被报为 `unexpected_change`，有回归测试锁住这一点。
+- `github_push_branch()`：核对工作区与 Git 根目录一致、`origin` 是精确的 HTTPS GitHub 仓库、当前是非保护分支且工作区无未提交内容；如存在 Coding Contract，还需要最新的通过测试和变更范围证据。单独审批后执行非强推的 `git push`。
+- `github_create_draft_pr(title, body, base_branch)`：再次单独审批；确认远端分支 SHA 与本地 HEAD 一致，已有同目标 PR 则直接返回，不重复创建；否则创建 **Draft PR**。
+- `github_pr_status()`：只读当前分支的 PR 链接、分支信息和 CI 状态。
 
-忽略 snapshot 产物只影响 `changed_files` / `unexpected_changes` 的判定，
-**不涉及 Sandbox 路径校验**：Agent 能读写和访问的范围没有任何变化。
+该功能不支持推送到 main/master 等保护名称，不自动合并、强制覆盖远端或访问其它 GitHub 仓库。固定的 Git/gh 子进程接收私有 Token，但模型及事件日志不应接触 Token；远程副作用不能由 SQLite Checkpoint 回滚。默认 ASK 下，每一个远程写步骤都必须由用户批准，且不能与其它工具并行。CI 使用隔离 Git 仓库和模拟的 GitHub 返回值，**不执行真实远程推送**；真实公网联调仍需单独在测试仓库验收。
+
+## Python / Node 项目环境与多语言执行
+
+面对 Python 后端 + Node 前端的仓库，Agent 新增三个真实可调用工具：
+
+- discover_workspace_projects(path, max_depth, max_projects)：自动扫描工作区中的 Python、Node 子项目，汇总后端/前端路径、依赖清单、包管理器和可运行脚本，支持普通多目录仓库和 monorepo，不执行项目代码。结果路径可直接交给其他项目工具。
+- inspect_dev_environment(path)：检查子项目是否有 requirements.txt、pyproject.toml、package.json、npm/pnpm lockfile，列出可用的 Node scripts。
+- prepare_dev_environment(path, language)：Python 创建项目本地 .venv，按 manifest 安装依赖；Node 使用 npm ci/install 或 pnpm install。
+- run_dev_task(task, path, language, script, test_files)：Python 支持 pytest/unittest/ruff/mypy/build、项目 .py 脚本；Node 执行 package.json 已声明的 scripts。Python 的 test/unittest 可额外提供最多 16 个项目相对路径的 .py 测试文件。未提供 test_files 时，执行行为保持不变。
+
+例如先调用 `discover_workspace_projects(path=".")` 找出 `backend`、`frontend` 两个子项目，然后分别调用 inspect_dev_environment，
+再调用 prepare_dev_environment(path="backend", language="python") 与
+prepare_dev_environment(path="frontend", language="node")，
+最后用 run_dev_task(path="backend", task="unittest") 或 run_dev_task(path="frontend", task="build") 完成测试与构建。
+
+Python 不向 mini-agent 自身解释器安装依赖；Node 使用声明的锁文件和本地脚本。
+所有命令通过已有的有界无 Shell 进程执行器。失败退出码提供结构化 tool artifact，自动修复循环可以识别。
+依赖安装和 package.json 脚本只能在可信项目使用，ASK 模式需要审批；网络依赖安装无法保证成功。
+npm 无 lockfile 时会生成 package-lock.json。Coding Contract 仍使用契约指定测试作为最终验收，不把任意脚本运行当成契约证据。
+
+例如依赖图建议 `tests/test_service.py` 时，可在 Python 项目根目录调用：
+`run_dev_task(path=".", language="python", task="test", test_files=["tests/test_service.py"])`；
+无需 pytest 第三方依赖的 unittest 项目可将 `task` 设为 `"unittest"`。传入路径经工作区边界检查、禁止重复和越界；目标文件必须真实存在。JavaScript/TypeScript 的测试文件候选暂不支持直接映射到 npm 脚本，仍按项目已有的 `test` script 运行。**定向测试只是快速反馈，不能替代 Coding Contract 的正式验收。**
+## 跨模块理解与多文件联合开发
+
+这轮新增两项实际 Coding 工具，面向 Python 后端及 JavaScript/TypeScript 前端：
+
+- **inspect_module_dependencies(path, focus, max_files)**：静态扫描仓库内的 Python import 与 JS/TS 相对导入，构建本地模块依赖图。指定 focus 文件时，返回它引用的模块、直接引用它的模块，以及上游传递影响的模块。扫描有边界、忽略 node_modules/.venv，不执行目标项目代码。它会额外给出 `candidate_test_files`，从静态反向依赖中挑出 Python/JS/TS 常见命名的测试文件，供后续选择测试命令；该清单是建议而不是完整覆盖率或测试通过证明。它是轻量导入关系图，不是完整的动态调用图。
+- **apply_patch_batch(patches)**：一次对 2–12 个已经存在的源码文件执行唯一精确文本替换。写入前预检**所有文件**；任一补丁不匹配则不修改任何文件。依次写入时发生错误则尝试恢复前面已更改的文件；结果返回修改清单。
+
+示例：对 src/logic.py 调用 inspect_module_dependencies(..., focus="src/logic.py")，发现依赖它的 src/service.py 与 tests/test_service.py；然后用 apply_patch_batch 同时修改 src/logic.py、src/service.py，再运行 run_command 或 run_dev_task 执行真实测试。
+
+多文件修改仍使用原有 Coding Contract 文件范围、Checkpoint、变更日志与 HITL 审批。默认 ASK 会呈现整组差异供一次批准，审批后内容变化会重新拦截；同时最多允许一个批次补丁调用。若出现外部进程在文件写入间竞争修改等异常，需要重新核对工作区。该工具只做已有源码文件的精确替换，新建文件仍使用 write_file。
+
+## 自动提取测试与构建失败位置
+
+`run_dev_task` 的 Python pytest/unittest/ruff/mypy/build 以及 Node npm/pnpm 脚本，失败时会从原始输出中额外提取常见 Python traceback、pytest 行号、TypeScript compiler 和 Vite/Node 报错位置。工具会向原有 `ToolMessage.artifact.metadata.diagnostics` 附加结构化的 `file`、`line`、可选 `column` 和错误消息，并在模型可见结果末尾增加 `ERROR_LOCATIONS` 摘要。
+
+Agent 可以据此直接读取定位文件，然后执行修复与测试，不需要新 Agent Runtime 或外部模型服务。源日志仍保留；识别结果只是定位线索，不能替代代码阅读和测试验收。不支持的报错格式仍按原先流程处理。
+
+## 项目级长期开发记忆
+
+新增 SQLite 项目记忆，可跨同一工作区的不同 Agent 会话复用（与当前 LangGraph 会话 Checkpoint 分开）：
+
+- `remember_project_fact(category, key, content)`：写入一条架构（`architecture`）、已完成功能（`feature`）、开发决策（`decision`）或待办（`todo`）。同分类同 key 更新覆盖旧记录。
+- `recall_project_facts(query="")`：列出最近的项目事实，或按关键字检索；Agent 在接续新任务时可先调此工具。
+- `delete_project_fact(category, key)`：删除不再成立的项目记录。
+
+SQLite 文件位于状态目录 `.mini-agent/project_memory.sqlite`，按工作区绝对路径生成项目隔离键；当工作区路径及 `state_dir` 保持一致时，关闭 Agent、重新启动也能找回记录。此记录是模型可读取的项目资料，不自动修改源代码，也不应存放密钥或私密信息。写入和删除需遵循原有 ASK/DENY 工具审批，读取无需审批。
+
+```text
+remember_project_fact(category="architecture", key="backend", content="FastAPI routes under backend/app/api")
+remember_project_fact(category="feature", key="typed-client", content="OpenAPI TypeScript client scaffold completed")
+remember_project_fact(category="todo", key="frontend-forms", content="Wire the user form to typed API hooks")
+recall_project_facts(query="frontend")
+```
+
+## 自动开发服务器管理（FastAPI + Vite）
+
+新增 `dev_server(action, name, path, port, app_import, script)`：
+
+- 启动后端：`dev_server(action="start", name="backend", path="backend", port=8000, app_import="app.main:app")` 使用后端已准备的 `.venv` 和 uvicorn；
+- 启动前端：`dev_server(action="start", name="frontend", path="frontend", port=5173)` 使用前端 `package.json` 里已声明的 Vite dev 脚本；
+- `action="status"` 获取进程与本机端口状态；`action="logs"` 获取近期输出；`action="stop"` 停止对应进程树。
+
+同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
+
+## 真实 FastAPI + React + Chromium 验收（CI 专用）
+
+在原有纯离线回归矩阵之外，新增独立的 **Real FastAPI + React + Chromium acceptance** CI 作业（Ubuntu / Python 3.11 / Node 22）。作业会实际安装 FastAPI、浏览器、npm 项目依赖，并运行测试 `tests/test_real_web_acceptance.py`。该测试在临时工作区构建一个最小前后端应用：
+
+1. 后端真实创建 FastAPI 应用和 `GET /api/greeting`，测试真实 HTTP API。
+2. 同一个 LangGraph Agent 使用**脚本化模型**依次调用真正的 `export_fastapi_openapi`、`inspect_openapi_contract`、`generate_openapi_types`、`generate_typed_api_client`、`generate_react_query_hooks` 工具。除模型回复外，接口生成、文件写入和类型生成均为真实执行。
+3. 调用项目自带的 Python/Node 检查工具，运行实际后端 pytest、前端 TypeScript typecheck 和 Vite 构建。
+4. 使用 `DevServerManager` 启动真实 Uvicorn/Vite 本地服务；使用 `BrowserSession` 的 Chromium 打开 React 页面、点击按钮、验证返回内容变化、核对浏览器网络/JS 错误，并保存实际 PNG 截图。
+5. 测试结束时关闭 Chromium 和本地服务进程，断言没有遗留被管理的开发服务器。
+
+本地需要 Python 安装 `pip install -e '.[dev,browser]' fastapi uvicorn`，运行 `python -m playwright install chromium`，Node/npm 可用；通过 `MINI_AGENT_RUN_REAL_WEB_ACCEPTANCE=1 python -m pytest -vv -s tests/test_real_web_acceptance.py` 启动。默认离线回归会跳过此耗联网安装的测试。CI 会独立运行真实浏览器验收，不能把本地 pytest 跳过结果视为它成功。
+
+**模型边界：** 这里刻意使用脚本化 LangGraph 模型调用来保证测试可重复。它验证的是 mini-agent 真正使用项目工具的完整开发环境及网页操作能力，**不是外部 LLM 自主决策质量验收**。真实外部模型的稳定性、重复修复和用户需求完成率仍须独立评测。
+
+## 有证据的自主开发工作流
+
+新的 `start_development_workflow(goal, profile, require_browser=False, require_migration=False, deliver_pr=False)` 可为复杂开发任务启用自主编排模式：
+`profile` 可选 `general`（通用代码）、`web`（前后端网页）、`backend`（API/数据库）。如果实际任务需要浏览器、迁移或远程交付，再开启相应开关，避免把所有项目硬套进同一流程。
+
+工作流采用**同一个 LangGraph Agent + 同一个 Checkpoint**，阶段依次为定位源码、实现修改、（可选）数据库迁移、修改后的测试、（可选）浏览器诊断、最新代码审查、（可选）Draft PR。每轮模型决策会拿到当前缺失的阶段与候选工具，由现有 Agent 自主选择调用；并不自动绕开审批或执行未指定的远程操作。
+
+`development_workflow_status()` 不听信 Agent 自报：只根据当次任务 Checkpoint 中**真正成功的工具调用**计算阶段完成度。每次新修改会使此前的测试、浏览器调试及代码审查证据失效。任务尚未完成时，结果状态是 `incomplete`，可用原来的同会话继续机制推进，不会把未验证工作标为成功。
+
+```text
+start_development_workflow(
+    goal="为现有 FastAPI + React 项目增加用户管理界面",
+    profile="web", require_browser=True, deliver_pr=True
+)
+development_workflow_status()
+# Agent 按提示自主选择工具，调用实际成功后阶段自动更新
+```
+
+这一能力复用已有 `set_task_plan`、Coding Contract、审批、开发工具和 SQLite Checkpoint，而不是增加第二套 Agent Runtime。它是任务执行协调与验收证据层；工具状态仍不能代替真实业务行为正确性和人工复核。
+
+## 数据库模型与 Alembic 迁移文件
+
+新增两项数据库演进工具，继续复用 SQLAlchemy/Alembic 而不引入第二套迁移执行器：
+
+- `inspect_alembic_status(backend_path="backend", action="heads")`：调用项目自己的 Python `.venv` 中的 Alembic CLI，支持 `heads`、`history`、`current`、`check`。后两种动作可能导入项目 Alembic `env.py`、连接其配置的数据库，但工具不会运行 `upgrade`/`downgrade`。
+- `generate_alembic_migration(backend_path, output_path, revision, down_revision, message, changes)`：从**已明确的结构化变更需求**生成兼容 Alembic 的可审查 Python 迁移文件，自动包含反向 `downgrade()`；当前支持 `create_table`、`add_column` 和 `create_index`，常用 SQLAlchemy 字段类型和 nullable/primary_key/string length。不会执行迁移或修改业务数据库。
+
+```json
+{
+  "backend_path": "backend",
+  "output_path": "backend/alembic/versions/20261013_add_status.py",
+  "revision": "20261013addstatus",
+  "down_revision": "abc123def456",
+  "message": "Add status to users",
+  "changes": [
+    {"action": "add_column", "table": "users",
+     "column": {"name": "status", "type": "String", "length": 40, "nullable": true}}
+  ]
+}
+```
+
+要求项目已初始化 Alembic（`alembic.ini` 与 `alembic/versions` 或 `migrations/versions`），Agent 在选择 `down_revision` 前需查看当前 heads。**这次是确定性迁移脚本生成，不等于 Alembic CLI 的 `--autogenerate` 模型差异自动推断**，也不替代迁移脚本的人工审阅和开发数据库演练。脚本文件创建遵循 Coding Contract、审批和变更日志；实际应用数据库 schema 是单独的、未自动执行的操作。
+
+## 自动代码审查：当前变更 + 静态诊断
+
+新增只读工具 `review_code_changes()`：获取当前 Git 工作树相对于 HEAD 的文件变化与限量 diff，分析改变过的 Python 源码语法、裸 `except`、可变默认参数，以及 JSON 文件是否可解析，并检查是否缺少测试变更。对新增但尚未跟踪的代码文件同样进行静态语法检查。
+
+Agent 可以在修改文件后先调用该工具，再结合源码和需求分析是否有潜在逻辑错误，接着执行既有 pytest/Vitest/类型检查工具。它不会启动额外的审查 Agent，也不会自动声称某项启发式警告就是 Bug；有跨函数/跨模块语义疑问时仍需进一步阅读代码和实际测试。不会读取仓库外文件，也不会修改任何源文件。
+
+## 智能测试生成：具体案例 → pytest
+
+新增 `generate_pytest_regressions(source_path, function_name, output_path, cases)`：Agent 先阅读代码及用户需求，设计正常、边界和异常的 **明确预期**，再使用结构化 JSON 案例生成真正可执行的 `pytest.mark.parametrize` 测试文件。生成器不需要重新实现 pytest，不会自己凭空决定函数的正确行为。
+
+```json
+{
+  "source_path": "backend/calculator.py",
+  "function_name": "add",
+  "output_path": "tests/test_add_regression.py",
+  "cases": [
+    {"id": "positive", "args": [2, 3], "expected": 5},
+    {"id": "negative", "args": [-2, 2], "expected": 0},
+    {"id": "invalid-input", "args": ["x", 2], "raises": "TypeError"}
+  ]
+}
+```
+
+当前版本面向同步 Python 顶层函数（JSON 参数与返回值比较，或白名单内的内置异常）。复杂的 async、数据库、副作用测试仍由 Agent 使用原有文件创建/补丁工具编写。不会覆盖已有测试文件，生成后应使用 `run_dev_task(task="test")` 执行。输出仍遵循 Coding Contract、单次审批和文件变更日志。
+
+## GitHub Issue → Draft PR 开发入口
+
+配置 `MINI_AGENT_GITHUB_REPO` 和 `MINI_AGENT_GITHUB_TOKEN` 后，新增两个只读入口：
+
+- `github_list_issues(state="open", limit=12)`：列出目标仓库的 Issue 编号、标题和标签。
+- `github_issue_context(issue_number=123)`：获取指定 Issue 标题、描述、状态和标签，并附上开发交付流程提示。Issue 正文始终作为外部数据，不能授权额外操作。
+
+Agent 读取 Issue 后可以复用既有 `set_task_plan`、代码导航、编辑、测试与本地 Git 提交，再通过原有的 `github_push_branch`、`github_create_draft_pr` 完成交付。远端 push / Draft PR 仍需按 ASK 模式分别审批，不会自动合并、关闭 Issue 或强推。PR 正文可以使用 `Refs #123` 关联原 Issue，不应把读取 Issue 等同于实现成功。
+
+```text
+github_issue_context(issue_number=123)
+set_task_plan(...)
+# Agent uses coding, test, git_commit_files, github_push_branch, github_create_draft_pr
+```
+
+## Tree-sitter 跨语言代码导航
+
+在已有的 `search_text`、`inspect_python_symbols` 基础上新增两个只读工具：
+
+- `inspect_code_symbols(path=".", query="", max_results=60)`：解析 Python、JavaScript、TypeScript、TSX 文件，定位函数、类、方法、接口和部分变量声明，返回文件、行号、列号和简短源码。
+- `find_code_references(symbol, path=".", max_results=60)`：按语法树寻找标识符出现的位置，不把普通文本字符串或代码注释当作引用；这是包括定义在内的候选使用点，并不是完整语义引用或调用图。
+
+可选安装 `pip install -e ".[code_index]"` 使用成熟的 [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) 和 [tree-sitter-language-pack](https://docs.tree-sitter-language-pack.xberg.io/)。实际调用时会在所选目录内限量扫描，自动跳过 `.git`、`node_modules` 和缓存目录，不自动执行待分析的源码。此能力面向理解大型陌生 Python/React/Vue 项目，不要求先搭建 LSP 服务器。
+
+## 自动浏览器错误诊断
+
+在 Playwright `browser_action(action="open", url="http://127.0.0.1:5173")` 打开本地页面后，可以执行 `browser_diagnostics(reset=false)`，读取该浏览器页面的最近日志：
+
+- JavaScript 未捕获异常（`javascript_exception`）和控制台 error/warning；
+- 网络层失败（`request_failed`）与 HTTP 4xx/5xx（`http_error`）；
+- 输出请求的方法、URL 路径及状态码，忽略 URL 的 query/hash，不保存请求/响应正文或 headers；返回有界事件历史。
+
+Agent 可按「`dev_server` 启动 → Playwright 点击/填写 → `browser_diagnostics` 查看报错 → `dev_server(action="logs")` 对照后端日志 → 修改代码」循环工作。通过 `browser_diagnostics(reset=true)` 清除本次采集窗口，便于确认某次修复后是否又出现新错误。诊断来自浏览器事件，并不能单独证明报错根因；真实 Chromium 运行验收留待后续阶段。
+
+## Playwright 本地浏览器操作
+
+可选安装 `pip install -e ".[browser]"` 并执行 `playwright install chromium`。然后在 mini-agent 的同一次运行里使用 `browser_action`：
+`action="open"` 打开 `http://127.0.0.1:5173`；`action="click"` 点击 CSS selector；`action="fill"` 填表；`action="inspect"` 读取 DOM 文本；`action="close"` 结束本轮浏览器。
+浏览器状态在当前 AgentApplication 内持续，应用退出时自动关闭。后端使用 Playwright Chromium，无需实现一套浏览器控制协议。为聚焦本地开发，初始 URL 仅支持 localhost/127.0.0.1/::1 的指定端口。
+
+`browser_screenshot(output_path="screenshots/browser.png")` 会将当前页面 PNG 保存到工作区，可用于后续 UI 修正。该写入同样保留项目允许路径和 ASK 审批，并登记到现有变更日志。截图及浏览器实际操作需要已经启动本地开发服务器，功能工具不负责替用户启动服务器，也不声称本轮完成真实浏览器联调。
+
+## 接口变化影响分析
+
+新增 `inspect_openapi_changes(old_schema_path="backend/openapi.previous.json", new_schema_path="backend/openapi.json", frontend_path="frontend")`。Agent 可以先保存旧 OpenAPI JSON，再重新导出新版，与旧版对比：
+识别 API 方法/路径的新增、删除、参数和响应结构变更；提取 components.schemas 中发生变化的模型名；搜索前端字面量 `fetch` / `axios` / `client` 调用，输出可能受影响的源码位置。它是只读静态影响分析，不修改项目，也不会将无法匹配的动态 URL 视为无影响。类型文件重新生成后仍应运行前端 typecheck/build。
+
+## React Query 类型化 Hooks
+
+新增 `generate_react_query_hooks(frontend_path="frontend", client_path="frontend/src/api-client.ts", output_path="frontend/src/api-hooks.ts")`。
+它把现有 `api-client.ts` 包装为 `openapi-react-query` 的 `$api`，提供根据 OpenAPI 路径推导参数、响应的 `$api.useQuery` / `$api.useMutation` / `$api.useSuspenseQuery` 等 Hooks，而不是为每个接口复制一套手工类型。
+前端需要声明 `openapi-fetch`、`openapi-react-query`、`@tanstack/react-query`。实际组件还需配置 `QueryClientProvider`。这次仅负责生成工具层，不主动覆盖应用入口。
+
+```tsx
+import { $api } from "./api-hooks";
+const { data } = $api.useQuery("get", "/api/users");
+const updateUser = $api.useMutation("patch", "/api/users/{user_id}");
+```
+
+## FastAPI 自动导出接口 + 类型化前端客户端
+
+基于已有的 OpenAPI 类型生成，再扩展两项实际功能：
+
+- `export_fastapi_openapi(backend_path="backend", app_import="main:app", output_path="backend/openapi.json")`：通过后端项目独立的 `.venv` 解释器导入 FastAPI 应用并调用 `app.openapi()`，导出 JSON。不要求手工保存接口文档，也不必启动 HTTP 服务；**导入应用模块会执行项目初始化代码**，因此应仅在可信项目使用。后端缺少依赖时先调用 `prepare_dev_environment`。
+- `generate_typed_api_client(frontend_path="frontend", types_path="frontend/src/openapi.d.ts", output_path="frontend/src/api-client.ts", base_url="")`：生成使用 `openapi-fetch` 的类型化 API 客户端，直接引用上一步 `openapi-typescript` 生成的 `paths` 类型。前端 `package.json` 需要事先声明 `openapi-fetch` 依赖（可使用原有依赖安装工具）。
+
+两项工具与原有的 `inspect_openapi_contract`、`generate_openapi_types` 串成一条功能链：
+
+```text
+export_fastapi_openapi(backend_path="backend", app_import="app.main:app")
+inspect_openapi_contract(schema_path="backend/openapi.json")
+generate_openapi_types(
+    schema_path="backend/openapi.json",
+    frontend_path="frontend",
+    output_path="frontend/src/openapi.d.ts",
+)
+generate_typed_api_client(
+    frontend_path="frontend",
+    types_path="frontend/src/openapi.d.ts",
+    output_path="frontend/src/api-client.ts",
+    base_url="",
+)
+```
+
+生成的客户端参考：
+
+```typescript
+import createClient from "openapi-fetch";
+import type { paths } from "./openapi";
+
+export const api = createClient<paths>({ baseUrl: "" });
+```
+
+如果契约中的路径已经包含 `/api`，默认 `base_url=""` 通常更适合避免重复拼接 `/api`。工具允许创建或更新客户端文件，也支持设置其它 `base_url`，但不会强制改写用户原有页面或 API 调用。写入沿用既有审批、Coding Contract 和变更日志；后端导出失败不会覆盖旧文档。仍需后续对真实依赖执行联调和构建；**本轮以功能叠加为主，未进行真实项目端到端验收。**
+
+## OpenAPI 契约解析与 TypeScript 类型生成
+
+新增两项 Coding Agent 工具：
+
+- `inspect_openapi_contract(schema_path="backend/openapi.json")`：读取已有的 OpenAPI 3.x JSON，列出接口方法/路径、operationId、请求体、响应状态码和 components schemas。只读，不运行后端。
+- `generate_openapi_types(schema_path, frontend_path, output_path)`：调用**前端项目本地安装的 [openapi-typescript](https://openapi-ts.dev/cli)** CLI，将 OpenAPI JSON 生成 TypeScript 类型声明；支持在输出目录已存在时创建或更新 `.ts`/`.d.ts` 文件。类型推导完全交给成熟工具，不在 mini-agent 内手工实现 JSON Schema 转 TypeScript。
+
+准备流程：FastAPI 导出 `openapi.json` 并保存到工作区 `backend/openapi.json`；前端 `package.json` 需要声明 `openapi-typescript` 和 `typescript`，通过原有 `prepare_dev_environment(path="frontend", language="node")` 安装依赖。然后执行：
+
+```text
+inspect_openapi_contract(schema_path="backend/openapi.json")
+generate_openapi_types(
+    schema_path="backend/openapi.json",
+    frontend_path="frontend",
+    output_path="frontend/src/openapi.d.ts",
+)
+run_fullstack_checks(backend_task="test", frontend_task="typecheck")
+```
+
+第二步自动使用已安装的 `frontend/node_modules/openapi-typescript/bin/cli.js`，不依赖 `npx` 临时下载，也不需要重建 Agent 主流程。生成前会校验本地 schema 与项目位置；CLI 失败不会覆盖已有输出。生成写入仍复用原有 Coding Contract 路径约束、ASK 审批、文件变更日志。此次先支持 FastAPI 常见的 **OpenAPI JSON 文件**，暂未自动启动 FastAPI 导出文件，也不推断动态运行时路由。生成类型后，应重新执行前端 typecheck/build 并验收实际接口行为。
+
+## FastAPI + 前端跨端接口协同检查
+
+新增只读工具 `inspect_fullstack_interfaces(backend_path="backend", frontend_path="frontend")`。Agent 可以先通过 `discover_workspace_projects` 找到 Python 后端与 JS/TS 前端，再调用该工具：
+
+- 静态提取常见 `FastAPI`/`APIRouter` 的 `@app.get/post`、`@router.get/post`、`@router.api_route(methods=[...])` 路由、字面量 `APIRouter(prefix=...)` 前缀；
+- 静态提取前端 `fetch("/api/...")`、带字面量 `method` 的 `fetch`、以及 `axios.get/post`、`client.*`、`api.*` 等直接调用；
+- 按 HTTP 方法和路径（支持常见 `{id}` 路由参数）给出已匹配和未匹配请求，以及后端和前端的源码文件、行号。
+
+典型流程：**自动发现前后端 → 找到接口对应关系 → 批量创建/精确修改两端文件 → 联合执行后端测试与前端构建**。`inspect_fullstack_interfaces` 是只读静态分析，不启动服务器、不执行目标代码；实际检查由下面的执行工具完成。
+
+另新增 `run_fullstack_checks(backend_path="backend", frontend_path="frontend", backend_task="test", frontend_task="build", backend_test_files=None)`，直接复用现有 Python 项目 `.venv`、npm/pnpm 脚本、执行器和错误位置摘要。一次调用先运行后端 pytest/unittest，再运行前端 package.json 中声明的 test/build/lint/typecheck 脚本，即使后端失败也继续收集前端执行结果；返回两端独立状态、日志、错误位置和 `both_passed` 总结。可选 `backend_test_files` 支持定向 Python 测试。运行前应分别准备两个子项目的依赖，必要时完成 ASK 审批。此工具不会替代 Coding Contract 中指定的正式验收命令。
+
+此工具是有限的静态导航：不解析通过 `include_router(prefix=...)` 动态注册的前缀、运行时 base URL、JS 模板字符串、动态计算路径、复杂 axios 实例封装。未匹配只意味着**在此次扫描可识别的字面量路由中没有匹配**，不能直接断言线上接口不存在或无法调用；最终仍要实际联调验收。
+
+## 多文件快速创建：新模块脚手架
+
+新增 `create_files_batch(files)`，一次创建 **2–12 个尚不存在的 UTF-8 文件**，可自动建立必要的子目录。典型用途：新增 Python service + API route + unittest，或搭建前后端项目中的多个配套源文件。已有文件修改继续使用 `apply_patch_batch`，普通单文件创建继续使用 `write_file`，不必替换之前的工具。
+
+例如 Agent 可以一次调用：
+
+```json
+{
+  "files": [
+    {"path": "src/__init__.py", "content": ""},
+    {"path": "src/service.py", "content": "def double(x):\\n    return x * 2\\n"},
+    {"path": "tests/test_service.py", "content": "import unittest\\nfrom src.service import double\\n..."}
+  ]
+}
+```
+
+批量创建复用既有 LangGraph create_agent、HITL 审批、Coding Contract 允许路径、任务日志和恢复状态，不提供第二套执行引擎；已有文件不会被覆盖。常规执行异常会尝试清理已创建的文件和空目录，但不宣称进程崩溃时的跨文件磁盘事务保证。创建结束后可以使用 `run_dev_task` 或 `run_command` 执行实际测试，再依原 Contract 验收。
+
+## 状态、恢复与副作用边界
+
+同一 `thread_id` 是 LangGraph checkpoint 的恢复主键。当前状态目录结构为：
+
+```text
+{state_dir}/.env
+{state_dir}/.mini-agent/checkpoints/v2.sqlite3
+{state_dir}/.mini-agent/journals/{task_id}.json
+{state_dir}/trace.jsonl              # 仅在设置 MINI_AGENT_TRACE_JSONL 时
+```
+
+工作区快照会跳过 `.git`、`.venv`、`venv`、`node_modules` 和 `.mini-agent` 等生成
+目录，避免 SQLite 和 journal 污染任务验收。状态目录应放在工作区之外，并设置
+合适的本机权限；会话消息和 journal 可能包含文件内容与工具参数，不能当作秘密
+保险箱。
+
+SQLite saver 保存图节点状态和写入记录，因而可以在 HTTP 错误、进程退出或 HITL
+中断后按同一 `thread_id` 继续。它只证明图状态已写入；如果外部副作用已经发出
+但还没有收到回执，checkpoint 不能证明该副作用没有发生，也不能提供 exactly-once
+语义。写工具因此依赖原子文件写入、前置条件、journal 和恢复时复核；对外部系统
+的适配仍需要幂等键、结果查询或人工确认。
+
+## 安全边界与限制
+
+- 文件工具只允许规范化后的工作区路径，并限制敏感路径、链接和文件大小。
+- `run_command` 使用 `shell=False`，允许工作区内的 `python script.py`、
+  `python -m pytest/unittest/ruff/mypy/compileall/build` 以及只读的
+  `git status/diff/log/ls-files`，同时限制 cwd、超时、输出和子进程环境；
+  不允许 `python -c`、`pip install` 或任意 shell 命令。
+- 工作区和命令策略不是 OS sandbox。受信测试代码仍可能访问当前用户可访问的
+  文件、网络和解释器能力；执行不可信项目应另外使用无密钥容器或虚拟机。
+- Trace 默认只保留当前进程内存事件；设置 `MINI_AGENT_TRACE_JSONL` 才会追加
+  脱敏后的事件。Trace 不是完整会话记录。
+- 当前没有公开的异步/`ainvoke` 或 streaming API。`AgentApplication` 是同步
+  API seam；需要实时 UI 时先消费 JSON 结果和 `interrupts`，不要猜测内部 graph
+  节点。
+- memory、web browsing、multi-agent 和长期 Store 尚未实现。RAG/MCP 是已验证的
+  可选外部适配器；外部知识库与 Checkpoint 分别保存。
+
+## 验证
+
+开发依赖安装后运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m mypy
+# 推荐统一入口：在不含真实配置的临时副本中运行全部检查。
+.\.venv\Scripts\python.exe scripts/check.py
+```
+
+`tests/test_transport.py` 启动临时本地 HTTP provider，覆盖多步
+list/search/read/apply/read/final、HTTP 错误后的可恢复 checkpoint，以及
+`mini.cmd task` JSON 子进程路径；测试不会读取真实 `.env` 或访问外部模型。
+
+另有一次实际模型验收作为同步链路的烟雾证据：运行 17.13 秒，5 次模型调用、
+9 次工具调用、14,208 total tokens，修改了 `calculator.py` 和 `notes.txt`，指定
+测试通过，独立 verifier 返回 `accepted`。这是一条受控验收记录，不代表模型质量
+基准或长期 provider 稳定性。
+
+## 依赖与研究基线
+
+当前工程约束 LangChain 1.x 兼容组：`langchain>=1.4.4,<1.5`、
+`langchain-core>=1.6.9,<2`（由 LangChain 约束）、`langchain-openai>=1.7.0,<1.8`、
+`langgraph>=1.2.14,<1.3`、`langgraph-checkpoint-sqlite>=3.1.1,<3.2`。
+源码提交、稳定 API 约束、HITL 和 SqliteSaver 参考见
+[`docs/framework-references.md`](docs/framework-references.md)。升级应重新验证
+整组依赖，不要只升级 `langchain`。
+
+## 路线图
+
+按优先级排列：
+
+1. **先完成本分支的 MCP/RAG 验收**：独立运行可选依赖的安装、工具调用、
+   HITL 及检索来源的回归测试；验收通过后再扩展外部业务流程。
+2. 当规划、测试、验收、恢复需要显式分支时，再增加以 `create_agent` 为节点或子图
+   的 `StateGraph` workflow；基础工具循环继续由 `create_agent` 托管。
+3. 在同步 API 的状态和错误语义稳定后，再公开 async/streaming seam，并为
+   `AsyncSqliteSaver` 单独验证生命周期。
+4. memory、web、multi-agent 和跨会话长期 Store 延后到明确的权限、保留周期和
+   数据边界方案确定后；它们不会通过扩大 checkpoint schema 临时加入。
+
+历史评测报告仍保留在 `benchmark/reports/` 供回归参考，但它们是旧运行时的脚本
+化证据，不能替代当前 LangChain v2 的真实 provider 评测。
+
+## License
+
+见 [`LICENSE`](LICENSE)。

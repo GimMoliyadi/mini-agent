@@ -1,0 +1,230 @@
+"""Controlled command execution tools.
+
+Commands run without a shell, inside the configured workspace, with bounded
+environment, timeout, and output budgets.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+from mini_agent import sandbox as file_safety
+from mini_agent.config import COMMAND_TIMEOUT_SECONDS, MAX_COMMAND_OUTPUT_CHARS, WORKSPACE_DIR
+from mini_agent.result import ToolResult
+from ..process_runner import MAX_COMMAND_OUTPUT_BYTES, run_process
+from .filesystem import resolve_inside_workspace
+
+
+def _active_workspace(workspace: str | Path | None = None) -> Path:
+    """Resolve the configured workspace for direct legacy calls.
+
+    The LangChain adapter always supplies an explicit workspace.  Keeping the
+    configured default here makes the low-level function useful on its own
+    without consulting the compatibility module's mutable globals.
+    """
+    return Path(workspace if workspace is not None else WORKSPACE_DIR).resolve()
+
+
+
+
+_COMMAND_SHELL_SYNTAX = frozenset("&|;><`\r\n")
+_ALLOWED_PYTHON_MODULES = frozenset({"pytest", "unittest", "ruff", "mypy", "compileall", "build"})
+_ALLOWED_GIT_COMMANDS = frozenset({"status", "diff", "log", "ls-files"})
+
+
+class CommandPolicyError(ValueError):
+    """A command is outside the deliberately small Phase 12 allowlist."""
+
+
+def _reject_shell_syntax(tokens: list[str]) -> None:
+    for token in tokens:
+        if any(character in token for character in _COMMAND_SHELL_SYNTAX):
+            raise CommandPolicyError(
+                "命令参数不能包含 shell 操作符或换行；请使用 command + args 数组"
+            )
+
+
+def _reject_workspace_escape_tokens(
+    tokens: list[str], workspace: str | Path | None = None
+) -> None:
+    for token in tokens:
+        if token.startswith("-") and "=" not in token:
+            continue
+        candidate = token.split("=", 1)[1] if token.startswith("-") else token
+        candidate = candidate.split("::", 1)[0]
+        if not candidate:
+            continue
+        try:
+            resolve_inside_workspace(candidate, workspace)
+        except (PermissionError, ValueError) as exc:
+            raise CommandPolicyError(f"命令参数包含禁止访问的路径：{token}") from exc
+
+
+def validate_run_command_arguments(
+    arguments: dict, workspace: str | Path | None = None
+) -> None:
+    """Validate the command policy without starting a process."""
+    command = arguments.get("command")
+    args = arguments.get("args", [])
+    cwd = arguments.get("cwd", ".")
+    if not isinstance(cwd, str) or not cwd:
+        raise CommandPolicyError("cwd 必须是非空字符串")
+    root = _active_workspace(workspace)
+    resolve_inside_workspace(cwd, root)
+    if not isinstance(command, str) or not command:
+        raise CommandPolicyError("command 必须是非空字符串")
+    if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+        raise CommandPolicyError("args 必须是字符串数组")
+
+    _reject_shell_syntax([command, *args])
+    normalized_command = command.casefold()
+    if normalized_command not in {"python", "git"} or "/" in command or "\\" in command:
+        raise CommandPolicyError(f"不允许执行命令：{command}")
+
+    if normalized_command == "python":
+        # 依赖安装与任意解释器参数仍禁止：不能让工具无意覆盖 Agent 自己的虚拟环境。
+        # 受信工作区内的 .py 入口可以运行，以支持真正的代码开发与调试闭环。
+        if args[:1] == ["-m"] and len(args) >= 2 and args[1] in _ALLOWED_PYTHON_MODULES:
+            _reject_workspace_escape_tokens(args[2:], root)
+            return
+        if args and not args[0].startswith("-") and args[0].lower().endswith(".py"):
+            # 先验证脚本文件本身，防止绝对路径/软链接穿出工作区。
+            script = resolve_inside_workspace(args[0], root)
+            if not script.is_file():
+                raise CommandPolicyError("Python 脚本必须是工作区内存在的 .py 文件")
+            _reject_workspace_escape_tokens(args[1:], root)
+            return
+        raise CommandPolicyError(
+            "python 仅允许运行工作区内 .py 文件或 pytest/unittest/ruff/mypy/compileall/build 模块；"
+            "不允许 -c、pip 或任意解释器选项"
+        )
+
+    if not args or args[0] not in _ALLOWED_GIT_COMMANDS:
+        raise CommandPolicyError("git 只允许 status、diff、log、ls-files 子命令")
+    if any(
+        arg in {"-c", "--exec-path", "--config", "--config-env", "--git-dir", "--work-tree", "--upload-pack", "--receive-pack", "--output", "-o", "--no-index", "--ext-diff", "--textconv", "-C"}
+        or arg.startswith(("--output=", "--exec-path=", "--git-dir=", "--work-tree=", "--config=", "--config-env=", "--upload-pack=", "--receive-pack="))
+        for arg in args[1:]
+    ):
+        raise CommandPolicyError("该 git 参数可能改变状态或访问未受控目标，已拒绝")
+    _reject_workspace_escape_tokens(args[1:], root)
+
+
+def _decode_process_output(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _redact_process_output(value: object) -> str:
+    return file_safety.redact_text(_decode_process_output(value))
+
+
+def _limit_command_output(value: object) -> str:
+    text = _redact_process_output(value)
+    if len(text) <= MAX_COMMAND_OUTPUT_CHARS:
+        return text
+    limit = MAX_COMMAND_OUTPUT_CHARS
+    head_chars = limit // 2
+    tail_chars = limit - head_chars
+    omitted = len(text) - limit
+    return text[:head_chars] + f"\n[output truncated: omitted {omitted} chars]\n" + text[-tail_chars:]
+
+
+def _format_command_result(
+    command: str,
+    cwd: Path,
+    exit_code: int | None,
+    timed_out: bool,
+    stdout: object,
+    stderr: object,
+    *,
+    output_limit_exceeded: bool = False,
+    captured_bytes: int = 0,
+) -> str:
+    return file_safety.redact_text("\n".join([
+        f"Command: {command}", f"CWD: {cwd}", f"Exit code: {exit_code}",
+        f"Timed out: {'true' if timed_out else 'false'}",
+        f"Output limit exceeded: {'true' if output_limit_exceeded else 'false'}",
+        f"Captured bytes: {captured_bytes}", "STDOUT:",
+        _limit_command_output(stdout) or "<empty>", "STDERR:",
+        _limit_command_output(stderr) or "<empty>",
+    ]))
+
+
+def run_command(
+    command: str,
+    args: list[str] | None = None,
+    cwd: str = ".",
+    *,
+    workspace: str | Path | None = None,
+) -> ToolResult:
+    args = [] if args is None else args
+    root = _active_workspace(workspace)
+    validate_run_command_arguments({"command": command, "args": args, "cwd": cwd}, root)
+    target = resolve_inside_workspace(cwd, root)
+    if not target.is_dir():
+        raise NotADirectoryError(f"cwd 不是一个目录：{cwd}")
+    command_line = subprocess.list2cmdline([command, *args])
+    executable = sys.executable if command.casefold() == "python" else command
+    controlled_args = args
+    if command.casefold() == "git":
+        controlled_args = ["--no-pager", "-c", "core.fsmonitor=false", *args]
+        if args[0] in {"diff", "log"}:
+            controlled_args += ["--no-ext-diff", "--no-textconv"]
+    output_limit = MAX_COMMAND_OUTPUT_BYTES
+    try:
+        result = run_process(
+            [executable, *controlled_args],
+            target,
+            workspace=root,
+            timeout_seconds=COMMAND_TIMEOUT_SECONDS,
+            output_limit_bytes=output_limit,
+        )
+    except OSError as exc:
+        text = _format_command_result(command_line, target, None, False, "", f"[命令启动失败] {exc}")
+        return ToolResult(
+            text,
+            "tool_error",
+            "launch_failed",
+            {"returncode": None, "timed_out": False, "output_limit_exceeded": False},
+        )
+    stderr = result.stderr
+    if result.timed_out:
+        stderr = b"[command timed out]\n" + stderr
+    if result.output_limit_exceeded:
+        stderr = b"[output byte limit exceeded]\n" + stderr
+    formatted = _format_command_result(
+        command_line,
+        target,
+        result.returncode,
+        result.timed_out,
+        result.stdout,
+        stderr,
+        output_limit_exceeded=result.output_limit_exceeded,
+        captured_bytes=result.captured_bytes,
+    )
+    if result.timed_out:
+        formatted += "\n[命令执行超时]"
+    failed = result.timed_out or result.output_limit_exceeded or result.returncode != 0
+    if result.timed_out:
+        code = "timeout"
+    elif result.output_limit_exceeded:
+        code = "output_limit"
+    elif result.returncode != 0:
+        code = "exit_nonzero"
+    else:
+        code = "command_succeeded"
+    return ToolResult(
+        formatted,
+        "command_failed" if failed else "success",
+        code,
+        {
+            "returncode": result.returncode,
+            "timed_out": result.timed_out,
+            "output_limit_exceeded": result.output_limit_exceeded,
+            "captured_bytes": result.captured_bytes,
+        },
+    )

@@ -108,7 +108,7 @@ Earlier preflight observations retained: 1; the earlier exact-`OK` mismatch is h
 - Required test failure at turn 6 (test_decimal_percent):
 ```text
 Command: python -m unittest discover -s tests -p test_coupons.py -q
-CWD: C:\Users\30858\AppData\Local\Temp\phase23-budget-10-zbibv16o\workspace
+CWD: <temp>\phase23-budget-10-zbibv16o\workspace
 Exit code: 1
 Timed out: false
 STDOUT:
@@ -118,7 +118,7 @@ STDERR:
 FAIL: test_decimal_percent (test_coupons.CouponTests.test_decimal_percent)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "C:\Users\30858\AppData\Local\Temp\phase23-budget-10-zbibv16o\workspace\tests\test_coupons.py", line 11, in test_decimal_percent
+  File "<temp>\phase23-budget-10-zbibv16o\workspace\tests\test_coupons.py", line 11, in test_decimal_percent
     self.assertEqual(discounted_amount(100.0, 0.10), 90.0)
 AssertionError: 99.9 != 90.0
 
@@ -145,7 +145,7 @@ FAILED (failures=1)
 - Required test failure at turn 6 (test_one_percent_boundary):
 ```text
 Command: python -m unittest discover -s tests -p test_coupons.py -q
-CWD: C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace
+CWD: <temp>\phase23-budget-12-v74219fo\workspace
 Exit code: 1
 Timed out: false
 STDOUT:
@@ -155,7 +155,7 @@ STDERR:
 FAIL: test_one_percent_boundary (test_coupons.CouponTests.test_one_percent_boundary)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace\tests\test_coupons.py", line 14, in test_one_percent_boundary
+  File "<temp>\phase23-budget-12-v74219fo\workspace\tests\test_coupons.py", line 14, in test_one_percent_boundary
     self.assertEqual(discounted_amount(100.0, 1), 99.0)
 AssertionError: 0.0 != 99.0
 
@@ -169,7 +169,7 @@ FAILED (failures=1)
 - Required test failure at turn 10 (test_one_percent_boundary):
 ```text
 Command: python -m unittest discover -s tests -p test_coupons.py -q
-CWD: C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace
+CWD: <temp>\phase23-budget-12-v74219fo\workspace
 Exit code: 1
 Timed out: false
 STDOUT:
@@ -179,7 +179,7 @@ STDERR:
 FAIL: test_one_percent_boundary (test_coupons.CouponTests.test_one_percent_boundary)
 ----------------------------------------------------------------------
 Traceback (most recent call last):
-  File "C:\Users\30858\AppData\Local\Temp\phase23-budget-12-v74219fo\workspace\tests\test_coupons.py", line 14, in test_one_percent_boundary
+  File "<temp>\phase23-budget-12-v74219fo\workspace\tests\test_coupons.py", line 14, in test_one_percent_boundary
     self.assertEqual(discounted_amount(100.0, 1), 99.0)
 AssertionError: 0.0 != 99.0
 

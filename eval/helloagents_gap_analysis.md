@@ -1,6 +1,6 @@
 # HelloAgents 与 mini-agent-lab 架构 Gap Analysis
 
-研究日期：2026-09-23。上游仓库：[jjyaoao/HelloAgents](https://github.com/jjyaoao/HelloAgents)，检出 `main` 为 `93e77ea60c13436636c9b39b6761ff8dfe940ba2`，`learn_version` 为 `3927c6d1decb37737c4c1344fde00ccef55ab1f3`。本地参考副本在 `C:\Users\30858\reference\HelloAgents-main` 与 `C:\Users\30858\reference\HelloAgents-learn`，均在本项目之外。当前 mini-agent 以本次工作树为准，含未提交变更。本报告是静态代码审阅，没有运行上游或改动 Runtime。
+研究日期：2026-09-23。上游仓库：[jjyaoao/HelloAgents](https://github.com/jjyaoao/HelloAgents)，检出 `main` 为 `93e77ea60c13436636c9b39b6761ff8dfe940ba2`，`learn_version` 为 `3927c6d1decb37737c4c1344fde00ccef55ab1f3`。本地参考副本在 `<user-home>\reference\HelloAgents-main` 与 `<user-home>\reference\HelloAgents-learn`，均在本项目之外。当前 mini-agent 以本次工作树为准，含未提交变更。本报告是静态代码审阅，没有运行上游或改动 Runtime。
 
 ## 1. HelloAgents 总体架构图
 
