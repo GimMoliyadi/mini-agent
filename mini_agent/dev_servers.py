@@ -157,7 +157,7 @@ class DevServerManager:
                 return {"name": name, "running": False, "managed": False}
             return {"name": name, "managed": True, **server.status()}
 
-    def stop(self, name: Literal["backend", "frontend"]) -> dict[str, Any]:
+    def stop(self, name: str) -> dict[str, Any]:
         with self.lock:
             server = self.servers.pop(name, None)
             if server is None:
