@@ -95,7 +95,8 @@ def test_optional_migration_and_draft_pr_stages_require_specific_tool_results():
     assert result["next_stage"] == "test"
     assert any(x["id"] == "migration" and x["done"] for x in result["stages"])
     state["messages"] += [
-        _call("run_command", "tests"), _done("run_command", "tests"),
+        _call("run_command", "tests", {"command": "python", "args": ["-m", "pytest", "-q"]}),
+        _done("run_command", "tests"),
         _call("review_code_changes", "review"), _done("review_code_changes", "review"),
     ]
     assert evaluate_workflow(state)["next_stage"] == "deliver"
@@ -116,6 +117,7 @@ def test_opt_in_workflow_persists_in_checkpoint_and_blocks_premature_completion(
              profile="general"),
         call("list_files", path="."),
         "I have only inspected the project; the feature is not finished.",
+        "Continuing development remains incomplete.",
     ])
     with AgentApplication(settings, model=model) as app:
         first = app.run("Implement an API feature with the coding workflow")
@@ -123,4 +125,25 @@ def test_opt_in_workflow_persists_in_checkpoint_and_blocks_premature_completion(
         assert first["development_workflow"]["next_stage"] == "implement"
         assert first["development_workflow"]["completed"] == 1
         resumed = app.run(None, thread_id=first["session_id"], continue_incomplete=True)
-    assert resumed["status"] in {"incomplete", "failed"}, resumed
+    assert resumed["status"] == "incomplete", resumed
+    assert resumed["development_workflow"]["next_stage"] == "implement"
+
+
+def test_screenshot_is_not_a_new_source_mutation_and_pip_is_not_a_test():
+    state = _workflow_state()
+    state["messages"] = [
+        _call("read_file", "inspect"), _done("read_file", "inspect"),
+        _call("write_file", "write"), _done("write_file", "write", mutation=True),
+        _call("run_command", "install", {"command": "python", "args": ["-m", "pip", "--version"]}),
+        _done("run_command", "install"),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "test"
+    state["messages"] += [
+        _call("run_dev_task", "tested", {"task": "test"}),
+        _done("run_dev_task", "tested"),
+        _call("review_code_changes", "review"), _done("review_code_changes", "review"),
+        _call("browser_screenshot", "screenshot"), _done(
+            "browser_screenshot", "screenshot", mutation=True,
+        ),
+    ]
+    assert evaluate_workflow(state)["complete"] is True
