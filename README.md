@@ -337,6 +337,26 @@ recall_project_facts(query="frontend")
 
 同一 AgentApplication 内服务持续运行，适合搭配 Playwright 打开 `http://127.0.0.1:5173` 调试网页；AgentApplication 关闭时自动清理自己创建的后端和前端服务。此工具不会安装项目依赖，不会启动外部 URL，也不声称进程创建成功就说明页面已准备完毕。首次启动前应使用 `prepare_dev_environment` 准备依赖。当前专门支持 FastAPI/uvicorn 与 Vite，其他框架可后续扩展。
 
+## 有证据的自主开发工作流
+
+新的 `start_development_workflow(goal, profile, require_browser=False, require_migration=False, deliver_pr=False)` 可为复杂开发任务启用自主编排模式：
+`profile` 可选 `general`（通用代码）、`web`（前后端网页）、`backend`（API/数据库）。如果实际任务需要浏览器、迁移或远程交付，再开启相应开关，避免把所有项目硬套进同一流程。
+
+工作流采用**同一个 LangGraph Agent + 同一个 Checkpoint**，阶段依次为定位源码、实现修改、（可选）数据库迁移、修改后的测试、（可选）浏览器诊断、最新代码审查、（可选）Draft PR。每轮模型决策会拿到当前缺失的阶段与候选工具，由现有 Agent 自主选择调用；并不自动绕开审批或执行未指定的远程操作。
+
+`development_workflow_status()` 不听信 Agent 自报：只根据当次任务 Checkpoint 中**真正成功的工具调用**计算阶段完成度。每次新修改会使此前的测试、浏览器调试及代码审查证据失效。任务尚未完成时，结果状态是 `incomplete`，可用原来的同会话继续机制推进，不会把未验证工作标为成功。
+
+```text
+start_development_workflow(
+    goal="为现有 FastAPI + React 项目增加用户管理界面",
+    profile="web", require_browser=True, deliver_pr=True
+)
+development_workflow_status()
+# Agent 按提示自主选择工具，调用实际成功后阶段自动更新
+```
+
+这一能力复用已有 `set_task_plan`、Coding Contract、审批、开发工具和 SQLite Checkpoint，而不是增加第二套 Agent Runtime。它是任务执行协调与验收证据层；工具状态仍不能代替真实业务行为正确性和人工复核。
+
 ## 数据库模型与 Alembic 迁移文件
 
 新增两项数据库演进工具，继续复用 SQLAlchemy/Alembic 而不引入第二套迁移执行器：
