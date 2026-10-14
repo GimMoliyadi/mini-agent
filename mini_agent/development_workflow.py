@@ -29,6 +29,8 @@ _REVIEW_TOOLS = frozenset({"review_code_changes"})
 _MIGRATION_TOOLS = frozenset({"generate_alembic_migration"})
 _BROWSER_TOOLS = frozenset({"browser_action", "browser_diagnostics"})
 _DELIVERY_TOOLS = frozenset({"github_create_draft_pr"})
+_NON_CODE_MUTATIONS = frozenset({"browser_screenshot"})
+_TEST_TASK_NAMES = frozenset({"test", "unittest"})
 _PROFILES = frozenset({"general", "web", "backend"})
 _MAX_GOAL = 500
 
@@ -56,7 +58,7 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
         args = calls.get(message.tool_call_id, {}).get("args", {})
         if not isinstance(args, dict):
             args = {}
-        if artifact.get("mutation", False):
+        if artifact.get("mutation", False) and name not in _NON_CODE_MUTATIONS:
             last_mutation = index
         observations.append((index, name, args))
 
@@ -65,7 +67,21 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
 
     explored = observed(_EXPLORATION_TOOLS)
     modified = last_mutation >= 0
-    tested = modified and observed(_TEST_TOOLS, after=last_mutation)
+    tested = modified and any(
+        index > last_mutation and (
+            name == "run_fullstack_checks"
+            or (name == "run_dev_task" and args.get("task", "test") in _TEST_TASK_NAMES)
+            or (name == "run_command" and (
+                (args.get("command", "").lower().split("/")[-1].split("\\")[-1]
+                 in {"python", "python.exe", "py", "py.exe", "pytest", "pytest.exe"})
+                and any(
+                    str(arg).lower() in {"pytest", "unittest", "test", "-m"}
+                    for arg in args.get("args", [])
+                )
+            ))
+        )
+        for index, name, args in observations
+    )
     reviewed = modified and observed(_REVIEW_TOOLS, after=last_mutation)
     migration = observed(_MIGRATION_TOOLS)
     browser_open = modified and any(
