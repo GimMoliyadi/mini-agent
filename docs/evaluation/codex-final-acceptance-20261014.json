@@ -1,0 +1,352 @@
+{
+  "date": "2026-10-14",
+  "baseline_sha": "6a531e563855520a38993aec6425990acb8ac855",
+  "source_sha": "018019b16242de46f9b0898772603d29a47883e8",
+  "qa_branch": "codex/final-system-acceptance-20261014",
+  "model": "grok-4.7",
+  "interface": "OpenAI-compatible; existing configuration",
+  "environment": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.9",
+    "packages": {
+      "langchain": "1.4.4",
+      "langgraph": "1.2.14",
+      "langchain-openai": "1.7.0",
+      "langgraph-checkpoint-sqlite": "3.1.1",
+      "pytest": "9.1.1",
+      "ruff": "0.17.0",
+      "mypy": "1.20.2",
+      "fastapi": "0.143.0",
+      "uvicorn": "0.54.0",
+      "playwright": "1.64.0",
+      "tree-sitter": "0.26.0",
+      "tree-sitter-python": "0.25.0",
+      "tree-sitter-javascript": "0.25.0",
+      "tree-sitter-typescript": "0.23.2",
+      "alembic": "1.20.0",
+      "sqlalchemy": "2.1.4"
+    }
+  },
+  "counting": "model_calls counts responses; failed request usage unavailable; cached input included; no price configured",
+  "checks": {
+    "offline": {
+      "command": "python scripts/check.py",
+      "exit_code": 0,
+      "passed": 334,
+      "skipped": 4,
+      "subtests_passed": 148,
+      "seconds": 154.89,
+      "ruff": "passed",
+      "mypy_source_files": 50,
+      "syntax": "passed",
+      "cleanup": "passed"
+    },
+    "packaging": {
+      "command": "python scripts/check.py --packaging-only",
+      "passed_steps": 6,
+      "total_steps": 6
+    },
+    "mcp": {
+      "command": "python -m pytest -q tests/test_mcp_integration.py",
+      "passed": 6,
+      "seconds": 38.94
+    },
+    "real_web": {
+      "command": "MINI_AGENT_RUN_REAL_WEB_ACCEPTANCE=1 python -m pytest -q tests/test_real_web_acceptance.py",
+      "passed": 2,
+      "seconds": 80.02,
+      "model": "ScriptedModel; real servers/codegen/Chromium"
+    },
+    "quickstart": "passed: config/version/doctor/start/sessions/task with local HTTP provider",
+    "diff_whitespace": "passed",
+    "baseline_remote_ci": {
+      "url": "https://github.com/GimMoliyadi/mini-agent/actions/runs/38503846584",
+      "jobs_passed": 5
+    }
+  },
+  "live_scenarios": [
+    {
+      "scenario": "bug-reproduction-fix-tests",
+      "passed": true,
+      "status": "completed",
+      "duration_seconds": 45.16,
+      "model_calls": 7,
+      "input_tokens": 75122,
+      "output_tokens": 667,
+      "usage_missing": 0,
+      "error": null,
+      "verification": {
+        "task_id": "live-discount",
+        "artifact_passed": true,
+        "interaction_completed": true,
+        "accepted": true,
+        "changed_files": [
+          "src/pricing.py"
+        ],
+        "unexpected_changes": [],
+        "agent_ran_required_test": true,
+        "agent_self_verified": true,
+        "final_test_exit_code": 0,
+        "final_test_passed": true,
+        "final_test_status": "PASS",
+        "final_test_count": 1,
+        "final_test_collected_count": 1,
+        "final_test_skipped_count": 0,
+        "final_test_unverified_reason": null,
+        "agent_final_answer_present": true,
+        "task_status": "FINISHED",
+        "max_steps_reached": false,
+        "runtime_exception": null,
+        "reasons": []
+      },
+      "tool_calls": 6
+    },
+    {
+      "scenario": "task-web-B",
+      "passed": false,
+      "status": "failed",
+      "duration_seconds": 659.86,
+      "model_calls": 82,
+      "input_tokens": 1975891,
+      "output_tokens": 7874,
+      "usage_missing": 0,
+      "error": "OpenAIConnectionError: Connection error.",
+      "verification": null,
+      "session_id": "93e27adb2d93469eb82078a2f724c74b",
+      "tool_calls": 82,
+      "tool_errors": 7,
+      "auto_recovery_rounds": 0,
+      "cached_input_tokens": 1418467,
+      "independent_passed": true,
+      "manual_resumes": 3,
+      "independent_evidence": "B-cold-independent-recheck.json"
+    },
+    {
+      "scenario": "task-web-C",
+      "passed": false,
+      "status": "failed",
+      "duration_seconds": 258.65,
+      "model_calls": 44,
+      "input_tokens": 706851,
+      "output_tokens": 2923,
+      "usage_missing": 0,
+      "error": "OpenAIPermissionDeniedError: Error code: 403 - {'error': {'message': 'Request processing failed. The service is temporarily unavailable. Please try again later or contact support.', 'type': 'upstream_unavailable', 'param': '', 'code': 'upstream_unavailable'}}",
+      "verification": null,
+      "session_id": "75d95b0eb71e49939265294dd600c7f4",
+      "independent_passed": true,
+      "manual_resumes": 1,
+      "auto_recovery_rounds": 1,
+      "cached_input_tokens": 514630,
+      "tool_calls": 43,
+      "tool_errors": 1
+    },
+    {
+      "scenario": "real-model-file-and-code",
+      "status": "completed",
+      "duration_seconds": 50.41,
+      "model_calls": 11,
+      "input_tokens": 119857,
+      "output_tokens": 562,
+      "error": null,
+      "verification": {
+        "task_id": "live-file-code",
+        "artifact_passed": true,
+        "interaction_completed": true,
+        "accepted": true,
+        "changed_files": [
+          "calculator.py",
+          "notes.txt"
+        ],
+        "unexpected_changes": [],
+        "agent_ran_required_test": true,
+        "agent_self_verified": true,
+        "final_test_exit_code": 0,
+        "final_test_passed": true,
+        "final_test_status": "PASS",
+        "final_test_count": 1,
+        "final_test_collected_count": 1,
+        "final_test_skipped_count": 0,
+        "final_test_unverified_reason": null,
+        "agent_final_answer_present": true,
+        "task_status": "FINISHED",
+        "max_steps_reached": false,
+        "runtime_exception": null,
+        "reasons": []
+      },
+      "tool_calls": 10
+    },
+    {
+      "scenario": "checkpoint-new-application-resume",
+      "passed": true,
+      "status": "completed",
+      "duration_seconds": 23.26,
+      "model_calls": 3,
+      "input_tokens": 30403,
+      "output_tokens": 176,
+      "usage_missing": 0,
+      "error": null,
+      "verification": null,
+      "tool_calls": 2
+    }
+  ],
+  "B_failed_stages": [
+    {
+      "scenario": "task-web-B",
+      "passed": false,
+      "status": "failed",
+      "duration_seconds": 254.46,
+      "model_calls": 42,
+      "input_tokens": 700349,
+      "output_tokens": 5670,
+      "usage_missing": 0,
+      "error": "BudgetExceeded: 累计token策略额度不足以容纳上下文和下一次输出。",
+      "verification": null,
+      "tool_calls": 42,
+      "tool_errors": 5,
+      "auto_recovery_rounds": 0,
+      "cached_input_tokens": 448206
+    },
+    {
+      "scenario": "task-web-B",
+      "passed": false,
+      "status": "failed",
+      "duration_seconds": 359.52,
+      "model_calls": 55,
+      "input_tokens": 1045988,
+      "output_tokens": 7003,
+      "usage_missing": 0,
+      "error": "ValueError: 当前任务上下文超过预算；请缩小任务或增大 MINI_AGENT_CONTEXT_TOKENS",
+      "verification": null,
+      "session_id": "93e27adb2d93469eb82078a2f724c74b",
+      "tool_calls": 55,
+      "tool_errors": 5,
+      "auto_recovery_rounds": 0,
+      "cached_input_tokens": 743408
+    },
+    {
+      "scenario": "task-web-B",
+      "passed": false,
+      "status": "failed",
+      "duration_seconds": 546.2,
+      "model_calls": 75,
+      "input_tokens": 1723260,
+      "output_tokens": 7652,
+      "usage_missing": 0,
+      "error": "BudgetExceeded: 累计token策略额度不足以容纳上下文和下一次输出。",
+      "verification": null,
+      "session_id": "93e27adb2d93469eb82078a2f724c74b",
+      "tool_calls": 75,
+      "tool_errors": 5,
+      "auto_recovery_rounds": 0,
+      "cached_input_tokens": 1225679
+    }
+  ],
+  "B_cold_independent": {
+    "checks": {
+      "backend_test": {
+        "status": "success",
+        "output": "exit_code=0; timed_out=False; output_limit=False\nSTDOUT:\n.....                                                                    [100%]\r\n5 passed in 0.92s\r\n\nSTDERR:\n"
+      },
+      "frontend_typecheck": {
+        "status": "success",
+        "output": "exit_code=0; timed_out=False; output_limit=False\nSTDOUT:\n\n> mini-agent-task-acceptance@1.0.0 typecheck\n> tsc --noEmit\n\n\nSTDERR:\n"
+      },
+      "frontend_build": {
+        "status": "success",
+        "output": "exit_code=0; timed_out=False; output_limit=False\nSTDOUT:\n\n> mini-agent-task-acceptance@1.0.0 build\n> tsc --noEmit && vite build\n\n\u001b[36mvite v6.4.4 \u001b[32mbuilding for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 76 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                \u001b[39m\u001b[1m\u001b[2m  0.21 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip:  0.17 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-AhX-ehWC.js  \u001b[39m\u001b[1m\u001b[2m276.05 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 85.50 kB\u001b[22m\n\u001b[32m✓ built in 1.50s\u001b[39m\n\nSTDERR:\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/QueryClientProvider.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/HydrationBoundary.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/HydrationBoundary.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/IsRestoringProvider.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/IsRestoringProvider.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/QueryErrorResetBoundary.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/QueryErrorResetBoundary.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useQueries.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useQueries.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useInfiniteQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useInfiniteQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useIsFetching.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useIsFetching.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useMutation.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useMutation.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useMutationState.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useMutationState.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useSuspenseInfiniteQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useSuspenseInfiniteQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useSuspenseQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useSuspenseQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useSuspenseQueries.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useSuspenseQueries.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/errorBoundaryUtils.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/errorBoundaryUtils.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useBaseQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useBaseQuery.js\" was ignored.\u001b[39m\n"
+      }
+    },
+    "saved_browser_task": {
+      "title": "Browser edited",
+      "priority": 1,
+      "id": 13
+    },
+    "browser_diagnostics": {
+      "url": "http://127.0.0.1:5173/",
+      "events_seen": 0,
+      "dropped_older_events": 0,
+      "events": [],
+      "notice": "Only console errors/warnings, JS exceptions, failed requests and HTTP >=400 are captured; no request bodies or headers."
+    },
+    "screenshot": {
+      "output": "screenshots/final.png",
+      "bytes": 28771
+    },
+    "process_cleanup": true
+  },
+  "C_independent": {
+    "baseline_typecheck": "command_failed",
+    "workspace": "<QA_REPO>\\.state\\qa-clean\\scenario-C",
+    "resumed_after_failure": true,
+    "checks": {
+      "backend_test": {
+        "status": "success",
+        "output": "exit_code=0; timed_out=False; output_limit=False\nSTDOUT:\n.                                                                        [100%]\r\n1 passed in 0.87s\r\n\nSTDERR:\n"
+      },
+      "frontend_typecheck": {
+        "status": "success",
+        "output": "exit_code=0; timed_out=False; output_limit=False\nSTDOUT:\n\n> mini-agent-task-acceptance@1.0.0 typecheck\n> tsc --noEmit\n\n\nSTDERR:\n"
+      },
+      "frontend_build": {
+        "status": "success",
+        "output": "exit_code=0; timed_out=False; output_limit=False\nSTDOUT:\n\n> mini-agent-task-acceptance@1.0.0 build\n> tsc --noEmit && vite build\n\n\u001b[36mvite v6.4.4 \u001b[32mbuilding for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 72 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                \u001b[39m\u001b[1m\u001b[2m  0.21 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip:  0.17 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-wTglCTju.js  \u001b[39m\u001b[1m\u001b[2m266.43 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 82.18 kB\u001b[22m\n\u001b[32m✓ built in 1.41s\u001b[39m\n\nSTDERR:\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/QueryErrorResetBoundary.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/QueryErrorResetBoundary.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/QueryClientProvider.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/IsRestoringProvider.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/IsRestoringProvider.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/HydrationBoundary.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/HydrationBoundary.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useQueries.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useQueries.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useInfiniteQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useInfiniteQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useIsFetching.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useIsFetching.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useMutationState.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useMutationState.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useMutation.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useMutation.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useSuspenseQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useSuspenseQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useSuspenseInfiniteQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useSuspenseInfiniteQuery.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useSuspenseQueries.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useSuspenseQueries.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/errorBoundaryUtils.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/errorBoundaryUtils.js\" was ignored.\u001b[39m\n\u001b[33mnode_modules/@tanstack/react-query/build/modern/useBaseQuery.js (1:0): Module level directives cause errors when bundled, \"use client\" in \"node_modules/@tanstack/react-query/build/modern/useBaseQuery.js\" was ignored.\u001b[39m\n"
+      }
+    },
+    "saved_browser_task": {
+      "title": "Browser edited",
+      "id": 3
+    },
+    "browser_diagnostics": {
+      "url": "http://127.0.0.1:5173/",
+      "events_seen": 0,
+      "dropped_older_events": 0,
+      "events": [],
+      "notice": "Only console errors/warnings, JS exceptions, failed requests and HTTP >=400 are captured; no request bodies or headers."
+    },
+    "screenshot": {
+      "output": "screenshots/final.png",
+      "bytes": 11759
+    },
+    "process_cleanup": true
+  },
+  "review": {
+    "method": "OCR deterministic preview/rules; two read-only agents; three bounded rounds",
+    "resolved": [
+      "Corepack",
+      "pnpm cache",
+      "file input value privacy",
+      "cleanup finally",
+      "hook AST oracle",
+      "UTF-8",
+      "Windows extended-path containment"
+    ],
+    "remaining_blocking_findings": 0
+  },
+  "verdict": {
+    "strict_primary_scenarios_passed": 1,
+    "strict_primary_scenarios_total": 3,
+    "recommend_main_merge": false,
+    "draft_only": true,
+    "unverified": [
+      "real-model recovery fix after service 403",
+      "general multi-project/multi-model stability",
+      "LLM autonomous remote GitHub delivery",
+      "production migration",
+      "Windows symlink"
+    ]
+  },
+  "maturity": {
+    "understanding": 4,
+    "editing": 4,
+    "fullstack": 3,
+    "tools": 2,
+    "debugging": 3,
+    "testing": 4,
+    "recovery": 3,
+    "closed_loop": 2,
+    "github_delivery": 3
+  },
+  "delivery": {
+    "status": "pending Draft PR and QA CI"
+  }
+}
