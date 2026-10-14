@@ -72,11 +72,14 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
             name == "run_fullstack_checks"
             or (name == "run_dev_task" and args.get("task", "test") in _TEST_TASK_NAMES)
             or (name == "run_command" and (
-                (args.get("command", "").lower().split("/")[-1].split("\\")[-1]
-                 in {"python", "python.exe", "py", "py.exe", "pytest", "pytest.exe"})
-                and any(
-                    str(arg).lower() in {"pytest", "unittest", "test", "-m"}
-                    for arg in args.get("args", [])
+                str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
+                in {"python", "python.exe", "py", "py.exe", "pytest", "pytest.exe"}
+                and (
+                    str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
+                    in {"pytest", "pytest.exe"}
+                    or args.get("args", [])[:2] in (
+                        ["-m", "pytest"], ["-m", "unittest"],
+                    )
                 )
             ))
         )
