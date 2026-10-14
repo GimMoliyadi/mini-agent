@@ -441,7 +441,7 @@ set_task_plan(...)
 - `inspect_code_symbols(path=".", query="", max_results=60)`：解析 Python、JavaScript、TypeScript、TSX 文件，定位函数、类、方法、接口和部分变量声明，返回文件、行号、列号和简短源码。
 - `find_code_references(symbol, path=".", max_results=60)`：按语法树寻找标识符出现的位置，不把普通文本字符串或代码注释当作引用；这是包括定义在内的候选使用点，并不是完整语义引用或调用图。
 
-可选安装 `pip install -e ".[code_index]"` 使用成熟的 [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) 和 [tree-sitter-language-pack](https://docs.tree-sitter-language-pack.xberg.io/)。实际调用时会在所选目录内限量扫描，自动跳过 `.git`、`node_modules` 和缓存目录，不自动执行待分析的源码。此能力面向理解大型陌生 Python/React/Vue 项目，不要求先搭建 LSP 服务器。
+可选安装 `pip install -e ".[code_index]"` 使用成熟的 [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) 和 Python、JavaScript、TypeScript 的独立语法 wheel（包含 TSX）。语法随依赖安装，代码索引运行时无需联网下载或依赖用户缓存。实际调用时会在所选目录内限量扫描，自动跳过 `.git`、`node_modules` 和缓存目录，不自动执行待分析的源码。此能力面向理解大型陌生 Python/React/Vue 项目，不要求先搭建 LSP 服务器。
 
 ## 自动浏览器错误诊断
 
@@ -456,7 +456,7 @@ Agent 可按「`dev_server` 启动 → Playwright 点击/填写 → `browser_dia
 ## Playwright 本地浏览器操作
 
 可选安装 `pip install -e ".[browser]"` 并执行 `playwright install chromium`。然后在 mini-agent 的同一次运行里使用 `browser_action`：
-`action="open"` 打开 `http://127.0.0.1:5173`；`action="click"` 点击 CSS selector；`action="fill"` 填表；`action="inspect"` 读取 DOM 文本；`action="close"` 结束本轮浏览器。
+`action="open"` 打开 `http://127.0.0.1:5173`；`action="click"` 点击 CSS selector；`action="fill"` 填表；`action="inspect"` 读取 DOM 文本及普通表单控件的 value（排除 password、hidden、file）；`action="close"` 结束本轮浏览器。
 浏览器状态在当前 AgentApplication 内持续，应用退出时自动关闭。后端使用 Playwright Chromium，无需实现一套浏览器控制协议。为聚焦本地开发，初始 URL 仅支持 localhost/127.0.0.1/::1 的指定端口。
 
 `browser_screenshot(output_path="screenshots/browser.png")` 会将当前页面 PNG 保存到工作区，可用于后续 UI 修正。该写入同样保留项目允许路径和 ASK 审批，并登记到现有变更日志。截图及浏览器实际操作需要已经启动本地开发服务器，功能工具不负责替用户启动服务器，也不声称本轮完成真实浏览器联调。

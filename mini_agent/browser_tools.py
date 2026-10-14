@@ -182,11 +182,21 @@ class BrowserSession:
         page = self._page()
         if len(selector) > 256:
             raise ValueError("CSS selector 过长")
-        text = page.locator(selector).first.inner_text(timeout=5000)
-        return {
+        locator = page.locator(selector).first
+        text = locator.inner_text(timeout=5000)
+        result = {
             "url": page.url, "title": page.title(), "selector": selector,
             "text": text[:_MAX_TEXT], "truncated": len(text) > _MAX_TEXT,
         }
+        value = locator.evaluate(
+            "el => ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) "
+            "&& !['password', 'hidden', 'file'].includes(el.type) ? el.value : null",
+            timeout=5000,
+        )
+        if value is not None:
+            result["value"] = sandbox.redact_text(value[:_MAX_TEXT])
+            result["truncated"] = result["truncated"] or len(value) > _MAX_TEXT
+        return result
 
     def click(self, selector: str) -> dict[str, Any]:
         page = self._page()
@@ -227,6 +237,7 @@ def build_browser_tools(session: BrowserSession) -> list[Any]:
         Starts a local Chromium on first open. The browser session persists for
         this AgentApplication lifetime only, including multiple tool calls.
         Browser must be installed as optional dependency and Chromium provisioned.
+        Inspect includes ordinary form values, excluding password, hidden and file inputs.
         """
         try:
             result = session.invoke(action, url, selector, value)

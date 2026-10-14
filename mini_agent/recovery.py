@@ -88,11 +88,17 @@ RECOVERY_PROMPTS = {
 }
 
 
-def recovery_message(category: str) -> str:
+def recovery_message(category: str, failed_tools: list[str] | None = None) -> str:
     """Short stable guidance; model still sees its own full checkpoint history."""
     guidance = RECOVERY_PROMPTS[category]
+    failures = (
+        "当前未解决的失败工具（诊断数据）：" + json.dumps(failed_tools, ensure_ascii=False)
+        + "。请核对这些失败的前提和参数；其他成功调用不能证明这些失败已解决。"
+        if failed_tools else ""
+    )
     return (
         "自动恢复回合（仍是同一个任务和工作区）。" + guidance
+        + failures
         + "先检查工具执行结果，避免重复已经成功的文件/外部副作用。"
         + "遵守原审批、路径、测试与资源限制；无法继续时明确列出阻碍，不要声称完成。"
     )

@@ -106,6 +106,15 @@ def remove_venv_link(link: Path) -> None:
         link.unlink()
 
 
+def extended_windows_path(path: Path) -> str:
+    absolute = str(path.resolve())
+    if os.name != "nt" or absolute.startswith("\\\\?\\"):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
 @contextmanager
 def isolated_project(source: Path):
     # Windows runners can supply an 8.3 TEMP path; fixtures and runtime must
@@ -125,6 +134,8 @@ def isolated_project(source: Path):
         # Windows Git may leave read-only loose objects and AV scanners can
         # briefly hold handles after pytest's temporary repositories exit.
         # Retry only our canonical mkdtemp directory, never the source tree.
+        cleanup_root = extended_windows_path(temporary_root)
+        containment_root = Path(cleanup_root).resolve()
         for attempt in range(20):
             try:
                 def on_remove_error(operation, path, exc_info):
@@ -132,12 +143,12 @@ def isolated_project(source: Path):
                     target = Path(path)
                     if os.name != "nt" or not isinstance(error, PermissionError):
                         raise error
-                    if is_link(target) or not target.absolute().is_relative_to(temporary_root):
+                    if is_link(target) or not target.resolve().is_relative_to(containment_root):
                         raise PermissionError("拒绝修改临时目录之外的路径权限") from error
                     target.chmod(stat.S_IWRITE | stat.S_IREAD)
                     operation(path)
 
-                shutil.rmtree(temporary_root, onerror=on_remove_error)
+                shutil.rmtree(cleanup_root, onerror=on_remove_error)
                 break
             except PermissionError:
                 if os.name != "nt" or attempt == 19:

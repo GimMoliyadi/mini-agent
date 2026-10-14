@@ -61,6 +61,26 @@ def test_stalled_recovery_stops_after_one_attempt(settings):
     assert any(e["event"] == "recovery_stopped" and e["reason"] == "no_progress" for e in result["trace"])
 
 
+def test_recovery_identifies_the_unresolved_tool_and_repairs_its_precondition(settings):
+    model = ScriptedModel(replies=[
+        call("update_task_step", step_id=1, status="in_progress"),
+        "Finished.",
+        call("set_task_plan", steps=["Repair planning precondition", "Verify recovered planning state"]),
+        call("update_task_step", step_id=1, status="in_progress"),
+        call("update_task_step", step_id=1, status="completed", note="Planning precondition repaired"),
+        call("update_task_step", step_id=2, status="in_progress"),
+        call("update_task_step", step_id=2, status="completed", note="Recovered plan verified"),
+        "Recovered and completed.",
+    ])
+    with AgentApplication(settings, model=model) as app:
+        result = app.run("Verify planning recovery", auto_recover=True)
+        messages = app.graph.get_state(app.config(result["session_id"])).values["messages"]
+    assert result["status"] == "completed", result
+    assert any(message.type == "human" and "失败工具（诊断数据）" in str(message.content)
+               and '"update_task_step"' in str(message.content) for message in messages)
+    assert sum(event["event"] == "recovery_started" for event in result["trace"]) == 1
+
+
 def test_blocked_plan_is_not_retried(settings):
     model = ScriptedModel(replies=[
         call("set_task_plan", steps=["Investigate", "Fix"]),

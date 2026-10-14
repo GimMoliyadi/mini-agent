@@ -1,7 +1,27 @@
 import shutil
+import os
+import stat
+from pathlib import Path
 from unittest.mock import patch
 
 from scripts.check import ignored_entries, isolated_project
+
+
+def test_isolated_cleanup_handles_deep_package_cache(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    with isolated_project(source) as (project, _):
+        target = project / "node_modules" / ".cache" / ("a" * 80) / ("b" * 80) / ("c" * 80)
+        deep = Path("\\\\?\\" + str(target)) if os.name == "nt" else target
+        deep.mkdir(parents=True)
+        package = deep / "package.js"
+        package.write_text("fixture", encoding="utf-8")
+        if os.name == "nt":
+            package.chmod(stat.S_IREAD)
+        temporary_root = project.parent
+    assert not temporary_root.exists()
+    assert (source / "module.py").is_file()
 
 
 def test_temp_path_alias_is_canonical_before_building_child_environment(tmp_path):
