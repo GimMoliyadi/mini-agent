@@ -6,6 +6,7 @@ import json
 
 from .state import TaskState
 from .planning import plan_summary
+from .development_workflow import evaluate_workflow
 from .tools.command import run_command
 from .verifier import (
     CodingTaskContract, TaskState as VerificationFacts, TaskStatus,
@@ -87,6 +88,12 @@ class VerificationMiddleware(AgentMiddleware):
         # Blocked steps also count as incomplete, but the checkpoint stays
         # available for an explicit continuation of the same task.
         unfinished = bool(plan is not None and plan["completed"] != plan["total"])
+        workflow = evaluate_workflow(state)
+        workflow_unfinished = bool(workflow is not None and not workflow["complete"])
+        if workflow_unfinished:
+            self.events.emit("development_workflow_incomplete", task_id=state.get("task_id"),
+                             next_stage=workflow["next_stage"], completed=workflow["completed"],
+                             total=workflow["total"])
         if unfinished:
             self.events.emit(
                 "plan_incomplete", task_id=state.get("task_id"),
@@ -94,7 +101,8 @@ class VerificationMiddleware(AgentMiddleware):
                 total=plan["total"] if plan else 0,
             )
         if not state.get("contract"):
-            return {"status": "completed" if answer.content and not failures and not unfinished else "incomplete"}
+            return {"status": "completed" if answer.content and not failures and not unfinished
+                    and not workflow_unfinished else "incomplete"}
         contract = CodingTaskContract.from_dict(state["contract"])
         facts = verification_facts(state)
         gate = evaluate_finish_request(contract, facts, self.settings.workspace)
@@ -112,4 +120,5 @@ class VerificationMiddleware(AgentMiddleware):
         )
         self.events.emit("verification", task_id=state.get("task_id"), accepted=verification["accepted"])
         return {"verification": verification,
-                "status": "completed" if verification["accepted"] and not unfinished else "incomplete"}
+                "status": "completed" if verification["accepted"] and not unfinished
+                and not workflow_unfinished else "incomplete"}

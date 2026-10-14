@@ -14,3 +14,4 @@ class TaskState(AgentState):
     preconditions: NotRequired[dict]
     verification: NotRequired[dict | None]
     status: NotRequired[str]
+    development_workflow: NotRequired[dict | None]
