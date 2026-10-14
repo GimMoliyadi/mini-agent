@@ -5,6 +5,7 @@ import importlib
 import math
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -45,6 +46,9 @@ def command_environment(workspace: Path) -> dict[str, str]:
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPYCACHEPREFIX": str(workspace / "__pycache__" / uuid.uuid4().hex),
         "TMP": str(workspace), "TEMP": str(workspace), "HOME": str(workspace), "USERPROFILE": str(workspace),
+        # Keep package-manager cache out of source snapshots and navigation.
+        "npm_config_cache": str(workspace / "node_modules" / ".cache" / "npm"),
+        "NODE_COMPILE_CACHE": str(workspace / "node_modules" / ".cache" / "node"),
         "AGENT_WORKSPACE": str(workspace), "MINI_AGENT_STATE_DIR": str(workspace),
         "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CEILING_DIRECTORIES": str(workspace.parent),
@@ -196,6 +200,11 @@ def _close_process_handles(process: subprocess.Popen) -> None:
 
 
 def _start_process(argv: list[str], cwd: Path, environment: dict) -> tuple[subprocess.Popen, _WindowsJob | None]:
+    if argv and argv[0] == "pnpm":
+        environment = {**environment, "npm_config_store_dir": str(
+            Path(environment["AGENT_WORKSPACE"]) / "node_modules" / ".cache" / "pnpm",
+        )}
+    argv = node_package_command(argv, environment)
     job = _WindowsJob() if sys.platform == "win32" else None
     options = {"creationflags": _WINDOWS_CREATE_SUSPENDED} if job else {"start_new_session": True}
     process = None
@@ -212,6 +221,29 @@ def _start_process(argv: list[str], cwd: Path, environment: dict) -> tuple[subpr
             process.wait(timeout=PROCESS_CLEANUP_TIMEOUT_SECONDS)
             _close_process_handles(process)
         raise
+
+
+def node_package_command(argv: list[str], environment: dict) -> list[str]:
+    """Run Windows package-manager JS entries without a cmd.exe wrapper."""
+    if sys.platform != "win32" or not argv or argv[0] not in {"npm", "pnpm"}:
+        return argv
+    manager = shutil.which(argv[0], path=environment.get("PATH"))
+    node = shutil.which("node", path=environment.get("PATH"))
+    if not manager or not node:
+        raise FileNotFoundError(f"{argv[0]} requires an installed Node.js executable")
+    if Path(manager).suffix.lower() != ".cmd":
+        return [manager, *argv[1:]]
+    entry_name = "npm-cli.js" if argv[0] == "npm" else "pnpm.cjs"
+    directory = Path(manager).parent
+    if directory.name.lower() == "shims" and directory.parent.name.lower() == "corepack":
+        entry = directory.parent / "dist" / f"{argv[0]}.js"
+    elif "\\corepack\\dist\\" in Path(manager).read_text(encoding="utf-8").lower():
+        entry = directory / "node_modules" / "corepack" / "dist" / f"{argv[0]}.js"
+    else:
+        entry = directory / "node_modules" / argv[0] / "bin" / entry_name
+    if not entry.is_file():
+        raise FileNotFoundError(f"Package-manager JavaScript entry not found: {entry}")
+    return [node, str(entry), *argv[1:]]
 
 
 def _stop_process_tree(process: subprocess.Popen, job: _WindowsJob | None) -> None:

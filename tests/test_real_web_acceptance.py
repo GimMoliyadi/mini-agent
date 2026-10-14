@@ -8,17 +8,21 @@ It is not part of the hermetic/offline default regression.
 from __future__ import annotations
 
 import json
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import subprocess
 import sys
+import sysconfig
+import threading
 import time
 
 import pytest
 
 from helpers import ScriptedModel, call
 from mini_agent.browser_tools import BrowserSession
-from mini_agent.dev_servers import DevServerManager
+from mini_agent.dev_servers import DevServerManager, _port_reachable
 from mini_agent.fullstack_checks import run_fullstack_checks
 from mini_agent.runtime import AgentApplication
 from mini_agent.settings import Settings
@@ -155,10 +159,18 @@ def _install_dependencies(root: Path) -> None:
          str(root / "backend" / ".venv")],
         check=True, timeout=45,
     )
-    subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=root / "frontend", check=True, timeout=180,
+    site = root / "backend" / ".venv" / (
+        "Lib/site-packages" if os.name == "nt" else
+        f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
     )
+    (site / "acceptance-dependencies.pth").write_text(
+        sysconfig.get_path("purelib") + "\n", encoding="utf-8",
+    )
+    installed = dev._execute(
+        ["npm", "install", "--no-audit", "--no-fund"],
+        root / "frontend", root, timeout=180,
+    )
+    assert installed.status == "success", installed.text
 
 
 def _wait_for_server(manager: DevServerManager, name: str) -> None:
@@ -270,6 +282,42 @@ def test_actual_fastapi_react_openapi_and_chromium_flow(tmp_path):
         assert screenshot["bytes"] > 100
         assert (root / screenshot["output"]).read_bytes().startswith(b"\x89PNG")
     finally:
-        browser.shutdown()
-        servers.close()
+        try:
+            browser.shutdown()
+        finally:
+            servers.close()
     assert not servers.servers
+    assert not any(_port_reachable(port) for port in (8000, 5173))
+
+
+def test_actual_browser_inspects_form_values_without_passwords(tmp_path):
+    (tmp_path / "index.html").write_text(
+        '<input id="title" value="Existing task">'
+        '<textarea id="notes">Task notes</textarea>'
+        '<select id="priority"><option value="3" selected>High</option></select>'
+        '<input id="password" type="password" value="private-value">'
+        '<input id="upload" type="file">', encoding="utf-8",
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(tmp_path)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    browser = BrowserSession(tmp_path)
+    try:
+        browser.invoke("open", f"http://127.0.0.1:{server.server_port}/", "body", "")
+        assert browser.invoke("inspect", "", "#title", "")["value"] == "Existing task"
+        browser.invoke("fill", "", "#title", "Edited task")
+        assert browser.invoke("inspect", "", "#title", "")["value"] == "Edited task"
+        assert browser.invoke("inspect", "", "#notes", "")["value"] == "Task notes"
+        assert browser.invoke("inspect", "", "#priority", "")["value"] == "3"
+        assert "value" not in browser.invoke("inspect", "", "#password", "")
+        browser.executor.submit(lambda: browser.page.locator("#upload").set_input_files(
+            {"name": "synthetic-private-name.txt", "mimeType": "text/plain", "buffer": b"fixture"}
+        )).result(timeout=10)
+        assert "value" not in browser.invoke("inspect", "", "#upload", "")
+    finally:
+        try:
+            browser.shutdown()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)

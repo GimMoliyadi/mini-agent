@@ -43,7 +43,7 @@ from .sandbox import redact_text
 from .settings import Settings
 from .state import TaskState
 from .tools.registry import build_tools
-from .verification import VerificationMiddleware
+from .verification import VerificationMiddleware, unresolved_tool_failures
 from .verifier import CodingTaskContract, coding_task_guidance, snapshot_workspace
 from .runtime_guards import RunBudget, budget_context
 import os
@@ -319,7 +319,9 @@ class AgentApplication:
                             attempt=attempt, category=decision.category,
                         )
                         execute({
-                            "messages": [{"role": "user", "content": recovery_message(decision.category)}],
+                            "messages": [{"role": "user", "content": recovery_message(
+                                decision.category, unresolved_tool_failures(state_now),
+                            )}],
                             "status": "running",
                         })
             self.events.emit("budget", task_id=task_id, **budget.snapshot())

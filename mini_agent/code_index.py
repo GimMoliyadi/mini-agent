@@ -1,4 +1,4 @@
-"""Cross-language source navigation using the mature Tree-sitter grammar pack.
+"""Cross-language source navigation using installed Tree-sitter grammar wheels.
 
 Read-only, bounded syntax-tree scanning; unlike text grep this excludes
 comments and string literals. Identifiers are *candidate* references and do
@@ -8,6 +8,7 @@ not resolve imports, scopes, or type information across files.
 from __future__ import annotations
 
 import json
+import importlib
 from pathlib import Path
 import re
 from typing import Any
@@ -43,13 +44,15 @@ _MAX_RESULTS = 80
 
 def _parser(language: str) -> Any:
     try:
-        from tree_sitter import Parser
-        from tree_sitter_language_pack import get_language
+        from tree_sitter import Language, Parser
+        module_name = "typescript" if language == "tsx" else language
+        grammar = importlib.import_module(f"tree_sitter_{module_name}")
     except ImportError as exc:
         raise ValueError(
             "多语言代码索引需安装可选依赖：pip install -e '.[code_index]'"
         ) from exc
-    return Parser(get_language(language))
+    entry = (f"language_{language}" if language in {"typescript", "tsx"} else "language")
+    return Parser(Language(getattr(grammar, entry)()))
 
 
 def _scan(

@@ -2,6 +2,7 @@
 
 import ast
 import json
+import runpy
 
 import pytest
 
@@ -108,3 +109,35 @@ def test_alembic_status_uses_backend_project_python_and_never_upgrades(project, 
     assert status.status == "success"
     assert calls[0][1:] == ["-m", "alembic", "-c", "alembic.ini", "heads"]
     assert "upgrade" not in calls[0]
+
+
+def test_generated_revision_executes_and_rolls_back_real_sqlite(project):
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    pytest.importorskip("alembic")
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    output = "backend/alembic/versions/abcdef_tasks.py"
+    result = migration.generate_alembic_migration(
+        workspace=project, backend_path="backend", output_path=output,
+        revision="abcdef", down_revision=None, message="Create tasks",
+        changes=[{"action": "create_table", "table": "tasks", "columns": [
+            {"name": "id", "type": "Integer", "primary_key": True, "nullable": False},
+            {"name": "title", "type": "String", "length": 100, "nullable": False},
+        ]}, {"action": "create_index", "name": "ix_tasks_title", "table": "tasks",
+             "columns": ["title"]}],
+    )
+    assert result.status == "success"
+    revision = runpy.run_path(str(project / output))
+    engine = sqlalchemy.create_engine(f"sqlite:///{project / 'migration.db'}")
+    try:
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                revision["upgrade"]()
+                connection.exec_driver_sql("INSERT INTO tasks (title) VALUES ('verified')")
+                assert connection.exec_driver_sql("SELECT title FROM tasks").scalar_one() == "verified"
+                assert sqlalchemy.inspect(connection).get_indexes("tasks")[0]["name"] == "ix_tasks_title"
+                revision["downgrade"]()
+                assert "tasks" not in sqlalchemy.inspect(connection).get_table_names()
+    finally:
+        engine.dispose()
