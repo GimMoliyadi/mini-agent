@@ -111,7 +111,7 @@ def _prepare_workspace(root: Path) -> None:
         },
         "dependencies": {
             "@tanstack/react-query": "^5.0.0",
-            "openapi-fetch": "^0.15.0",
+            "openapi-fetch": "^0.17.0",
             "openapi-react-query": "^0.5.0",
             "react": "^19.0.0",
             "react-dom": "^19.0.0",
