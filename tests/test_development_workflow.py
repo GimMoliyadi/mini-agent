@@ -162,3 +162,120 @@ def test_screenshot_is_not_a_new_source_mutation_and_pip_is_not_a_test():
         ),
     ]
     assert evaluate_workflow(state)["complete"] is True
+
+
+
+def test_zero_test_and_successful_command_without_evidence_do_not_complete():
+    state = _workflow_state(
+        _call("read_file", "inspect"), _done("read_file", "inspect"),
+        _call("write_file", "write"), _done("write_file", "write", mutation=True),
+    )
+    state["messages"] += [
+        _call("run_command", "no-tests", {"command": "python", "args": ["-m", "pytest", "-q"]}),
+        ToolMessage(
+            name="run_command", tool_call_id="no-tests", status="success",
+            content="Exit code: 0\nSTDOUT:\nno tests ran in 0.01s",
+            artifact={"status": "success"},
+        ),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "test"
+    state["messages"] += [
+        _call("run_command", "empty", {"command": "python", "args": ["-m", "pytest", "-q"]}),
+        ToolMessage(
+            name="run_command", tool_call_id="empty", status="success",
+            content="Exit code: 0\nSTDOUT:\nall checked",
+            artifact={"status": "success"},
+        ),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "test"
+    state["messages"] += [
+        _call("run_command", "actual", {"command": "python", "args": ["-m", "pytest", "-q"]}),
+        _done("run_command", "actual"),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "review"
+
+
+def test_fullstack_checks_require_both_actual_results():
+    state = _workflow_state(
+        _call("read_file", "read"), _done("read_file", "read"),
+        _call("write_file", "change"), _done("write_file", "change", mutation=True),
+    )
+    state["messages"] += [
+        _call("run_fullstack_checks", "fake"),
+        ToolMessage(
+            name="run_fullstack_checks", tool_call_id="fake",
+            content="Backend failed", status="success",
+            artifact={"status": "success", "metadata": {"both_passed": False}},
+        ),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "test"
+    state["messages"] += [
+        _call("run_fullstack_checks", "real"),
+        _done("run_fullstack_checks", "real"),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "review"
+
+
+def test_browser_reports_and_code_review_findings_block_completion():
+    state = _workflow_state(browser=True)
+    state["messages"] = [
+        _call("read_file", "read"), _done("read_file", "read"),
+        _call("write_file", "write"), _done("write_file", "write", mutation=True),
+        _call("run_dev_task", "tests", {"task": "test"}), _done("run_dev_task", "tests"),
+        _call("browser_action", "open", {"action": "open"}), _done("browser_action", "open"),
+    ]
+    state["messages"] += [
+        _call("browser_diagnostics", "with-errors"),
+        ToolMessage(
+            name="browser_diagnostics", tool_call_id="with-errors", status="success",
+            content=json.dumps({
+                "url": "http://127.0.0.1:5173", "events": [
+                    {"kind": "http_error", "message": "HTTP 500"}
+                ], "dropped_older_events": 0,
+            }),
+            artifact={"status": "success"},
+        ),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "browser"
+    state["messages"] += [
+        _call("browser_diagnostics", "clean"), _done("browser_diagnostics", "clean"),
+        _call("review_code_changes", "syntax-error"),
+        ToolMessage(
+            name="review_code_changes", tool_call_id="syntax-error",
+            content=json.dumps({
+                "changed_files": ["app.py"], "findings": [
+                    {"severity": "error", "code": "PY_SYNTAX"}
+                ], "truncated": False,
+            }), status="success", artifact={"status": "success"},
+        ),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "review"
+    state["messages"] += [
+        _call("review_code_changes", "complete-review"),
+        _done("review_code_changes", "complete-review"),
+    ]
+    assert evaluate_workflow(state)["complete"] is True
+
+
+def test_review_truncation_and_diagnostics_before_open_do_not_count():
+    state = _workflow_state(browser=True)
+    state["messages"] = [
+        _call("read_file", "read"), _done("read_file", "read"),
+        _call("write_file", "write"), _done("write_file", "write", mutation=True),
+        _call("run_dev_task", "test"), _done("run_dev_task", "test"),
+        _call("browser_diagnostics", "before-open"), _done("browser_diagnostics", "before-open"),
+        _call("browser_action", "open", {"action": "open"}), _done("browser_action", "open"),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "browser"
+    state["messages"] += [
+        _call("browser_diagnostics", "after-open"), _done("browser_diagnostics", "after-open"),
+        _call("review_code_changes", "truncated"),
+        ToolMessage(
+            name="review_code_changes", tool_call_id="truncated",
+            content=json.dumps({
+                "changed_files": ["app.py"], "findings": [],
+                "truncated": True,
+            }), status="success", artifact={"status": "success"},
+        ),
+    ]
+    assert evaluate_workflow(state)["next_stage"] == "review"
