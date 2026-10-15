@@ -16,7 +16,7 @@ def _history(rounds=18):
             "id": f"tool-{i}", "type": "tool_call",
         }]))
         result.append(ToolMessage(
-            content="sample source\n" + "example = 12345\n" * 100,
+            content="sample source\n" + "example = 12345\n" * 40,
             name="read_file", tool_call_id=f"tool-{i}", status="success",
             artifact={"status": "success"},
         ))
