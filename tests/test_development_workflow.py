@@ -279,3 +279,37 @@ def test_review_truncation_and_diagnostics_before_open_do_not_count():
         ),
     ]
     assert evaluate_workflow(state)["next_stage"] == "review"
+
+
+
+def test_workflow_explains_missing_test_and_review_evidence_to_model():
+    state = _workflow_state(
+        _call("read_file", "read"), _done("read_file", "read"),
+        _call("write_file", "write"), _done("write_file", "write", mutation=True),
+        _call("run_command", "empty", {"command": "python", "args": ["-m", "pytest", "-q"]}),
+        ToolMessage(
+            name="run_command", tool_call_id="empty", status="success",
+            content="Exit code: 0\nSTDOUT:\nno tests ran in 0.01s",
+            artifact={"status": "success"},
+        ),
+    )
+    report = evaluate_workflow(state)
+    assert report["next_stage"] == "test"
+    assert "缺少非零测试数" in report["evidence_issue"]
+    state["messages"] += [
+        _call("run_command", "valid", {"command": "python", "args": ["-m", "pytest", "-q"]}),
+        _done("run_command", "valid"),
+        _call("review_code_changes", "incomplete"),
+        ToolMessage(
+            name="review_code_changes", tool_call_id="incomplete", status="success",
+            content=json.dumps({"changed_files": ["app.py"], "findings": [], "truncated": True}),
+            artifact={"status": "success"},
+        ),
+    ]
+    report = evaluate_workflow(state)
+    assert report["next_stage"] == "review"
+    assert "输出截断" in report["evidence_issue"]
+    state["messages"] += [
+        _call("review_code_changes", "complete"), _done("review_code_changes", "complete"),
+    ]
+    assert evaluate_workflow(state)["evidence_issue"] == ""
