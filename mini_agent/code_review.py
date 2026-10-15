@@ -39,10 +39,20 @@ def _changes(root: Path) -> list[str]:
     return names
 
 
-def review_code_changes(*, workspace: Path) -> str:
+def review_code_changes(*, workspace: Path, paths: list[str] | None = None) -> str:
     """Review current modified and new files with AST/JSON and patch checks."""
     root = workspace.resolve()
-    names = _changes(root)
+    all_names = _changes(root)
+    if paths is not None:
+        if not isinstance(paths, list) or not 1 <= len(paths) <= _MAX_CHANGED:
+            raise ValueError(f"代码审查每批需要 1–{_MAX_CHANGED} 个已修改文件")
+        if any(not isinstance(item, str) or item not in all_names for item in paths):
+            raise ValueError("代码审查只能选择当前 Git 工作区实际改动的文件")
+        if len(set(paths)) != len(paths):
+            raise ValueError("代码审查文件不可重复")
+        names = sorted(paths)
+    else:
+        names = all_names
     checked: list[str] = []
     findings: list[dict[str, Any]] = []
     truncated = len(names) > _MAX_CHANGED
@@ -105,6 +115,7 @@ def review_code_changes(*, workspace: Path) -> str:
 
     raw = git_workflow._git(root, [
         "diff", "HEAD", "--no-ext-diff", "--no-textconv", "--unified=3", "--",
+        *names[:_MAX_CHANGED],
     ]).decode("utf-8", errors="replace")
     # Changes to untracked files aren't in git diff HEAD; AST checks still cover them.
     raw = sandbox.redact_text(raw)
@@ -112,6 +123,7 @@ def review_code_changes(*, workspace: Path) -> str:
         raw = raw[:_MAX_DIFF_CHARS] + "\n[patch truncated]"
         truncated = True
     result: dict[str, Any] = {
+        "all_changed_files": all_names,
         "changed_files": names[:_MAX_CHANGED],
         "files_inspected": checked, "findings": findings,
         "diff_excerpt": raw,
@@ -139,15 +151,18 @@ def build_code_review_tools(workspace: Path) -> list[Any]:
     root = workspace.resolve()
 
     @tool
-    def review_code_changes_tool() -> str:
+    def review_code_changes_tool(paths: list[str] | None = None) -> str:
         """Review current Git working-tree changes for syntax, JSON and risky patterns.
 
         Return changed paths, Python syntax errors, mutable defaults, bare
         except, JSON parse errors, missing test changes and bounded git diff.
+        Supply paths to inspect a smaller batch of currently changed files when
+        the all-file diff is truncated. Returned all_changed_files is the full
+        coverage target; every changed file must be reviewed before finish.
         Inspect returned patch to perform semantic review using the existing
         coding model; this does not claim to replace a human code review.
         """
-        return review_code_changes(workspace=root)
+        return review_code_changes(workspace=root, paths=paths)
 
     review_code_changes_tool.name = "review_code_changes"
     review_code_changes_tool.metadata = {"risk": "read", "mutation": False}
