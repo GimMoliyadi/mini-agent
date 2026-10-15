@@ -1,5 +1,7 @@
 """Checkpointed workflow milestones derive from actual tool messages, not text."""
 
+import json
+
 from langchain_core.messages import AIMessage, ToolMessage
 
 from helpers import ScriptedModel, call
@@ -15,12 +17,25 @@ def _call(name, ident, args=None):
 
 
 def _done(name, ident, *, successful=True, mutation=False):
+    content = "ok"
+    metadata = {}
+    if name == "run_dev_task":
+        content = "exit_code=0; timed_out=False; output_limit=False\nSTDOUT:\n2 passed in 0.01s\nSTDERR:"
+        metadata = {"returncode": 0, "timed_out": False, "output_limit_exceeded": False}
+    elif name == "run_command":
+        content = "Exit code: 0\nTimed out: false\nOutput limit exceeded: false\nSTDOUT:\n2 passed in 0.01s"
+    elif name == "run_fullstack_checks":
+        metadata = {"both_passed": True}
+    elif name == "browser_diagnostics":
+        content = json.dumps({"url": "http://127.0.0.1:5173/", "events": [], "dropped_older_events": 0})
+    elif name == "review_code_changes":
+        content = json.dumps({"changed_files": ["app.py"], "findings": [], "truncated": False})
     return ToolMessage(
-        content="ok" if successful else "failed",
+        content=content if successful else "failed",
         name=name, tool_call_id=ident,
         status="success" if successful else "error",
         artifact={"status": "success" if successful else "command_failed",
-                  "mutation": mutation},
+                  "mutation": mutation, "metadata": metadata},
     )
 
 
