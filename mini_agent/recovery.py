@@ -13,6 +13,7 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 
 from .planning import plan_summary
+from .development_workflow import evaluate_workflow
 from .verification import unresolved_tool_failures
 
 
@@ -55,6 +56,9 @@ def decide_recovery(state: dict[str, Any], pending_nodes: tuple[str, ...]) -> Re
         return RecoveryDecision(True, "failed_tool", "tool_failure")
     if plan and plan["completed"] < plan["total"]:
         return RecoveryDecision(True, "unfinished_plan", "plan_progress")
+    workflow = evaluate_workflow(state)
+    if workflow is not None and not workflow["complete"]:
+        return RecoveryDecision(True, "unfinished_workflow", "workflow_progress")
     # Without an unfinished plan, error evidence or a pending contract
     # check, repeated requests cannot be distinguished from wasted quota.
     if state.get("contract") and (state.get("verification") or {}).get("accepted") is False:
@@ -76,7 +80,12 @@ def work_signature(state: dict[str, Any]) -> tuple[str, int, int]:
         if isinstance(message, ToolMessage) and message.status == "success"
         and message.name == "run_command"
     ]
-    return plan_state, len(useful_tools), len(verified_tests)
+    workflow = evaluate_workflow(state)
+    stage_signature = (
+        f"{workflow['completed']}/{workflow['total']}:{workflow['next_stage']}"
+        if workflow is not None else ""
+    )
+    return plan_state + "|" + stage_signature, len(useful_tools), len(verified_tests)
 
 
 RECOVERY_PROMPTS = {
@@ -84,6 +93,9 @@ RECOVERY_PROMPTS = {
     "edit_failure": "上一轮文件修改失败。请重新核对实际文件内容与修改前提，调整补丁后再尝试。",
     "tool_failure": "上一轮工具调用失败。请判断是否能安全恢复；如涉及外部副作用或权限问题，停止并报告。",
     "plan_progress": "开发计划还没有完成。请核对已经完成的步骤，继续下一项可执行工作，不要把计划说明当作完成证据。",
+    "workflow_progress": "开发工作流还有未完成阶段。调用 development_workflow_status 核对下一项，"
+                         "检查真实工具证据后继续完成测试、浏览器验收、代码审查或交付；"
+                         "无法执行的工具请报告准确阻碍。",
     "verification": "验收尚未通过。请查看原任务契约、实际代码变更和指定测试的验证结果，修复缺口。",
 }
 
