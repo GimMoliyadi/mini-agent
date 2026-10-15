@@ -92,11 +92,18 @@ _STAGE_TOOLS = {
 }
 
 
-def focus_model_tools(tools: list[Any], stage: str | None) -> list[Any]:
-    """Limit *visible schemas*, not executable tools or approval boundaries."""
+def focus_model_tools(
+    tools: list[Any], stage: str | None, *,
+    external_tool_names: frozenset[str] = frozenset(),
+) -> list[Any]:
+    """Limit built-in schemas but retain opted-in MCP/custom extension tools.
+
+    Tool exposure never changes the ToolNode registry or permissions. External
+    tools are explicitly identified by AgentApplication during registration.
+    """
     if stage not in _STAGE_TOOLS:
         return list(tools)
-    allowed = _ALWAYS_TOOLS | _STAGE_TOOLS[stage]
+    allowed = _ALWAYS_TOOLS | _STAGE_TOOLS[stage] | external_tool_names
     selected = [
         tool for tool in tools
         if getattr(tool, "name", None) in allowed
@@ -293,6 +300,9 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
 
     state_schema = TaskState
 
+    def __init__(self, *, external_tool_names: frozenset[str] = frozenset()) -> None:
+        self.external_tool_names = external_tool_names
+
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
         evaluation = evaluate_workflow(dict(request.state))
         if evaluation is None or evaluation["complete"]:
@@ -313,7 +323,9 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
             content = content + guidance
         else:
             content = [*content, {"type": "text", "text": guidance}]
-        selected_tools = focus_model_tools(request.tools, next_stage)
+        selected_tools = focus_model_tools(
+            request.tools, next_stage, external_tool_names=self.external_tool_names,
+        )
         return handler(request.override(
             system_message=SystemMessage(content=content),
             tools=selected_tools,
