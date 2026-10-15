@@ -41,6 +41,10 @@ def verification_facts(state: dict) -> VerificationFacts:
 
 def unresolved_tool_failures(state: dict) -> list[str]:
     failures = set()
+    # A failed update_task_step attempted before any plan existed has no side
+    # effect. A *successful* later set_task_plan satisfies exactly that missing
+    # prerequisite; it does not excuse unrelated plan-update errors.
+    missing_plan_errors = set()
     calls = {}
     for message in state["messages"][state["task_start"]:]:
         for call in getattr(message, "tool_calls", []):
@@ -53,8 +57,18 @@ def unresolved_tool_failures(state: dict) -> list[str]:
             key = (message.name or "tool", target, command)
             if message.status == "error":
                 failures.add(key)
+                if (message.name == "update_task_step"
+                        and "当前任务尚无计划" in str(message.content)
+                        and "set_task_plan" in str(message.content)):
+                    missing_plan_errors.add(key)
             else:
                 failures.discard(key)
+                missing_plan_errors.discard(key)
+                if message.name == "set_task_plan":
+                    # Clears only stale calls that failed solely because the
+                    # plan had not been created. Preserve every other error.
+                    failures.difference_update(missing_plan_errors)
+                    missing_plan_errors.clear()
     return sorted({key[0] for key in failures})
 
 
