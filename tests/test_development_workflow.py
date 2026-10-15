@@ -313,3 +313,38 @@ def test_workflow_explains_missing_test_and_review_evidence_to_model():
         _call("review_code_changes", "complete"), _done("review_code_changes", "complete"),
     ]
     assert evaluate_workflow(state)["evidence_issue"] == ""
+
+
+
+def test_review_requires_all_changed_files_across_bounded_batches():
+    state = _workflow_state(
+        _call("read_file", "inspect"), _done("read_file", "inspect"),
+        _call("write_file", "write"), _done("write_file", "write", mutation=True),
+        _call("run_dev_task", "test"), _done("run_dev_task", "test"),
+    )
+
+    def review_result(ident, changed, *, truncated=False, severity=None):
+        return [
+            _call("review_code_changes", ident, {"paths": changed}),
+            ToolMessage(
+                content=json.dumps({
+                    "all_changed_files": ["a.py", "b.py"],
+                    "changed_files": changed,
+                    "truncated": truncated,
+                    "findings": [{"severity": severity}] if severity else [],
+                }),
+                name="review_code_changes", tool_call_id=ident,
+                status="success", artifact={"status": "success"},
+            ),
+        ]
+
+    state["messages"] += review_result("summary", ["a.py", "b.py"], truncated=True)
+    assert evaluate_workflow(state)["next_stage"] == "review"
+    state["messages"] += review_result("one-file", ["a.py"])
+    assert evaluate_workflow(state)["next_stage"] == "review"
+    state["messages"] += review_result("bad-two", ["b.py"], severity="error")
+    assert evaluate_workflow(state)["next_stage"] == "review"
+    state["messages"] += review_result("good-two", ["b.py"])
+    assert evaluate_workflow(state)["complete"] is True
+    state["messages"] += review_result("bad-repeat", ["a.py"], severity="error")
+    assert evaluate_workflow(state)["next_stage"] == "review"
