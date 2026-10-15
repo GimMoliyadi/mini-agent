@@ -60,8 +60,26 @@ def unresolved_tool_failures(state: dict) -> list[str]:
                 [args.get("step_id"), args.get("status")]
                 if message.name == "update_task_step" else None
             )
+            # Project-scoped checks and file-scoped reviews must not treat
+            # success in an unrelated project/file batch as remediation.
+            # Keep the previous path/command matching for edit repair loops.
+            scope_identity = None
+            if message.name == "review_code_changes":
+                scope_identity = ["review", args.get("paths")]
+            elif message.name == "run_fullstack_checks":
+                scope_identity = [
+                    "fullstack", args.get("backend_path", "backend"),
+                    args.get("frontend_path", "frontend"),
+                    args.get("backend_task", "test"),
+                    args.get("frontend_task", "build"),
+                ]
+            elif message.name == "run_dev_task":
+                scope_identity = [
+                    "dev_task", args.get("path", "."), args.get("task", "test"),
+                    args.get("language", "auto"), args.get("script", ""),
+                ]
             command = json.dumps(
-                [args.get("command"), args.get("args"), plan_identity],
+                [args.get("command"), args.get("args"), plan_identity, scope_identity],
                 sort_keys=True,
             )
             key = (message.name or "tool", target, command)
