@@ -172,11 +172,13 @@ class AgentApplication:
             tools.extend(build_github_tools(self.settings))
             if self.settings.rag_chain_url:
                 tools.append(build_rag_tool(self.settings.rag_chain_url, timeout=self.settings.rag_timeout))
+            external_tool_names = {tool.name for tool in self.extra_tools}
             if self.settings.mcp_config_path is not None:
                 bridge = self.stack.enter_context(MCPToolBridge(
                     self.settings.mcp_config_path, timeout=self.settings.mcp_timeout,
                 ))
                 tools.extend(bridge.tools)
+                external_tool_names.update(tool.name for tool in bridge.tools)
             tools.extend(self.extra_tools)
             if len({tool.name for tool in tools}) != len(tools):
                 raise ValueError("工具名称必须唯一")
@@ -190,7 +192,9 @@ class AgentApplication:
                 }))
             middleware.extend([
                 boundary, ContextMiddleware(self.settings.context_tokens, events=self.events, request_timeout=self.settings.request_timeout),
-                DevelopmentWorkflowMiddleware(),
+                DevelopmentWorkflowMiddleware(
+                    external_tool_names=frozenset(external_tool_names),
+                ),
                 VerificationMiddleware(self.settings, self.events),
                 ModelCallLimitMiddleware(run_limit=self.settings.max_model_calls, exit_behavior="error"),
             ])
