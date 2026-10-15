@@ -22,7 +22,12 @@ from .observability import Events
 
 
 def _estimate(messages) -> int:
-    return sum(len(str(message.content)) // 3 + 20 for message in messages)
+    # Tool-call arguments can be larger than message.content (often empty).
+    # Count them too when picking a safe, complete recent-history suffix.
+    return sum(
+        (len(str(message.content)) + len(str(getattr(message, "tool_calls", ()))) // 3 + 20)
+        for message in messages
+    )
 
 
 def _history_summary(dropped) -> HumanMessage:
