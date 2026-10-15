@@ -327,7 +327,8 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
         elif pending == "review" and observed(_REVIEW_TOOLS, after=last_mutation):
             evidence_issue = (
                 "代码审查已执行，但结果包含错误级发现、输出截断或缺少可审查的改动；"
-                "请处理审查发现并核对 Git diff 与文件范围。"
+                "请处理审查发现；若整体 diff 过大，请使用 "
+                "review_code_changes(paths=[...]) 按文件分批审查，覆盖全部变更文件。"
             )
     return {
         "profile": workflow["profile"],
