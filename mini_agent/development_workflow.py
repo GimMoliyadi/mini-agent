@@ -156,6 +156,45 @@ _STAGE_TOOLS = {
 }
 
 
+
+def _review_coverage(observations: list[tuple[int, str, dict[str, Any], dict[str, Any], str]],
+                     *, after: int) -> bool:
+    """Require nontruncated review evidence for every changed file.
+
+    Later review results supersede earlier results for their selected files.
+    A truncated all-file review is allowed as a discovery step; the model can
+    then split the same changed-file manifest into reviewable batches.
+    """
+    expected: set[str] | None = None
+    covered: dict[str, bool] = {}
+    for index, name, _, _, content in observations:
+        if index <= after or name != "review_code_changes":
+            continue
+        try:
+            report = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        all_files = report.get("all_changed_files", report.get("changed_files"))
+        selected = report.get("changed_files")
+        if (not isinstance(all_files, list) or not all_files
+                or not isinstance(selected, list)
+                or any(not isinstance(path, str) or not path for path in all_files)
+                or any(not isinstance(path, str) for path in selected)):
+            continue
+        manifest = set(all_files)
+        if len(manifest) != len(all_files) or not set(selected) <= manifest:
+            continue
+        if expected != manifest:
+            expected = manifest
+            covered.clear()
+        good = _review_clear(content)
+        for path in selected:
+            covered[path] = good
+    return bool(expected) and all(covered.get(path, False) for path in expected)
+
+
 def focus_model_tools(
     tools: list[Any], stage: str | None, *,
     external_tool_names: frozenset[str] = frozenset(),
@@ -214,11 +253,7 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
         for index, name, args, artifact, content in observations
         if name in _TEST_TOOLS
     )
-    reviewed = modified and any(
-        index > last_mutation and name == "review_code_changes"
-        and _review_clear(content)
-        for index, name, _, _, content in observations
-    )
+    reviewed = modified and _review_coverage(observations, after=last_mutation)
     migration = observed(_MIGRATION_TOOLS)
     browser_open_indexes = [
         index for index, name, args, _, _ in observations
