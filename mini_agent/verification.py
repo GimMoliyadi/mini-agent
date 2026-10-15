@@ -41,6 +41,10 @@ def verification_facts(state: dict) -> VerificationFacts:
 
 def unresolved_tool_failures(state: dict) -> list[str]:
     failures = set()
+    # A failed update_task_step attempted before any plan existed has no side
+    # effect. A *successful* later set_task_plan satisfies exactly that missing
+    # prerequisite; it does not excuse unrelated plan-update errors.
+    missing_plan_errors = set()
     calls = {}
     for message in state["messages"][state["task_start"]:]:
         for call in getattr(message, "tool_calls", []):
@@ -49,12 +53,32 @@ def unresolved_tool_failures(state: dict) -> list[str]:
             args = calls.get(message.tool_call_id, {}).get("args", {})
             # A successful write to B does not repair a failed write to A.
             target = tuple(str(args.get(field, "")) for field in ("path", "source", "destination", "cwd"))
-            command = json.dumps([args.get("command"), args.get("args")], sort_keys=True)
+            # Planning tool calls have neither path nor shell command.
+            # Include their step identity so different rejected updates cannot
+            # collapse into the same unresolved-failure key.
+            plan_identity = (
+                [args.get("step_id"), args.get("status")]
+                if message.name == "update_task_step" else None
+            )
+            command = json.dumps(
+                [args.get("command"), args.get("args"), plan_identity],
+                sort_keys=True,
+            )
             key = (message.name or "tool", target, command)
             if message.status == "error":
                 failures.add(key)
+                if (message.name == "update_task_step"
+                        and "当前任务尚无计划" in str(message.content)
+                        and "set_task_plan" in str(message.content)):
+                    missing_plan_errors.add(key)
             else:
                 failures.discard(key)
+                missing_plan_errors.discard(key)
+                if message.name == "set_task_plan":
+                    # Clears only stale calls that failed solely because the
+                    # plan had not been created. Preserve every other error.
+                    failures.difference_update(missing_plan_errors)
+                    missing_plan_errors.clear()
     return sorted({key[0] for key in failures})
 
 
