@@ -71,3 +71,32 @@ def test_history_from_prior_task_does_not_contaminate_new_task():
     assert unresolved_tool_failures({
         "messages": [*old, *fresh], "task_start": len(old),
     }) == []
+
+
+
+def test_file_scoped_review_failure_survives_unrelated_success():
+    failed = _pair(
+        "review_code_changes", "review-a", "error",
+        "file a could not be reviewed", paths=["a.py"],
+    )
+    unrelated = _pair("review_code_changes", "review-b", paths=["b.py"])
+    assert unresolved_tool_failures(_state(*failed, *unrelated)) == ["review_code_changes"]
+    fixed = _pair("review_code_changes", "review-a-retry", paths=["a.py"])
+    assert unresolved_tool_failures(_state(*failed, *unrelated, *fixed)) == []
+
+
+def test_fullstack_failure_requires_same_project_scope_for_recovery():
+    failure = _pair(
+        "run_fullstack_checks", "backend-1", "error",
+        "backend tests failed", backend_path="backend-one", frontend_path="frontend-one",
+    )
+    unrelated = _pair(
+        "run_fullstack_checks", "backend-2", backend_path="backend-two",
+        frontend_path="frontend-two",
+    )
+    assert unresolved_tool_failures(_state(*failure, *unrelated)) == ["run_fullstack_checks"]
+    repair = _pair(
+        "run_fullstack_checks", "backend-1-retry",
+        backend_path="backend-one", frontend_path="frontend-one",
+    )
+    assert unresolved_tool_failures(_state(*failure, *unrelated, *repair)) == []
