@@ -53,7 +53,17 @@ def unresolved_tool_failures(state: dict) -> list[str]:
             args = calls.get(message.tool_call_id, {}).get("args", {})
             # A successful write to B does not repair a failed write to A.
             target = tuple(str(args.get(field, "")) for field in ("path", "source", "destination", "cwd"))
-            command = json.dumps([args.get("command"), args.get("args")], sort_keys=True)
+            # Planning tool calls have neither path nor shell command.
+            # Include their step identity so different rejected updates cannot
+            # collapse into the same unresolved-failure key.
+            plan_identity = (
+                [args.get("step_id"), args.get("status")]
+                if message.name == "update_task_step" else None
+            )
+            command = json.dumps(
+                [args.get("command"), args.get("args"), plan_identity],
+                sort_keys=True,
+            )
             key = (message.name or "tool", target, command)
             if message.status == "error":
                 failures.add(key)
