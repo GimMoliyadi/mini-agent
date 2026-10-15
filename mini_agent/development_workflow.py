@@ -192,7 +192,9 @@ def _review_coverage(observations: list[tuple[int, str, dict[str, Any], dict[str
         good = _review_clear(content)
         for path in selected:
             covered[path] = good
-    return bool(expected) and all(covered.get(path, False) for path in expected)
+    if expected is None or not expected:
+        return False
+    return all(covered.get(path, False) for path in expected)
 
 
 def focus_model_tools(
