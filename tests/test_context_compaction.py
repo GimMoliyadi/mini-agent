@@ -107,3 +107,48 @@ def test_compaction_tracks_failed_tool_names_but_not_sensitive_tool_text():
     assert "失败工具" in projected[1].content
     assert "secret from file" not in projected[1].content
     _assert_pairs(projected)
+
+
+def test_multicall_round_is_kept_as_complete_pair_sequence():
+    messages = [HumanMessage(content="Fix code and run tests")]
+    for batch in range(14):
+        first = f"file-{batch}"
+        second = f"search-{batch}"
+        messages.append(AIMessage(content="", tool_calls=[
+            {"name": "read_file", "args": {"path": f"a_{batch}.py"},
+             "id": first, "type": "tool_call"},
+            {"name": "search_text", "args": {"query": f"needle{batch}"},
+             "id": second, "type": "tool_call"},
+        ]))
+        messages.append(ToolMessage(
+            content="a" * 280, name="read_file", tool_call_id=first,
+        ))
+        messages.append(ToolMessage(
+            content="b" * 280, name="search_text", tool_call_id=second,
+        ))
+    projected, count = project_task_history(messages, token_limit=1300)
+    assert count > 0
+    assert projected[-1] is messages[-1]
+    _assert_pairs(projected)
+    retained = {
+        call["id"]
+        for message in projected
+        for call in (getattr(message, "tool_calls", ()) or ())
+    }
+    observed = [
+        message.tool_call_id
+        for message in projected if isinstance(message, ToolMessage)
+    ]
+    assert sorted(retained) == sorted(observed)
+    assert projected[1].type == "human"
+
+
+def test_compactor_refuses_orphan_and_incomplete_batch_suffix():
+    messages = _history(rounds=11)
+    # Corrupt the most recent two-result batch. Its last result refers to a
+    # different call, so no protocol-complete suffix can be selected.
+    messages[-1] = ToolMessage(
+        content="orphan", name="read_file", tool_call_id="no-longer-present",
+    )
+    with pytest.raises(ValueError, match="最近一轮"):
+        project_task_history(messages, token_limit=1200)
