@@ -102,7 +102,12 @@ class ContextMiddleware(AgentMiddleware):
         # For long tasks reduce repeated tool histories before the model reaches
         # the hard limit. Keep full checkpoint messages for verification/resume.
         target = min(self.max_tokens, max(512, int(self.max_tokens * 0.64)))
-        active, omitted = project_task_history(active, token_limit=target)
+        try:
+            active, omitted = project_task_history(active, token_limit=target)
+        except ValueError:
+            # A complete newest tool-call round may exceed the soft target
+            # while remaining valid under the hard configured context limit.
+            active, omitted = project_task_history(active, token_limit=self.max_tokens)
         if omitted:
             self.events.emit(
                 "context_compacted", task_id=request.state.get("task_id"),
