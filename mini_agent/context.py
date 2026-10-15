@@ -57,6 +57,30 @@ def _history_summary(dropped) -> HumanMessage:
     ))
 
 
+def _complete_tool_exchanges(messages) -> bool:
+    """Require every retained AI tool call to have exactly one matching result.
+
+    Cutting before a ToolMessage or mid-batch would produce invalid provider
+    messages, especially when a model emits several tool calls in one turn.
+    """
+    pending: set[str] = set()
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            if message.tool_call_id not in pending:
+                return False
+            pending.remove(message.tool_call_id)
+            continue
+        if pending:
+            return False
+        calls = getattr(message, "tool_calls", ()) or ()
+        for call in calls:
+            identifier = call.get("id") if isinstance(call, dict) else None
+            if not isinstance(identifier, str) or not identifier or identifier in pending:
+                return False
+            pending.add(identifier)
+    return not pending
+
+
 def project_task_history(active, *, token_limit: int):
     """Keep the original task and a complete recent tool-call suffix.
 
@@ -76,7 +100,7 @@ def project_task_history(active, *, token_limit: int):
         dropped = active[1:index]
         summary = _history_summary(dropped)
         candidate = [active[0], summary, *active[index:]]
-        if _estimate(candidate) <= token_limit:
+        if _estimate(candidate) <= token_limit and _complete_tool_exchanges(active[index:]):
             boundary = index
             break
     if boundary is None:

@@ -74,3 +74,52 @@ def test_workflow_model_middleware_filters_without_modifying_request():
     assert "下一项尚未完成：inspect" in received[0].system_message.content
     assert len(request.tools) == 5
     assert request.system_message.content == "System instruction"
+
+
+def test_opted_in_mcp_and_custom_tools_stay_visible_across_stages():
+    tools = [
+        _tool("read_file"), _tool("github_push_branch"), _tool("browser_action"),
+        _tool("mcp_local_search_repo"), _tool("organization_test_tool"),
+    ]
+    registered = frozenset({"mcp_local_search_repo", "organization_test_tool"})
+    for stage in ("inspect", "implement", "test", "review", "deliver"):
+        selected = focus_model_tools(tools, stage, external_tool_names=registered)
+        names = {tool.name for tool in selected}
+        assert registered <= names
+    assert "github_push_branch" not in {
+        tool.name for tool in focus_model_tools(
+            tools, "inspect", external_tool_names=registered,
+        )
+    }
+    assert len(tools) == 5
+    assert "organization_test_tool" not in {
+        tool.name for tool in focus_model_tools(tools, "inspect")
+    }
+
+
+def test_external_tools_are_visible_in_real_workflow_middleware_projection():
+    from mini_agent.development_workflow import DevelopmentWorkflowMiddleware
+    request = SimpleNamespace(
+        state={
+            "task_start": 0, "messages": [],
+            "development_workflow": {
+                "goal": "Investigate repository through approved remote tool",
+                "profile": "general", "require_browser": False,
+                "require_migration": False, "deliver_pr": False,
+            },
+        },
+        system_message=SystemMessage(content="Original"),
+        tools=[_tool("read_file"), _tool("mcp_verified_repo_lookup"),
+               _tool("github_push_branch")],
+    )
+    request.override = lambda **kw: SimpleNamespace(**{**request.__dict__, **kw})
+    received = []
+    DevelopmentWorkflowMiddleware(
+        external_tool_names=frozenset({"mcp_verified_repo_lookup"}),
+    ).wrap_model_call(request, lambda updated: received.append(updated))
+    assert [tool.name for tool in received[0].tools] == [
+        "read_file", "mcp_verified_repo_lookup",
+    ]
+    assert "github_push_branch" not in {
+        tool.name for tool in received[0].tools
+    }
