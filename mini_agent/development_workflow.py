@@ -17,6 +17,8 @@ from langgraph.types import Command
 
 from .sandbox import redact_text
 from .state import TaskState
+from .result import ToolResult
+from .verifier import parse_test_result
 
 _EXPLORATION_TOOLS = frozenset({
     "list_files", "read_file", "search_text", "find_files", "inspect_project",
@@ -33,6 +35,68 @@ _NON_CODE_MUTATIONS = frozenset({"browser_screenshot"})
 _TEST_TASK_NAMES = frozenset({"test", "unittest"})
 _PROFILES = frozenset({"general", "web", "backend"})
 _MAX_GOAL = 500
+
+def _test_passed(name: str, args: dict[str, Any], artifact: dict[str, Any], content: str) -> bool:
+    """Successful tool execution is weaker than positive test evidence."""
+    if name == "run_fullstack_checks":
+        detail = artifact.get("metadata")
+        return isinstance(detail, dict) and detail.get("both_passed") is True
+    if name == "run_dev_task":
+        if args.get("task", "test") not in _TEST_TASK_NAMES:
+            return False
+        meta = artifact.get("metadata")
+        if not isinstance(meta, dict):
+            return False
+        result = ToolResult(content, "success", "command_succeeded", meta)
+        return parse_test_result(result)["status"] == "PASS"
+    if name == "run_command":
+        command = str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        command_args = args.get("args")
+        if not isinstance(command_args, list):
+            return False
+        is_test = (command in {"pytest", "pytest.exe"}
+                   or (command in {"python", "python.exe", "py", "py.exe"}
+                       and command_args[:2] in (["-m", "pytest"], ["-m", "unittest"])))
+        return is_test and parse_test_result(content)["status"] == "PASS"
+    return False
+
+
+def _browser_diagnostics_clear(content: str) -> bool:
+    """A successful diagnostics read can still report live browser failures."""
+    try:
+        details = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(details, dict) or not isinstance(details.get("url"), str):
+        return False
+    if not details["url"] or not isinstance(details.get("events"), list):
+        return False
+    if details.get("dropped_older_events", 0) != 0:
+        return False
+    return not any(
+        isinstance(event, dict) and event.get("kind") in {
+            "javascript_exception", "console_error", "request_failed", "http_error",
+        }
+        for event in details["events"]
+    )
+
+
+def _review_clear(content: str) -> bool:
+    """Code review must actually inspect a diff and report no critical findings."""
+    try:
+        details = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(details, dict) or details.get("truncated") is not False:
+        return False
+    if not isinstance(details.get("changed_files"), list) or not details["changed_files"]:
+        return False
+    findings = details.get("findings")
+    return isinstance(findings, list) and not any(
+        not isinstance(item, dict) or item.get("severity") == "error"
+        for item in findings
+    )
+
 
 
 # Progressive disclosure: every tool stays registered in the original Agent
@@ -92,6 +156,47 @@ _STAGE_TOOLS = {
 }
 
 
+
+def _review_coverage(observations: list[tuple[int, str, dict[str, Any], dict[str, Any], str]],
+                     *, after: int) -> bool:
+    """Require nontruncated review evidence for every changed file.
+
+    Later review results supersede earlier results for their selected files.
+    A truncated all-file review is allowed as a discovery step; the model can
+    then split the same changed-file manifest into reviewable batches.
+    """
+    expected: set[str] | None = None
+    covered: dict[str, bool] = {}
+    for index, name, _, _, content in observations:
+        if index <= after or name != "review_code_changes":
+            continue
+        try:
+            report = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        all_files = report.get("all_changed_files", report.get("changed_files"))
+        selected = report.get("changed_files")
+        if (not isinstance(all_files, list) or not all_files
+                or not isinstance(selected, list)
+                or any(not isinstance(path, str) or not path for path in all_files)
+                or any(not isinstance(path, str) for path in selected)):
+            continue
+        manifest = set(all_files)
+        if len(manifest) != len(all_files) or not set(selected) <= manifest:
+            continue
+        if expected != manifest:
+            expected = manifest
+            covered.clear()
+        good = _review_clear(content)
+        for path in selected:
+            covered[path] = good
+    if expected is None or not expected:
+        return False
+    return all(covered.get(path, False) for path in expected)
+
+
 def focus_model_tools(
     tools: list[Any], stage: str | None, *,
     external_tool_names: frozenset[str] = frozenset(),
@@ -121,7 +226,7 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
     start = state.get("task_start", 0)
     messages = state.get("messages", [])[start:]
     calls: dict[str, dict[str, Any]] = {}
-    observations: list[tuple[int, str, dict[str, Any]]] = []
+    observations: list[tuple[int, str, dict[str, Any], dict[str, Any], str]] = []
     last_mutation = -1
     for index, message in enumerate(messages):
         for item in getattr(message, "tool_calls", ()) or ():
@@ -138,40 +243,30 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
             args = {}
         if artifact.get("mutation", False) and name not in _NON_CODE_MUTATIONS:
             last_mutation = index
-        observations.append((index, name, args))
+        observations.append((index, name, args, artifact, str(message.content)))
 
     def observed(tools: frozenset[str], *, after: int = -1) -> bool:
-        return any(index > after and name in tools for index, name, _ in observations)
+        return any(index > after and name in tools for index, name, _, _, _ in observations)
 
     explored = observed(_EXPLORATION_TOOLS)
     modified = last_mutation >= 0
     tested = modified and any(
-        index > last_mutation and (
-            name == "run_fullstack_checks"
-            or (name == "run_dev_task" and args.get("task", "test") in _TEST_TASK_NAMES)
-            or (name == "run_command" and (
-                str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
-                in {"python", "python.exe", "py", "py.exe", "pytest", "pytest.exe"}
-                and (
-                    str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
-                    in {"pytest", "pytest.exe"}
-                    or args.get("args", [])[:2] in (
-                        ["-m", "pytest"], ["-m", "unittest"],
-                    )
-                )
-            ))
-        )
-        for index, name, args in observations
+        index > last_mutation and _test_passed(name, args, artifact, content)
+        for index, name, args, artifact, content in observations
+        if name in _TEST_TOOLS
     )
-    reviewed = modified and observed(_REVIEW_TOOLS, after=last_mutation)
+    reviewed = modified and _review_coverage(observations, after=last_mutation)
     migration = observed(_MIGRATION_TOOLS)
-    browser_open = modified and any(
-        index > last_mutation and name == "browser_action"
-        and args.get("action") == "open"
-        for index, name, args in observations
-    )
-    browser_diagnostics = modified and observed(
-        frozenset({"browser_diagnostics"}), after=last_mutation,
+    browser_open_indexes = [
+        index for index, name, args, _, _ in observations
+        if modified and index > last_mutation
+        and name == "browser_action" and args.get("action") == "open"
+    ]
+    browser_open = bool(browser_open_indexes)
+    browser_diagnostics = bool(browser_open_indexes) and any(
+        index > browser_open_indexes[-1] and name == "browser_diagnostics"
+        and _browser_diagnostics_clear(content)
+        for index, name, _, _, content in observations
     )
     browser = browser_open and browser_diagnostics
     delivered = observed(_DELIVERY_TOOLS, after=last_mutation)
@@ -218,6 +313,25 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
                                 "github_push_branch", "github_create_draft_pr"],
         })
     next_stage = next((stage for stage in stages if not stage["done"]), None)
+    evidence_issue = ""
+    if next_stage is not None:
+        pending = next_stage["id"]
+        if pending == "test" and observed(_TEST_TOOLS, after=last_mutation):
+            evidence_issue = (
+                "已执行测试工具但缺少非零测试数与明确 PASS 结果，"
+                "请检查测试摘要、退出码及前后端检查详情。"
+            )
+        elif pending == "browser" and observed(_BROWSER_TOOLS, after=last_mutation):
+            evidence_issue = (
+                "浏览器验收尚缺少打开目标页面之后的无错误诊断；"
+                "请核对 JavaScript、HTTP、请求失败和诊断历史是否截断。"
+            )
+        elif pending == "review" and observed(_REVIEW_TOOLS, after=last_mutation):
+            evidence_issue = (
+                "代码审查已执行，但结果包含错误级发现、输出截断或缺少可审查的改动；"
+                "请处理审查发现；若整体 diff 过大，请使用 "
+                "review_code_changes(paths=[...]) 按文件分批审查，覆盖全部变更文件。"
+            )
     return {
         "profile": workflow["profile"],
         "goal": redact_text(workflow["goal"]),
@@ -226,6 +340,7 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
         "total": len(stages),
         "complete": next_stage is None,
         "next_stage": next_stage["id"] if next_stage else None,
+        "evidence_issue": evidence_issue,
         "suggested_tools": next_stage["suggested_tools"] if next_stage else [],
         "last_mutation_observed": modified,
         "note": "Only successful ToolMessages count. Test, browser and review evidence "
@@ -316,6 +431,7 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
             "请根据当前项目与实际结果选择工具；批准和执行规则不变。"
             "代码修改后必须重新进行测试与审查，不能依据旧结果宣布完成。"
             "如果依赖或工具不可用，应如实说明受阻，不能谎报完成。"
+            + (f" 尚缺验收证据：{evaluation['evidence_issue']}" if evaluation["evidence_issue"] else "")
         )
         system = request.system_message
         content = system.content if system is not None else ""

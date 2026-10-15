@@ -1,17 +1,24 @@
 """Autorecovery must make progress on checkpointed playbooks without a manual plan."""
 
+import json
+
 from langchain_core.messages import AIMessage, ToolMessage
 
 from mini_agent.recovery import decide_recovery, recovery_message, work_signature
 
 
 def _pair(name, ident, *, mutation=False, args=None):
+    content = "success"
+    if name == "run_command":
+        content = "Exit code: 0\nTimed out: false\nOutput limit exceeded: false\nSTDOUT:\n2 passed in 0.01s"
+    elif name == "review_code_changes":
+        content = json.dumps({"changed_files": ["calc.py"], "findings": [], "truncated": False})
     return [
         AIMessage(content="", tool_calls=[{
             "id": ident, "name": name, "args": args or {}, "type": "tool_call",
         }]),
         ToolMessage(
-            tool_call_id=ident, name=name, content="success", status="success",
+            tool_call_id=ident, name=name, content=content, status="success",
             artifact={"status": "success", "mutation": mutation},
         ),
     ]

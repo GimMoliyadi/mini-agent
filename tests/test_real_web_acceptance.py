@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import urlopen
 import os
 from pathlib import Path
 import subprocess
@@ -185,6 +186,22 @@ def _wait_for_server(manager: DevServerManager, name: str) -> None:
     raise AssertionError(f"{name} did not become ready: {manager.status(name)}")  # type: ignore[arg-type]
 
 
+def _wait_for_frontend_document() -> None:
+    """A listening Vite port may still serve its temporary startup page."""
+    deadline = time.monotonic() + 25
+    observed = ""
+    while time.monotonic() < deadline:
+        try:
+            with urlopen("http://127.0.0.1:5173/", timeout=2) as response:
+                observed = response.read(32_768).decode("utf-8", errors="replace")
+            if "<title>Agent Acceptance</title>" in observed:
+                return
+        except OSError as exc:
+            observed = f"{type(exc).__name__}: {exc}"
+        time.sleep(0.3)
+    raise AssertionError(f"Vite never served the expected acceptance HTML: {observed[:1000]}")
+
+
 def _wait_for_text(browser: BrowserSession, expected: str) -> None:
     deadline = time.monotonic() + 25
     observed = ""
@@ -256,8 +273,17 @@ def test_actual_fastapi_react_openapi_and_chromium_flow(tmp_path):
         assert frontend_started["running"], frontend_started
         _wait_for_server(servers, "backend")
         _wait_for_server(servers, "frontend")
+        _wait_for_frontend_document()
         page = browser.invoke("open", "http://127.0.0.1:5173", "body", "")
-        assert page["title"] == "Agent Acceptance"
+        if page["title"] != "Agent Acceptance":
+            # Chromium can show an internal provisional Loading page even
+            # after Vite answered HTTP. Retry the navigation, bounded, then
+            # assert the real title and content exactly as before.
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and page["title"] != "Agent Acceptance":
+                time.sleep(0.3)
+                page = browser.invoke("open", "http://127.0.0.1:5173", "body", "")
+        assert page["title"] == "Agent Acceptance", page
         _wait_for_text(browser, "Hello, Visitor!")
         browser.invoke("click", "", "#change-name", "")
         _wait_for_text(browser, "Hello, Agent!")
