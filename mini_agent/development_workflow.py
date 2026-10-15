@@ -17,6 +17,8 @@ from langgraph.types import Command
 
 from .sandbox import redact_text
 from .state import TaskState
+from .result import ToolResult
+from .verifier import parse_test_result
 
 _EXPLORATION_TOOLS = frozenset({
     "list_files", "read_file", "search_text", "find_files", "inspect_project",
@@ -33,6 +35,68 @@ _NON_CODE_MUTATIONS = frozenset({"browser_screenshot"})
 _TEST_TASK_NAMES = frozenset({"test", "unittest"})
 _PROFILES = frozenset({"general", "web", "backend"})
 _MAX_GOAL = 500
+
+def _test_passed(name: str, args: dict[str, Any], artifact: dict[str, Any], content: str) -> bool:
+    """Successful tool execution is weaker than positive test evidence."""
+    if name == "run_fullstack_checks":
+        detail = artifact.get("metadata")
+        return isinstance(detail, dict) and detail.get("both_passed") is True
+    if name == "run_dev_task":
+        if args.get("task", "test") not in _TEST_TASK_NAMES:
+            return False
+        meta = artifact.get("metadata")
+        if not isinstance(meta, dict):
+            return False
+        result = ToolResult(content, "success", "command_succeeded", meta)
+        return parse_test_result(result)["status"] == "PASS"
+    if name == "run_command":
+        command = str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        command_args = args.get("args")
+        if not isinstance(command_args, list):
+            return False
+        is_test = (command in {"pytest", "pytest.exe"}
+                   or (command in {"python", "python.exe", "py", "py.exe"}
+                       and command_args[:2] in (["-m", "pytest"], ["-m", "unittest"])))
+        return is_test and parse_test_result(content)["status"] == "PASS"
+    return False
+
+
+def _browser_diagnostics_clear(content: str) -> bool:
+    """A successful diagnostics read can still report live browser failures."""
+    try:
+        details = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(details, dict) or not isinstance(details.get("url"), str):
+        return False
+    if not details["url"] or not isinstance(details.get("events"), list):
+        return False
+    if details.get("dropped_older_events", 0) != 0:
+        return False
+    return not any(
+        isinstance(event, dict) and event.get("kind") in {
+            "javascript_exception", "console_error", "request_failed", "http_error",
+        }
+        for event in details["events"]
+    )
+
+
+def _review_clear(content: str) -> bool:
+    """Code review must actually inspect a diff and report no critical findings."""
+    try:
+        details = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(details, dict) or details.get("truncated") is not False:
+        return False
+    if not isinstance(details.get("changed_files"), list) or not details["changed_files"]:
+        return False
+    findings = details.get("findings")
+    return isinstance(findings, list) and not any(
+        not isinstance(item, dict) or item.get("severity") == "error"
+        for item in findings
+    )
+
 
 
 # Progressive disclosure: every tool stays registered in the original Agent
@@ -121,7 +185,7 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
     start = state.get("task_start", 0)
     messages = state.get("messages", [])[start:]
     calls: dict[str, dict[str, Any]] = {}
-    observations: list[tuple[int, str, dict[str, Any]]] = []
+    observations: list[tuple[int, str, dict[str, Any], dict[str, Any], str]] = []
     last_mutation = -1
     for index, message in enumerate(messages):
         for item in getattr(message, "tool_calls", ()) or ():
@@ -138,40 +202,34 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
             args = {}
         if artifact.get("mutation", False) and name not in _NON_CODE_MUTATIONS:
             last_mutation = index
-        observations.append((index, name, args))
+        observations.append((index, name, args, artifact, str(message.content)))
 
     def observed(tools: frozenset[str], *, after: int = -1) -> bool:
-        return any(index > after and name in tools for index, name, _ in observations)
+        return any(index > after and name in tools for index, name, _, _, _ in observations)
 
     explored = observed(_EXPLORATION_TOOLS)
     modified = last_mutation >= 0
     tested = modified and any(
-        index > last_mutation and (
-            name == "run_fullstack_checks"
-            or (name == "run_dev_task" and args.get("task", "test") in _TEST_TASK_NAMES)
-            or (name == "run_command" and (
-                str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
-                in {"python", "python.exe", "py", "py.exe", "pytest", "pytest.exe"}
-                and (
-                    str(args.get("command", "")).replace("\\", "/").rsplit("/", 1)[-1].lower()
-                    in {"pytest", "pytest.exe"}
-                    or args.get("args", [])[:2] in (
-                        ["-m", "pytest"], ["-m", "unittest"],
-                    )
-                )
-            ))
-        )
-        for index, name, args in observations
+        index > last_mutation and _test_passed(name, args, artifact, content)
+        for index, name, args, artifact, content in observations
+        if name in _TEST_TOOLS
     )
-    reviewed = modified and observed(_REVIEW_TOOLS, after=last_mutation)
+    reviewed = modified and any(
+        index > last_mutation and name == "review_code_changes"
+        and _review_clear(content)
+        for index, name, _, _, content in observations
+    )
     migration = observed(_MIGRATION_TOOLS)
-    browser_open = modified and any(
-        index > last_mutation and name == "browser_action"
-        and args.get("action") == "open"
-        for index, name, args in observations
-    )
-    browser_diagnostics = modified and observed(
-        frozenset({"browser_diagnostics"}), after=last_mutation,
+    browser_open_indexes = [
+        index for index, name, args, _, _ in observations
+        if modified and index > last_mutation
+        and name == "browser_action" and args.get("action") == "open"
+    ]
+    browser_open = bool(browser_open_indexes)
+    browser_diagnostics = bool(browser_open_indexes) and any(
+        index > browser_open_indexes[-1] and name == "browser_diagnostics"
+        and _browser_diagnostics_clear(content)
+        for index, name, _, _, content in observations
     )
     browser = browser_open and browser_diagnostics
     delivered = observed(_DELIVERY_TOOLS, after=last_mutation)
