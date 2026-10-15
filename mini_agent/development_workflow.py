@@ -276,6 +276,24 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
                                 "github_push_branch", "github_create_draft_pr"],
         })
     next_stage = next((stage for stage in stages if not stage["done"]), None)
+    evidence_issue = ""
+    if next_stage is not None:
+        pending = next_stage["id"]
+        if pending == "test" and observed(_TEST_TOOLS, after=last_mutation):
+            evidence_issue = (
+                "已执行测试工具但缺少非零测试数与明确 PASS 结果，"
+                "请检查测试摘要、退出码及前后端检查详情。"
+            )
+        elif pending == "browser" and observed(_BROWSER_TOOLS, after=last_mutation):
+            evidence_issue = (
+                "浏览器验收尚缺少打开目标页面之后的无错误诊断；"
+                "请核对 JavaScript、HTTP、请求失败和诊断历史是否截断。"
+            )
+        elif pending == "review" and observed(_REVIEW_TOOLS, after=last_mutation):
+            evidence_issue = (
+                "代码审查已执行，但结果包含错误级发现、输出截断或缺少可审查的改动；"
+                "请处理审查发现并核对 Git diff 与文件范围。"
+            )
     return {
         "profile": workflow["profile"],
         "goal": redact_text(workflow["goal"]),
@@ -284,6 +302,7 @@ def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
         "total": len(stages),
         "complete": next_stage is None,
         "next_stage": next_stage["id"] if next_stage else None,
+        "evidence_issue": evidence_issue,
         "suggested_tools": next_stage["suggested_tools"] if next_stage else [],
         "last_mutation_observed": modified,
         "note": "Only successful ToolMessages count. Test, browser and review evidence "
@@ -374,6 +393,7 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
             "请根据当前项目与实际结果选择工具；批准和执行规则不变。"
             "代码修改后必须重新进行测试与审查，不能依据旧结果宣布完成。"
             "如果依赖或工具不可用，应如实说明受阻，不能谎报完成。"
+            + (f" 尚缺验收证据：{evaluation['evidence_issue']}" if evaluation["evidence_issue"] else "")
         )
         system = request.system_message
         content = system.content if system is not None else ""
