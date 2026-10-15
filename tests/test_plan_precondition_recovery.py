@@ -5,15 +5,15 @@ from langchain_core.messages import AIMessage, ToolMessage
 from mini_agent.verification import unresolved_tool_failures
 
 
-def _pair(name, ident, status="success", content="ok", **args):
+def _pair(name, ident, tool_status="success", content="ok", **args):
     return [
         AIMessage(content="", tool_calls=[{
             "name": name, "args": args, "id": ident, "type": "tool_call",
         }]),
         ToolMessage(
-            name=name, tool_call_id=ident, status=status,
+            name=name, tool_call_id=ident, status=tool_status,
             content=content,
-            artifact={"status": "success" if status == "success" else "tool_error"},
+            artifact={"status": "success" if tool_status == "success" else "tool_error"},
         ),
     ]
 
