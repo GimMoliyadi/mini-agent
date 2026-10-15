@@ -35,6 +35,77 @@ _PROFILES = frozenset({"general", "web", "backend"})
 _MAX_GOAL = 500
 
 
+# Progressive disclosure: every tool stays registered in the original Agent
+# ToolNode. This only filters which schemas the model must pay to read now.
+# The shared navigation/plan/repair tools stay accessible at every stage.
+_ALWAYS_TOOLS = frozenset({
+    "list_files", "find_files", "read_file", "search_text",
+    "inspect_capabilities", "get_task_plan", "set_task_plan",
+    "update_task_step", "development_workflow_status",
+    "recall_project_facts", "remember_project_fact",
+    "inspect_dev_environment", "discover_workspace_projects",
+    "run_command", "run_dev_task", "apply_patch", "apply_patch_batch",
+})
+_STAGE_TOOLS = {
+    "inspect": frozenset({
+        "inspect_project", "inspect_python_symbols",
+        "inspect_module_dependencies", "inspect_fullstack_interfaces",
+        "inspect_code_symbols", "find_code_references",
+        "inspect_openapi_contract", "inspect_openapi_changes",
+        "github_issue_context", "github_list_issues",
+    }),
+    "implement": frozenset({
+        "write_file", "rename_file", "create_files_batch", "prepare_dev_environment",
+        "generate_pytest_regressions", "export_fastapi_openapi",
+        "inspect_openapi_contract", "generate_openapi_types",
+        "generate_typed_api_client", "generate_react_query_hooks",
+        "inspect_alembic_status", "generate_alembic_migration",
+        "inspect_fullstack_interfaces", "inspect_module_dependencies",
+        "inspect_code_symbols", "find_code_references",
+        "inspect_openapi_changes", "run_fullstack_checks",
+    }),
+    "migration": frozenset({
+        "inspect_alembic_status", "generate_alembic_migration",
+        "read_file", "write_file", "run_fullstack_checks",
+    }),
+    "test": frozenset({
+        "run_fullstack_checks", "prepare_dev_environment",
+        "inspect_fullstack_interfaces", "inspect_module_dependencies",
+        "generate_pytest_regressions", "create_files_batch", "write_file",
+        "dev_server", "browser_action", "browser_diagnostics",
+    }),
+    "browser": frozenset({
+        "dev_server", "browser_action", "browser_screenshot",
+        "browser_diagnostics", "run_fullstack_checks",
+        "inspect_fullstack_interfaces", "inspect_openapi_contract",
+        "write_file", "create_files_batch",
+    }),
+    "review": frozenset({
+        "review_code_changes", "git_worktree_review",
+        "run_fullstack_checks", "write_file", "create_files_batch",
+        "inspect_module_dependencies",
+    }),
+    "deliver": frozenset({
+        "review_code_changes", "git_worktree_review", "git_commit_files",
+        "github_push_branch", "github_create_draft_pr", "github_pr_status",
+    }),
+}
+
+
+def focus_model_tools(tools: list[Any], stage: str | None) -> list[Any]:
+    """Limit *visible schemas*, not executable tools or approval boundaries."""
+    if stage not in _STAGE_TOOLS:
+        return list(tools)
+    allowed = _ALWAYS_TOOLS | _STAGE_TOOLS[stage]
+    selected = [
+        tool for tool in tools
+        if getattr(tool, "name", None) in allowed
+        or not isinstance(getattr(tool, "name", None), str)
+    ]
+    # Defensive fallback for custom/partial tool registries.
+    return selected if selected else list(tools)
+
+
 def evaluate_workflow(state: dict[str, Any]) -> dict[str, Any] | None:
     """Derive milestones from actual tool results, never from model assertions."""
     workflow = state.get("development_workflow")
@@ -242,4 +313,8 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
             content = content + guidance
         else:
             content = [*content, {"type": "text", "text": guidance}]
-        return handler(request.override(system_message=SystemMessage(content=content)))
+        selected_tools = focus_model_tools(request.tools, next_stage)
+        return handler(request.override(
+            system_message=SystemMessage(content=content),
+            tools=selected_tools,
+        ))
