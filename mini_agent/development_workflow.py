@@ -16,7 +16,6 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from langchain.tools import ToolRuntime, tool
 from langgraph.types import Command
 
-from . import git_workflow
 from .sandbox import redact_text
 from .state import TaskState
 from .result import ToolResult
@@ -440,6 +439,9 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
             + (f" 尚缺验收证据：{evaluation['evidence_issue']}" if evaluation["evidence_issue"] else "")
         )
         if self.workspace is not None:
+            # Avoid import cycle: verification imports evaluate_workflow above.
+            from . import git_workflow
+
             try:
                 # Match the actual code-review and Git commit security boundary.
                 # A parent repo (for example C:\\.git) does NOT make this
