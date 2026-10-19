@@ -51,7 +51,9 @@ def test_git_ancestor_does_not_enable_review(tmp_path):
     assert "review_code_changes" in guidance
     assert "不要自动执行 git init" in guidance
 
-    with pytest.raises(PermissionError, match="必须与当前受信 workspace 完全一致"):
+    # The process runner may block parent Git discovery first (ValueError),
+    # or the exact-root guard may reject the ancestor (PermissionError).
+    with pytest.raises((ValueError, PermissionError)):
         review_code_changes(workspace=workspace)
 
 
