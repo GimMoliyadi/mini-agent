@@ -194,6 +194,7 @@ class AgentApplication:
                 boundary, ContextMiddleware(self.settings.context_tokens, events=self.events, request_timeout=self.settings.request_timeout),
                 DevelopmentWorkflowMiddleware(
                     external_tool_names=frozenset(external_tool_names),
+                    workspace=self.settings.workspace,
                 ),
                 VerificationMiddleware(self.settings, self.events),
                 ModelCallLimitMiddleware(run_limit=self.settings.max_model_calls, exit_behavior="error"),
