@@ -8,6 +8,7 @@ supplies an ordered next step. Evidence is invalidated after later mutations.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 from langchain.agents.middleware import AgentMiddleware
@@ -15,6 +16,7 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from langchain.tools import ToolRuntime, tool
 from langgraph.types import Command
 
+from . import git_workflow
 from .sandbox import redact_text
 from .state import TaskState
 from .result import ToolResult
@@ -415,8 +417,12 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
 
     state_schema = TaskState
 
-    def __init__(self, *, external_tool_names: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self, *, external_tool_names: frozenset[str] = frozenset(),
+        workspace: Path | None = None,
+    ) -> None:
         self.external_tool_names = external_tool_names
+        self.workspace = Path(workspace).resolve() if workspace is not None else None
 
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
         evaluation = evaluate_workflow(dict(request.state))
@@ -433,6 +439,19 @@ class DevelopmentWorkflowMiddleware(AgentMiddleware):
             "如果依赖或工具不可用，应如实说明受阻，不能谎报完成。"
             + (f" 尚缺验收证据：{evaluation['evidence_issue']}" if evaluation["evidence_issue"] else "")
         )
+        if self.workspace is not None:
+            try:
+                # Match the actual code-review and Git commit security boundary.
+                # A parent repo (for example C:\\.git) does NOT make this
+                # workspace an acceptable repository root.
+                git_workflow._repository_root(self.workspace)
+            except (OSError, ValueError, PermissionError):
+                guidance += (
+                    "\n注意：当前工作区不是 Git 仓库根目录，或 Git 不可用。"
+                    "review_code_changes 依赖与 workspace 完全一致的 Git 仓库根目录，"
+                    "当前无法完成 review 阶段。不要自动执行 git init，"
+                    "也不能声称审查通过。"
+                )
         system = request.system_message
         content = system.content if system is not None else ""
         if isinstance(content, str):
